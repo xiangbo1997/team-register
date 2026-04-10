@@ -1,0 +1,15 @@
+.ace-tool/
+.claude/
+.codex/
+.playwright-mcp/
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+artifacts/
+*.png
+accounts.csv
+error_debug.png
+*.pyc
+config.json
+log.txt
