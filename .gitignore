@@ -3,6 +3,7 @@
 .codex/
 .playwright-mcp/
 .venv/
+codex-bootstrap/
 .env
 __pycache__/
 .pytest_cache/
