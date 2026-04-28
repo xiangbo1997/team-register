@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="{{ current_locale() }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ _('login.title') }} - Team Register</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body class="min-h-screen bg-gray-950 text-gray-100">
+<div class="mx-auto flex min-h-screen max-w-6xl items-center px-6 py-12">
+    <div class="grid w-full gap-8 lg:grid-cols-[1.05fr_0.95fr]">
+        <section class="rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur">
+            <div class="inline-flex items-center rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">{{ _('login.badge') }}</div>
+            <h1 class="mt-6 text-3xl font-semibold tracking-tight">{{ _('login.hero_title') }}</h1>
+            <p class="mt-4 max-w-xl text-sm leading-6 text-gray-300">{{ _('login.hero_desc') }}</p>
+
+            <div class="mt-8 grid gap-4 sm:grid-cols-2">
+                <div class="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div class="text-sm font-medium">{{ _('login.card_help_title') }}</div>
+                    <p class="mt-2 text-sm text-gray-400">{{ _('login.card_help_desc') }}</p>
+                    <a href="{{ help_url or '/help' }}" class="mt-3 inline-block text-sm text-blue-300 hover:text-blue-200">{{ _('nav.help') }}</a>
+                </div>
+                <div class="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div class="text-sm font-medium">{{ _('login.card_manual_title') }}</div>
+                    <p class="mt-2 text-sm text-gray-400">{{ _('login.card_manual_desc') }}</p>
+                    <a href="{{ manual_url or '/manual' }}" target="_blank" class="mt-3 inline-block text-sm text-blue-300 hover:text-blue-200">{{ _('assistant.open_manual') }}</a>
+                </div>
+            </div>
+        </section>
+
+        <section class="rounded-3xl bg-white p-8 text-gray-900 shadow-2xl" x-data="loginForm()">
+            <h2 class="text-2xl font-semibold">{{ _('login.form_title') }}</h2>
+            <p class="mt-2 text-sm text-gray-500">{{ login_hint or _('login.form_hint') }}</p>
+
+            <div x-show="errorMessage" x-cloak class="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" x-text="errorMessage"></div>
+
+            <form class="mt-6 space-y-4" @submit.prevent="submit">
+                <input type="hidden" x-model="nextUrl">
+                <div>
+                    <label class="mb-1 block text-sm font-medium">{{ _('login.username') }}</label>
+                    <input x-model="username" type="text" autocomplete="username" class="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none" :placeholder="i18n('login.username_placeholder')">
+                </div>
+                <div>
+                    <label class="mb-1 block text-sm font-medium">{{ _('login.password') }}</label>
+                    <input x-model="password" type="password" autocomplete="current-password" class="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none" :placeholder="i18n('login.password_placeholder')">
+                </div>
+                <button type="submit" :disabled="loading" class="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
+                    <span x-text="loading ? i18n('login.submitting') : i18n('auth.login')"></span>
+                </button>
+            </form>
+
+            <div class="mt-6 flex items-center justify-between text-sm text-gray-500">
+                <a href="{{ help_url or '/help' }}" class="hover:text-gray-700">{{ _('nav.help') }}</a>
+                <a href="{{ manual_url or '/manual' }}" target="_blank" class="hover:text-gray-700">{{ _('assistant.open_manual') }}</a>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+window._translations = {{ _translations() | tojson }};
+window._locale = '{{ current_locale() }}';
+window.__csrfToken = {{ (csrf_token or '') | tojson }};
+window.i18n = function(key, params, fallback) {
+    let current = window._translations;
+    for (const part of key.split('.')) {
+        if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
+        current = current[part];
+    }
+    if (typeof current !== 'string') return fallback != null ? fallback : key;
+    if (params) {
+        for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
+    }
+    return current;
+};
+
+function loginForm() {
+    return {
+        username: '',
+        password: '',
+        nextUrl: {{ (next_url or '/') | tojson }},
+        loading: false,
+        errorMessage: {{ (login_error or '') | tojson }},
+
+        async submit() {
+            this.loading = true;
+            this.errorMessage = '';
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': window.__csrfToken || '',
+                    },
+                    body: JSON.stringify({
+                        username: this.username,
+                        password: this.password,
+                        next: this.nextUrl,
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || response.statusText);
+                if (typeof data.csrf_token === 'string' && data.csrf_token) {
+                    window.__csrfToken = data.csrf_token;
+                }
+                window.location.href = data.next || this.nextUrl || '/';
+            } catch (error) {
+                this.errorMessage = error.message || i18n('login.failed');
+            } finally {
+                this.loading = false;
+            }
+        },
+    }
+}
+</script>
+</body>
+</html>

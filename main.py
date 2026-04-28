@@ -31,11 +31,61 @@ from src.efuncard import EfunCard
 from src.nodecard import NodeCard
 from src.sms import SMSManager
 from src.mail import MailManager
+from src.providers.mail import MailServiceError
 from src.browser import get_browser_ws, run_preflight_checks
+from src.api.i18n import build_i18n_message_payload
 from src.utils import setup_logger, human_delay
+from src.orchestration.handlers import resolve_card_with_retry
+from src.orchestration.warmup import execute_card_warmup
+from src.services.config_service import ConfigService
 from src.payment_link import PaymentLinkGenerator
 
 logger = setup_logger()
+
+
+def _emit_task_event(
+    event_type: str,
+    *,
+    state: str | None = None,
+    payload: Optional[dict] = None,
+) -> None:
+    """向当前 Worker 任务上下文发事件；脱离 Worker 运行时静默跳过。"""
+    try:
+        from src.api.worker import emit_current_task_event
+
+        emit_current_task_event(event_type, state=state, payload=payload or {})
+    except Exception:
+        return
+
+
+def _set_task_state(state: str | None) -> None:
+    """同步当前 Worker 线程状态，便于普通日志事件携带 state 字段。"""
+    try:
+        from src.api.worker import set_current_task_state
+
+        set_current_task_state(state)
+    except Exception:
+        return
+
+
+def _update_task_phase(phase: str) -> None:
+    """同步当前 Worker 任务 coarse phase。"""
+    try:
+        from src.api.worker import update_current_task_run
+
+        update_current_task_run(phase=phase)
+    except Exception:
+        return
+
+
+def _ensure_task_active(checkpoint: str = "") -> None:
+    """在 Worker 模式下检查当前任务是否已被取消。"""
+    try:
+        from src.api.worker import ensure_current_task_active
+
+        ensure_current_task_active(checkpoint)
+    except ImportError:
+        return
 
 _EMAIL_SELECTOR = 'input#email-input, input[name="email"], input[type="email"]'
 _PASSWORD_SELECTOR = 'input#password, input[name="password"], input[type="password"]'
@@ -66,6 +116,15 @@ _PRIMARY_SUBMIT_SELECTORS = (
     'button:has-text("Siguiente")',
     'button:has-text("Finalizar")',
 )
+_EMAIL_RESEND_SELECTORS = (
+    'button:has-text("Resend email")',
+    'button:has-text("Send again")',
+    'button:has-text("重新发送")',
+    'button:has-text("重发")',
+)
+_EMAIL_CODE_POLL_TIMEOUT_SECONDS = 20
+_EMAIL_CODE_MAX_POLL_ATTEMPTS = 3
+_EMAIL_MANUAL_HANDOFF_CHECKS = 20
 _DEFAULT_BILLING_PROFILE = {
     "country": "US",
     "line1": "350 5th Ave",
@@ -310,18 +369,63 @@ def _is_home_page(url: str) -> bool:
     return "chatgpt.com" in current and "auth" not in current
 
 
-def _build_card_client(config: AppConfig) -> Optional[EfunCard | NodeCard]:
-    """根据 CARD_PROVIDER 配置选择卡源客户端。"""
+def _is_password_submission_advanced(url: str) -> bool:
+    """密码输入控件被卸载时，判断是否其实已经成功跳到了后续步骤。"""
+    current = str(url or "")
+    return (
+        "email-verification" in current
+        or "about-you" in current
+        or "phone" in current
+        or "onboarding" in current
+        or _is_home_page(current)
+    )
+
+
+def _wait_for_password_submit_transition(page: Page, *, max_checks: int = 5) -> bool:
+    """密码输入发生 detach 时，短等一次跳转/重渲染，避免误判为失败。"""
+    for _ in range(max(max_checks, 1)):
+        current_url = str(getattr(page, "url", "") or "")
+        if _is_password_submission_advanced(current_url):
+            return True
+
+        try:
+            password_visible = page.locator(_PASSWORD_SELECTOR).first.is_visible(timeout=250) is True
+        except Exception:
+            password_visible = False
+        if not password_visible:
+            return True
+        human_delay(0.2, 0.4)
+    return False
+
+
+def _build_card_client(config: AppConfig):
+    """根据 CARD_PROVIDER 配置选择卡源客户端。
+
+    注：x988card 走 ``X988CardProvider`` 包装层而不是底层 ``X988Card``，因为前者
+    带 CardActivation 持久化缓存（X988 verify 一次性消耗，必须缓存）。
+    EfunCard / NodeCard 用底层 client（API 设计已防重复调用）。
+    """
+    if config.card_provider == "x988card":
+        from src.providers.card import X988CardProvider
+        logger.info("使用 X988CardProvider（带 CardActivation 缓存）作为虚拟卡供应商。")
+        return X988CardProvider(
+            base_url=config.x988card_api_base,
+            request_timeout=config.x988card_request_timeout,
+        )
     if config.card_provider == "nodecard":
-        logger.info("使用 NodeCard 作为虚拟卡供应商。")
-        return NodeCard(
+        from src.providers.card import NodeCardProvider
+        logger.info("使用 NodeCardProvider（带 audit 写入）作为虚拟卡供应商。")
+        return NodeCardProvider(
             base_url=config.nodecard_api_url,
             merchant_dict_id=config.nodecard_merchant_id or None,
             platform_id=config.nodecard_platform_id or None,
         )
     if config.efuncard_token:
-        logger.info("使用 EfunCard 作为虚拟卡供应商。")
-        return EfunCard(token=config.efuncard_token)
+        # 同样走 EfunCardProvider 包装层 —— efuncard 不需要"miss 才回源"的缓存，
+        # 但 provider 会把每次成功 get_card 写入 card_activations 让 /cards 可见。
+        from src.providers.card import EfunCardProvider
+        logger.info("使用 EfunCardProvider（带 audit 写入）作为虚拟卡供应商。")
+        return EfunCardProvider(token=config.efuncard_token)
     return None
 
 
@@ -334,10 +438,15 @@ def _build_runtime_clients(config: AppConfig) -> tuple[Optional[EfunCard | NodeC
         proxy=config.proxy,
     )
     mail_api = MailManager(
-        base_url=config.mail_domain,
+        base_url=config.email_provider_base_url,
+        api_key=config.email_provider_api_key,
+        provider_name=config.email_provider_name,
+        known_accounts=config.parse_known_mail_accounts(),
         refresh_token=config.mail_refresh_token,
         client_id=config.mail_client_id,
         proxy=config.proxy,
+        preferred_session_mode=str(getattr(config, "mail_session_mode_override", "") or ""),
+        config_name=str(getattr(config, "mail_config_name", "") or ""),
     )
     return card_api, sms_api, mail_api
 
@@ -383,9 +492,40 @@ def _prepare_clean_start_page(context: BrowserContext) -> Page:
     return page
 
 
+def _prepare_retry_resume_page(context: BrowserContext) -> Page:
+    """尽量复用当前浏览器里已有业务页，从失败位置继续。"""
+    for candidate in reversed(list(context.pages)):
+        try:
+            candidate_url = str(candidate.url or "")
+        except Exception:
+            candidate_url = ""
+
+        is_reusable = any(
+            marker in candidate_url
+            for marker in ("chatgpt.com", "auth.openai.com", "auth0.openai.com", "pay.openai.com")
+        )
+        if not is_reusable:
+            continue
+        try:
+            candidate.bring_to_front()
+        except Exception:
+            pass
+        try:
+            candidate.set_default_timeout(60000)
+        except Exception:
+            pass
+        logger.info("重试模式复用现有标签页: %s", candidate_url)
+        return candidate
+
+    logger.warning("未发现可复用标签页，回退为完整新开页面。")
+    return _prepare_clean_start_page(context)
+
+
 def _open_signup_entry(page: Page, email: str) -> None:
     """打开入口页并完成邮箱提交。"""
-    logger.info("尝试进入 OpenAI 注册流程...")
+    _ensure_task_active("open_signup_entry:start")
+    _set_task_state("ENTRY")
+    logger.info("进入首页，准备启动 OpenAI 注册流程...")
     page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
     human_delay(5, 8)
 
@@ -398,10 +538,11 @@ def _open_signup_entry(page: Page, email: str) -> None:
     except Exception as exc:
         logger.warning(f"处理弹窗或跳转时发生非致命错误: {exc}")
 
-    logger.info("寻找邮箱输入框并填写...")
+    logger.info("开始填写注册邮箱...")
     try:
         page.wait_for_selector(_EMAIL_SELECTOR, state="visible", timeout=20000)
         human_typing(page, _EMAIL_SELECTOR, email)
+        logger.info("注册邮箱已填写，准备提交并等待跳转...")
         human_delay()
         page.keyboard.press("Enter")
 
@@ -437,6 +578,7 @@ def _wait_for_auth_page(context: BrowserContext, page: Page) -> Page:
     """等待页面从首页跳转到 OpenAI/Auth0 鉴权页。"""
     logger.info("等待页面从首页跳转到注册/登录页面...")
     for wait_i in range(60):
+        _ensure_task_active("wait_for_auth_page")
         current = page.url
         try:
             current = page.evaluate("window.location.href")
@@ -576,6 +718,7 @@ def _click_onboarding_footer_action(page: Page) -> str:
 def _wait_for_profile_step_transition(page: Page, *, prompt_name: str) -> None:
     """在点击提交后短等页面切换，避免状态机立刻误判为还停留在原步骤。"""
     for _ in range(15):
+        _ensure_task_active(f"profile_transition:{prompt_name}")
         current_url = str(getattr(page, "url", "") or "")
         if prompt_name == "about-you" and "about-you" not in current_url:
             logger.info("about-you 页面已离开: %s", current_url)
@@ -764,6 +907,7 @@ def _fill_checkout_contact_and_billing_details(
 
 def _handle_post_signup_onboarding(page: Page) -> bool:
     """处理注册完成后的 onboarding 问卷页。"""
+    _ensure_task_active("onboarding:start")
     metrics = _read_onboarding_metrics(page)
     if not metrics.get("prompt_present"):
         return False
@@ -791,6 +935,7 @@ def _handle_post_signup_onboarding(page: Page) -> bool:
 
 def _fill_about_you_form(page: Page) -> None:
     """处理年龄/生日确认页。"""
+    _ensure_task_active("about_you:start")
     if _handle_post_signup_onboarding(page):
         return
 
@@ -886,51 +1031,175 @@ def _fill_about_you_form(page: Page) -> None:
 
 def _handle_email_verification_step(page: Page, mail_api: MailManager, email: str) -> bool:
     """处理邮箱验证码提交，返回是否应继续后续状态轮询。"""
+    _ensure_task_active("verify_email:start")
+    _set_task_state("VERIFY_EMAIL")
     logger.info("发现邮箱验证页面，开始拉取验证码...")
+    _emit_task_event(
+        "action",
+        state="VERIFY_EMAIL",
+        payload=build_i18n_message_payload(
+            "进入邮箱验证码步骤，准备获取验证码",
+            "task_events.verify_email_enter",
+            action_id="verify_email",
+            result="started",
+        ),
+    )
     try:
-        mail_code = mail_api.get_verification_code_via_browser(email=email, page=page, wait_timeout=120)
-        if mail_code:
-            logger.info(f"拉取成功: {mail_code}，正在填入...")
-            code_input = page.locator(
-                'input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"]'
-            ).first
-            if code_input.is_visible(timeout=3000):
-                code_input.click()
-                try:
-                    code_input.fill("")
-                    code_input.fill(mail_code)
-                except Exception:
-                    page.keyboard.press("Meta+A")
-                    page.keyboard.press("Backspace")
+        for attempt in range(1, _EMAIL_CODE_MAX_POLL_ATTEMPTS + 1):
+            _ensure_task_active(f"verify_email:poll_attempt_{attempt}")
+            logger.info(
+                "第 %d/%d 次短轮询邮箱验证码（单次最多等待 %d 秒）...",
+                attempt,
+                _EMAIL_CODE_MAX_POLL_ATTEMPTS,
+                _EMAIL_CODE_POLL_TIMEOUT_SECONDS,
+            )
+            mail_code = mail_api.get_verification_code_via_browser(
+                email=email,
+                page=page,
+                wait_timeout=_EMAIL_CODE_POLL_TIMEOUT_SECONDS,
+            )
+            if mail_code:
+                logger.info("已获取邮箱验证码，开始填写验证码...")
+                code_input = page.locator(
+                    'input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"]'
+                ).first
+                if code_input.is_visible(timeout=3000):
+                    # 直接 fill：Playwright fill 自动 focus + 清空，避开 click 的
+                    # actionability 卡死（main.py 默认 set_default_timeout=60s，
+                    # click 卡 60s 是真凶）。5s 超时 + 键盘 fallback。
+                    try:
+                        code_input.fill(mail_code, timeout=5000)
+                    except Exception as exc:
+                        logger.warning("input.fill 失败 (%s)，降级到键盘输入", exc)
+                        try:
+                            try:
+                                code_input.focus(timeout=3000)
+                            except Exception:
+                                pass
+                            page.keyboard.press("Meta+A")
+                            page.keyboard.press("Backspace")
+                            page.keyboard.type(mail_code)
+                        except Exception as exc2:
+                            logger.error("键盘输入也失败: %s", exc2)
+                            raise
+                else:
                     page.keyboard.type(mail_code)
-            else:
-                page.keyboard.type(mail_code)
-            human_delay(2, 3)
+                logger.info("验证码已填写，准备提交...")
+                human_delay(2, 3)
 
-            try:
-                _click_first_visible(page, _PRIMARY_SUBMIT_SELECTORS, description="点击验证码页继续按钮", timeout_ms=3000)
-            except Exception:
-                pass
+                try:
+                    _click_first_visible(page, _PRIMARY_SUBMIT_SELECTORS, description="点击验证码页继续按钮", timeout_ms=3000)
+                except Exception:
+                    pass
 
-            logger.info("等待验证码提交后页面跳转...")
-            for _ in range(30):
-                if "email-verification" not in page.url:
-                    logger.info(f"页面已跳转: {page.url}")
-                    return True
-                human_delay(1, 1.5)
-            logger.warning("验证码提交后页面未跳转，继续轮询...")
-            return True
+                _emit_task_event(
+                    "action",
+                    state="VERIFY_EMAIL",
+                    payload=build_i18n_message_payload(
+                        "验证码已填写并提交，等待页面跳转",
+                        "task_events.verify_email_submitted",
+                        action_id="submit_email_code",
+                        result="submitted",
+                    ),
+                )
+                logger.info("等待验证码提交后页面跳转...")
+                for _ in range(30):
+                    _ensure_task_active("verify_email:after_submit_wait")
+                    if "email-verification" not in page.url:
+                        logger.info(f"页面已跳转: {page.url}")
+                        return True
+                    human_delay(1, 1.5)
+                logger.warning("验证码提交后页面未跳转，继续后续状态轮询。")
+                return True
 
-        logger.error("未拉取到邮箱验证码，请在浏览器中【手动输入】验证码并点击确认...")
-        for _ in range(60):
+            logger.warning("第 %d 次未获取到邮箱验证码。", attempt)
+            _emit_task_event(
+                "action",
+                state="VERIFY_EMAIL",
+                payload=build_i18n_message_payload(
+                    f"第 {attempt} 次自动轮询未获取到验证码",
+                    "task_events.verify_email_poll_attempt_failed",
+                    params={
+                        "attempt": attempt,
+                        "max_attempts": _EMAIL_CODE_MAX_POLL_ATTEMPTS,
+                    },
+                    action_id="poll_email_code",
+                    result="timeout",
+                    attempt=attempt,
+                    max_attempts=_EMAIL_CODE_MAX_POLL_ATTEMPTS,
+                ),
+            )
+            if attempt < _EMAIL_CODE_MAX_POLL_ATTEMPTS:
+                logger.info("尝试点击 Resend email 按钮后再次轮询...")
+                resend_clicked = _click_first_visible(
+                    page,
+                    _EMAIL_RESEND_SELECTORS,
+                    description="点击 Resend email 按钮",
+                    timeout_ms=2000,
+                )
+                _emit_task_event(
+                    "action",
+                    state="VERIFY_EMAIL",
+                    payload=build_i18n_message_payload(
+                        "尝试重新发送邮箱验证码",
+                        "task_events.verify_email_resend",
+                        action_id="resend_email",
+                        result="ok" if resend_clicked else "not_found",
+                    ),
+                )
+                if resend_clicked:
+                    logger.info("已触发验证码重发，等待新邮件到达...")
+                else:
+                    logger.warning("未找到 Resend email 按钮，将继续直接轮询邮箱。")
+                human_delay(1.5, 2.5)
+
+        logger.error("短轮询结束后仍未拉取到邮箱验证码，请立即在浏览器中【手动输入】验证码并点击确认...")
+        _emit_task_event(
+            "action",
+            state="VERIFY_EMAIL",
+            payload=build_i18n_message_payload(
+                "自动短轮询未获取到验证码，请立即手动输入验证码",
+                "task_events.verify_email_manual_required",
+                action_id="manual_email_handoff",
+                result="required",
+            ),
+        )
+        logger.info("进入快速人工接管窗口（最多约 %d 秒）...", _EMAIL_MANUAL_HANDOFF_CHECKS * 2)
+        for _ in range(_EMAIL_MANUAL_HANDOFF_CHECKS):
+            _ensure_task_active("verify_email:manual_handoff_wait")
             if "email-verification" not in page.url:
                 logger.info(f"检测到手动操作成功，页面已跳转: {page.url}")
                 return True
-            human_delay(2, 3)
-        logger.warning("等待手动操作超时，流程可能停滞。")
+            human_delay(1, 2)
+        logger.warning("快速人工接管窗口超时，流程可能停滞。")
         return False
+    except MailServiceError as exc:
+        logger.error(f"邮箱验证步骤失败: {exc}")
+        _emit_task_event(
+            "action",
+            state="VERIFY_EMAIL",
+            payload=build_i18n_message_payload(
+                "邮箱服务运行态或凭据检查失败，终止自动化",
+                "task_events.verify_email_mail_service_fatal",
+                action_id="verify_email",
+                result="failed",
+                error=str(exc),
+            ),
+        )
+        raise
     except Exception as exc:
         logger.error(f"邮箱验证步骤失败: {exc}")
+        _emit_task_event(
+            "action",
+            state="VERIFY_EMAIL",
+            payload=build_i18n_message_payload(
+                "自动获取邮箱验证码失败",
+                "task_events.verify_email_auto_fetch_failed",
+                action_id="verify_email",
+                result="failed",
+                error=str(exc),
+            ),
+        )
         return False
 
 
@@ -1006,10 +1275,28 @@ def _complete_registration_flow(page: Page, mail_api: MailManager, email: str, p
 
 def _submit_password(page: Page, password: str) -> None:
     """填写密码并提交。"""
-    logger.info("发现密码输入框，正在填写...")
-    human_typing(page, _PASSWORD_SELECTOR, password)
+    _ensure_task_active("submit_password:start")
+    _set_task_state("AUTH")
+    logger.info("进入密码页，开始输入密码...")
+    try:
+        human_typing(page, _PASSWORD_SELECTOR, password)
+    except Exception as exc:
+        current_url = str(getattr(page, "url", "") or "")
+        if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
+            logger.info("密码输入控件已卸载/隐藏，页面状态已推进到 %s，按提交成功处理。", current_url)
+            return
+        raise
+
+    logger.info("密码已填写，准备提交并等待跳转...")
     human_delay(1, 2)
-    page.keyboard.press("Enter")
+    try:
+        page.keyboard.press("Enter")
+    except Exception as exc:
+        current_url = str(getattr(page, "url", "") or "")
+        if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
+            logger.info("密码提交时页面已推进到 %s，按成功处理。", current_url)
+            return
+        raise
 
 
 def _extract_session_tokens_with_retry(
@@ -1028,6 +1315,7 @@ def _extract_session_tokens_with_retry(
         pass
 
     for attempt in range(1, max(attempts, 1) + 1):
+        _ensure_task_active(f"extract_session:attempt_{attempt}")
         try:
             page.wait_for_load_state("domcontentloaded", timeout=8000)
         except Exception:
@@ -1089,6 +1377,7 @@ def _extract_session_tokens_with_retry(
 
 def _recover_from_error_page(runtime: AutomationRuntime, _action) -> bool:
     """遇到 error 页后，清理上下文并新开标签页。"""
+    _ensure_task_active("recover_error:start")
     logger.warning("检测到异常页，执行恢复流程。")
     try:
         if runtime.page:
@@ -1103,6 +1392,33 @@ def _recover_from_error_page(runtime: AutomationRuntime, _action) -> bool:
 
     runtime.page = _prepare_clean_start_page(runtime.context)
     return True
+
+
+def _click_try_again(runtime: AutomationRuntime, _action) -> bool:
+    """OpenAI 鉴权页面 'Operation timed out' 时点击 Try again 重试。"""
+    _ensure_task_active("click_try_again:start")
+    page = runtime.page
+    if page is None:
+        return False
+
+    candidates = [
+        'button:has-text("Try again")',
+        '[role="button"]:has-text("Try again")',
+        'button:has-text("重试")',
+    ]
+    for selector in candidates:
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=1000):
+                logger.info("检测到鉴权超时错误页，点击 Try again 重试。")
+                locator.click()
+                human_delay(2, 3)
+                return True
+        except Exception:
+            continue
+
+    logger.warning("未在错误页定位到 Try again 按钮，降级走 recover 流程。")
+    return False
 
 
 def _manual_handoff(runtime: AutomationRuntime, payload: dict) -> bool:
@@ -1122,6 +1438,7 @@ def _manual_handoff(runtime: AutomationRuntime, payload: dict) -> bool:
         pass
 
     for _ in range(60):
+        _ensure_task_active("manual_handoff:wait")
         current_url = str(getattr(runtime.page, "url", "") or "")
         if "challenge" not in current_url and "captcha" not in current_url and "phone" not in current_url:
             logger.info("检测到页面已离开阻塞状态，恢复自动化。")
@@ -1178,7 +1495,9 @@ def _build_runtime_handlers(
         return True
 
     def wait_short(runtime: AutomationRuntime, _action) -> bool:
+        _ensure_task_active("wait_short:before_sleep")
         human_delay(2, 3)
+        _ensure_task_active("wait_short:after_sleep")
         return True
 
     return {
@@ -1188,12 +1507,14 @@ def _build_runtime_handlers(
         "fill_about_you": fill_about_you,
         "wait_short": wait_short,
         "recover_error": _recover_from_error_page,
+        "click_try_again": _click_try_again,
         "manual_handoff": _manual_handoff,
     }
 
 
 def _wait_for_home_page(page: Page) -> None:
     """等待鉴权完成，进入主界面。"""
+    _ensure_task_active("wait_for_home_page:start")
     human_delay(5, 8)
     logger.info("等待进入 ChatGPT 主界面...")
     try:
@@ -1291,7 +1612,7 @@ def _complete_payment_flow(
         logger.info(f"生成支付链接成功，正在新标签页打开: {checkout_link}")
         checkout_page = _open_checkout_page_in_new_tab(page, checkout_link)
         human_delay(5, 10)
-        card = card_api.get_card(cdk)
+        card = resolve_card_with_retry(card_api, cdk)
         if not card:
             logger.error("任务中止: 未能获取可用虚拟卡。跳过支付流程。")
             if experience_store:
@@ -1639,14 +1960,47 @@ def run_task(
     ads_id: str, 
     cdk: str, 
     email: str, 
-    password: str
+    password: str,
+    retry_mode: str = "restart",
+    start_phase: str = "registration",
 ) -> None:
     """执行自动化注册及绑卡主流程"""
     reconnect_attempts = 0
     llm_provider = _build_llm_provider(config)
+    normalized_retry_mode = str(retry_mode or "restart").strip().lower()
+    if normalized_retry_mode not in {"resume", "restart"}:
+        normalized_retry_mode = "restart"
+    normalized_start_phase = str(start_phase or "registration").strip().lower()
+    if normalized_start_phase not in {"registration", "token_extraction", "payment"}:
+        normalized_start_phase = "registration"
+
+    try:
+        _ensure_task_active("run_task:mail_runtime_preflight")
+        resolved_session_mode = mail_api.ensure_runtime_ready(email)
+        logger.info(
+            "邮箱服务运行态预检通过: provider=%s session_mode=%s base_url=%s",
+            getattr(mail_api, "_provider_name", ""),
+            resolved_session_mode,
+            config.email_provider_base_url,
+        )
+    except Exception as exc:
+        logger.error("终止任务：邮箱服务运行态预检失败 (%s)", exc)
+        _emit_task_event(
+            "action",
+            state="VERIFY_EMAIL",
+            payload=build_i18n_message_payload(
+                "邮箱服务运行态预检失败",
+                "task_events.mail_runtime_preflight_failed",
+                action_id="mail_runtime_preflight",
+                result="failed",
+                error=str(exc),
+            ),
+        )
+        return
 
     while reconnect_attempts <= config.max_profile_reconnects:
         try:
+            _ensure_task_active("run_task:connect_browser")
             try:
                 run_preflight_checks(
                     ads_api=config.ads_api,
@@ -1669,11 +2023,51 @@ def run_task(
                 logger.info("连接到 Playwright 浏览器实例...")
                 browser = p.chromium.connect_over_cdp(ws_url)
                 context: BrowserContext = browser.contexts[0]
-                page = _prepare_clean_start_page(context)
+                if normalized_retry_mode == "resume":
+                    page = _prepare_retry_resume_page(context)
+                else:
+                    page = _prepare_clean_start_page(context)
+
+                initial_phase = normalized_start_phase if normalized_retry_mode == "resume" else "registration"
+                if initial_phase == "registration":
+                    _update_task_phase("registration")
+                    _set_task_state("ENTRY")
+                    _emit_task_event(
+                        "phase_start",
+                        payload=build_i18n_message_payload(
+                            "进入 registration 阶段",
+                            "task_events.phase_registration_start",
+                            phase="registration",
+                        ),
+                    )
+                else:
+                    logger.info(
+                        "重试模式从失败阶段继续执行: retry_mode=%s start_phase=%s",
+                        normalized_retry_mode,
+                        initial_phase,
+                    )
+                    _update_task_phase(initial_phase)
+                    _emit_task_event(
+                        "action",
+                        payload=build_i18n_message_payload(
+                            f"从失败阶段继续执行：{initial_phase}",
+                            "task_events.phase_retry_resume",
+                            params={"start_phase": initial_phase},
+                            action_id="retry_mode",
+                            result=normalized_retry_mode,
+                            start_phase=initial_phase,
+                        ),
+                    )
 
                 recorder = ArtifactRecorder(config.run_artifacts_dir)
                 run_id = recorder.start_run(email)
                 experience_store = ExperienceStore(os.path.join(config.run_artifacts_dir, "experience-memory.jsonl"))
+
+                def _runtime_emit(event_type: str, *, state: str | None = None, payload: Optional[dict] = None) -> None:
+                    if state is not None:
+                        _set_task_state(state)
+                    _emit_task_event(event_type, state=state, payload=payload or {})
+
                 runtime = AutomationRuntime(
                     page=page,
                     context=context,
@@ -1687,22 +2081,49 @@ def run_task(
                     run_id=run_id,
                     llm_provider=llm_provider,
                     experience_store=experience_store,
+                    emit_event=_runtime_emit,
+                    cancel_check=_ensure_task_active,
                 )
 
-                machine = RegistrationStateMachine()
-                result = machine.run(runtime)
-                if not result.success:
-                    logger.error(
-                        "注册状态机失败: state=%s reason=%s",
-                        result.final_state.value,
-                        result.failure_reason,
-                    )
-                    if reconnect_attempts < config.max_profile_reconnects and result.final_state in {AutomationState.ERROR, AutomationState.UNKNOWN}:
-                        reconnect_attempts += 1
-                        logger.warning("尝试重连 AdsPower / 重新开始流程 (第 %d 次)...", reconnect_attempts)
-                        continue
-                    return
+                if initial_phase == "registration":
+                    machine = RegistrationStateMachine()
+                    result = machine.run(runtime)
+                    if not result.success:
+                        logger.error(
+                            "注册状态机失败: state=%s reason=%s",
+                            result.final_state.value,
+                            result.failure_reason,
+                        )
+                        if reconnect_attempts < config.max_profile_reconnects and result.final_state in {AutomationState.ERROR, AutomationState.UNKNOWN}:
+                            reconnect_attempts += 1
+                            logger.warning("尝试重连 AdsPower / 重新开始流程 (第 %d 次)...", reconnect_attempts)
+                            continue
+                        return
 
+                    _set_task_state("HOME")
+                    _emit_task_event(
+                        "phase_complete",
+                        state="HOME",
+                        payload=build_i18n_message_payload(
+                            "registration 阶段完成",
+                            "task_events.phase_registration_complete",
+                            phase="registration",
+                        ),
+                    )
+                else:
+                    _set_task_state("HOME")
+
+                _ensure_task_active("run_task:before_token_extraction")
+                _update_task_phase("token_extraction")
+                _emit_task_event(
+                    "phase_start",
+                    state="HOME",
+                    payload=build_i18n_message_payload(
+                        "进入 token_extraction 阶段",
+                        "task_events.phase_token_extraction_start",
+                        phase="token_extraction",
+                    ),
+                )
                 logger.info("状态机检测到主流程已进入 HOME，开始提取 session。")
                 access_token, refresh_token = _extract_session_tokens_with_retry(
                     page,
@@ -1719,8 +2140,38 @@ def run_task(
                     return
 
                 export_success(email, password, access_token, refresh_token)
+                _emit_task_event(
+                    "phase_complete",
+                    state="HOME",
+                    payload=build_i18n_message_payload(
+                        "token_extraction 阶段完成",
+                        "task_events.phase_token_extraction_complete",
+                        phase="token_extraction",
+                    ),
+                )
 
                 if config.enable_payment_flow:
+                    _ensure_task_active("run_task:before_payment")
+                    _update_task_phase("payment")
+                    _set_task_state("PAYMENT")
+                    _emit_task_event(
+                        "state_change",
+                        state="PAYMENT",
+                        payload=build_i18n_message_payload(
+                            "进入支付阶段",
+                            "task_events.phase_payment_state",
+                            phase="payment",
+                        ),
+                    )
+                    _emit_task_event(
+                        "phase_start",
+                        state="PAYMENT",
+                        payload=build_i18n_message_payload(
+                            "进入 payment 阶段",
+                            "task_events.phase_payment_start",
+                            phase="payment",
+                        ),
+                    )
                     if config.payment_link_only:
                         _generate_payment_link_only(
                             access_token,
@@ -1735,6 +2186,38 @@ def run_task(
                         if not card_api:
                             logger.error("未提供可用 EfunCard 客户端，无法继续完整支付流程。")
                             return
+                        
+                        # 执行卡片预热技巧 (Card Warming)
+                        if config.enable_card_warmup:
+                            card = resolve_card_with_retry(card_api, cdk)
+                            if card:
+                                _emit_task_event("log", state="PAYMENT", payload={"message": "执行卡片 3DS 预热技巧..."})
+                                # 关键：复用外层 with sync_playwright() as p（main.py:1983），
+                                # 不能嵌套新的 sync_playwright 否则触发 asyncio loop 冲突。
+                                warmup_success = execute_card_warmup(
+                                    config=config,
+                                    card_info=card,
+                                    card_api=card_api,
+                                    card_key=cdk,
+                                    svc=ConfigService(),
+                                    proxy_url=config.proxy,
+                                    playwright=p,
+                                )
+                                if warmup_success:
+                                    _emit_task_event("log", state="PAYMENT", payload={"message": "卡片预热成功，准备绑定主账号"})
+                                else:
+                                    _emit_task_event("log", state="PAYMENT", payload={"message": "卡片预热未触发预期报错，继续尝试直接绑定"})
+                            else:
+                                logger.warning("未能获取卡片信息，跳过预热。")
+                                _emit_task_event(
+                                    "warning",
+                                    state="PAYMENT",
+                                    payload={
+                                        "message": "卡片查询连续重试失败，跳过预热（_complete_payment_flow 仍会再次尝试）",
+                                        "attempts": 3,
+                                    },
+                                )
+
                         _complete_payment_flow(
                             page,
                             card_api,
@@ -1756,6 +2239,9 @@ def run_task(
                 human_delay(10, 15)
                 return
 
+            except MailServiceError as exc:
+                logger.error("执行过程中发生邮箱服务致命错误: %s", exc)
+                return
             except Exception as exc:
                 logger.error(f"执行过程中发生未捕获异常: {exc}")
                 if reconnect_attempts < config.max_profile_reconnects:

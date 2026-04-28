@@ -4,7 +4,12 @@
 import unittest
 from unittest.mock import patch, MagicMock
 
-from src.browser import fetch_proxy, get_browser_ws, run_preflight_checks
+from src.browser import (
+    _lookup_proxy_country,
+    fetch_proxy,
+    get_browser_ws,
+    run_preflight_checks,
+)
 from src.models import ProxyInfo
 
 
@@ -205,6 +210,121 @@ class TestRunPreflightChecks(unittest.TestCase):
 
         with self.assertRaises(ConnectionError):
             get_browser_ws(ads_api="http://mock-ads", user_id="profile_1")
+
+
+class TestFetchProxyCountry(unittest.TestCase):
+    """fetch_proxy() 的国家字段填充测试"""
+
+    @patch("src.browser._lookup_proxy_country")
+    @patch("src.browser.requests.get")
+    def test_fetch_proxy_populates_country(
+        self,
+        mock_get: MagicMock,
+        mock_lookup: MagicMock,
+    ):
+        """成功提取代理时，country 字段应由 _lookup_proxy_country 填充"""
+        mock_get.return_value.text = "1.2.3.4:8080"
+        mock_lookup.return_value = "US"
+
+        result = fetch_proxy(proxy_url="http://mock-proxy")
+
+        self.assertIsInstance(result, ProxyInfo)
+        self.assertEqual(result.host, "1.2.3.4")
+        self.assertEqual(result.port, "8080")
+        self.assertEqual(result.country, "US")
+        mock_lookup.assert_called_once_with("1.2.3.4", "8080")
+
+    @patch("src.browser._lookup_proxy_country")
+    @patch("src.browser.requests.get")
+    def test_fetch_proxy_country_empty_when_lookup_fails(
+        self,
+        mock_get: MagicMock,
+        mock_lookup: MagicMock,
+    ):
+        """国家查询失败时，仍返回 ProxyInfo（country=""），并记 warning 日志"""
+        mock_get.return_value.text = "9.9.9.9:3128"
+        mock_lookup.return_value = ""
+
+        with self.assertLogs("src.browser", level="WARNING") as log_ctx:
+            result = fetch_proxy(proxy_url="http://mock-proxy")
+
+        self.assertIsInstance(result, ProxyInfo)
+        self.assertEqual(result.host, "9.9.9.9")
+        self.assertEqual(result.port, "3128")
+        self.assertEqual(result.country, "")
+        joined = "\n".join(log_ctx.output)
+        self.assertIn("未能确认代理出口国家", joined)
+
+
+class TestLookupProxyCountry(unittest.TestCase):
+    """_lookup_proxy_country() 单元测试"""
+
+    def test_lookup_proxy_country_parses_ipapi_response(self):
+        """ipapi.co 正常响应，返回大写国家码"""
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"country_code": "US", "ip": "1.2.3.4"}
+
+        def fake_http_get(url: str, proxies: dict):
+            self.assertEqual(url, "https://ipapi.co/json/")
+            self.assertEqual(proxies.get("http"), "http://1.2.3.4:8080")
+            self.assertEqual(proxies.get("https"), "http://1.2.3.4:8080")
+            return fake_resp
+
+        result = _lookup_proxy_country("1.2.3.4", "8080", http_get=fake_http_get)
+        self.assertEqual(result, "US")
+
+    def test_lookup_proxy_country_timeout_returns_empty(self):
+        """requests 异常时应返回空字符串"""
+        import requests as _requests
+
+        def fake_http_get(url: str, proxies: dict):
+            raise _requests.RequestException("timeout")
+
+        with self.assertLogs("src.browser", level="WARNING"):
+            result = _lookup_proxy_country("1.2.3.4", "8080", http_get=fake_http_get)
+        self.assertEqual(result, "")
+
+    def test_lookup_proxy_country_missing_field_returns_empty(self):
+        """响应 JSON 缺少 country_code 字段时返回空"""
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"ip": "1.2.3.4"}
+
+        with self.assertLogs("src.browser", level="WARNING"):
+            result = _lookup_proxy_country(
+                "1.2.3.4",
+                "8080",
+                http_get=lambda url, proxies: fake_resp,
+            )
+        self.assertEqual(result, "")
+
+    def test_lookup_proxy_country_lowercases_to_upper(self):
+        """小写国家码应被规范化为大写"""
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"country_code": "us"}
+
+        result = _lookup_proxy_country(
+            "1.2.3.4",
+            "8080",
+            http_get=lambda url, proxies: fake_resp,
+        )
+        self.assertEqual(result, "US")
+
+    def test_lookup_proxy_country_non_200_returns_empty(self):
+        """非 200 状态码应返回空"""
+        fake_resp = MagicMock()
+        fake_resp.status_code = 429
+        fake_resp.json.return_value = {"country_code": "US"}
+
+        with self.assertLogs("src.browser", level="WARNING"):
+            result = _lookup_proxy_country(
+                "1.2.3.4",
+                "8080",
+                http_get=lambda url, proxies: fake_resp,
+            )
+        self.assertEqual(result, "")
 
 
 if __name__ == "__main__":

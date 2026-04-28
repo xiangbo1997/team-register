@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}虚拟卡缓存 - Team Register{% endblock %}
+{% block nav_cards %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}虚拟卡缓存{% endblock %}
+
+{% block content %}
+<div x-data="cardsData()" x-init="fetchCards()">
+    <div class="flex items-center justify-between mb-4">
+        <div class="text-sm text-gray-500">
+            虚拟卡使用记录。X988 卡密走"miss 才回源"缓存（解决一次性 verify 问题）；
+            efuncard / nodecard 仅审计写入，每次仍调真实 API 拿最新状态。
+        </div>
+        <div class="flex items-center gap-3">
+            <label class="flex items-center gap-1 text-xs text-gray-600">
+                <input type="checkbox" x-model="includeInvalidated" @change="fetchCards()">
+                显示已作废
+            </label>
+            <button @click="fetchCards()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50">刷新</button>
+        </div>
+    </div>
+
+    <!-- 卡商过滤 tab -->
+    <div class="flex gap-1 mb-4 border-b">
+        <template x-for="tab in providerTabs" :key="tab.value">
+            <button @click="providerFilter = tab.value; fetchCards()"
+                    :class="providerFilter === tab.value
+                        ? 'border-blue-600 text-blue-600 font-medium'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'"
+                    class="px-4 py-2 text-sm border-b-2 -mb-px transition">
+                <span x-text="tab.label"></span>
+                <span x-show="tab.value !== 'all' && providerCounts[tab.value]"
+                      class="ml-1 text-xs bg-gray-100 px-1.5 rounded-full"
+                      x-text="providerCounts[tab.value]"></span>
+            </button>
+        </template>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+                <tr>
+                    <th class="px-4 py-3 text-left">卡密 (cdk)</th>
+                    <th class="px-4 py-3 text-left">卡商</th>
+                    <th class="px-4 py-3 text-left">卡号</th>
+                    <th class="px-4 py-3 text-left">BIN 国家</th>
+                    <th class="px-4 py-3 text-left">卡有效期</th>
+                    <th class="px-4 py-3 text-left">激活时间</th>
+                    <th class="px-4 py-3 text-left">上次使用</th>
+                    <th class="px-4 py-3 text-left">使用次数</th>
+                    <th class="px-4 py-3 text-left">状态</th>
+                    <th class="px-4 py-3 text-left">操作</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                <template x-for="card in cards" :key="card.card_key">
+                    <tr :class="card.status === 'invalidated' || card.status === 'expired' ? 'bg-red-50' : (card.days_until_max_age !== null && card.days_until_max_age <= 1 ? 'bg-yellow-50' : 'hover:bg-gray-50')">
+                        <td class="px-4 py-3 font-mono text-xs" x-text="card.card_key.substring(0, 12) + '...'"></td>
+                        <td class="px-4 py-3 text-xs" x-text="card.card_provider"></td>
+                        <td class="px-4 py-3 font-mono text-xs">
+                            <span x-text="card.bin_prefix + '****' + card.last4"></span>
+                        </td>
+                        <td class="px-4 py-3 text-xs" x-text="card.bin_country || '-'"></td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="card.expiry_month + '/' + card.expiry_year"></td>
+                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="card.activated_at ? new Date(card.activated_at).toLocaleString(window._locale) : '-'"></td>
+                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="card.last_used_at ? new Date(card.last_used_at).toLocaleString(window._locale) : '从未使用'"></td>
+                        <td class="px-4 py-3 text-xs" x-text="card.use_count"></td>
+                        <td class="px-4 py-3 text-xs">
+                            <span class="px-2 py-0.5 rounded-full text-[11px]"
+                                  :class="{
+                                      'bg-green-100 text-green-700': card.status === 'active',
+                                      'bg-gray-200 text-gray-600': card.status === 'expired',
+                                      'bg-red-100 text-red-700': card.status === 'invalidated',
+                                  }"
+                                  x-text="card.status"></span>
+                            <template x-if="card.status === 'active' && card.days_until_max_age !== null && card.days_until_max_age <= 1">
+                                <span class="ml-1 text-[10px] text-yellow-700" x-text="'(剩 ' + card.days_until_max_age + ' 天)'"></span>
+                            </template>
+                            <template x-if="card.invalidate_reason">
+                                <div class="text-[10px] text-gray-400 mt-1" x-text="'原因: ' + card.invalidate_reason"></div>
+                            </template>
+                        </td>
+                        <td class="px-4 py-3">
+                            <button x-show="!card.is_invalidated"
+                                    @click="invalidateCard(card)"
+                                    class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded">作废</button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="cards.length === 0">
+                    <td colspan="10" class="px-4 py-8 text-center text-gray-400">暂无卡密缓存</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="mt-4 text-xs text-gray-400 space-y-1">
+        <div>· <span class="font-medium">active</span> = 缓存命中可用；<span class="font-medium">expired</span> = 卡本身或 max_age 到期；<span class="font-medium">invalidated</span> = 手动作废</div>
+        <div>· X988 卡密一旦 verify 即消耗，作废后**无法**重新激活，需要重新购买新卡密</div>
+        <div>· 黄色行表示 max_age 即将到期（≤1 天）</div>
+    </div>
+</div>
+
+<script>
+function cardsData() {
+    return {
+        cards: [],
+        includeInvalidated: false,
+        providerFilter: 'all',
+        providerCounts: {},  // {x988card: 3, efuncard: 1, nodecard: 0}
+        providerTabs: [
+            { value: 'all', label: '全部' },
+            { value: 'x988card', label: 'X988' },
+            { value: 'efuncard', label: 'Efuncard' },
+            { value: 'nodecard', label: 'NodeCard' },
+        ],
+
+        async fetchCards() {
+            // 拉当前 tab 的数据
+            const params = new URLSearchParams();
+            if (this.includeInvalidated) params.append('include_invalidated', 'true');
+            if (this.providerFilter !== 'all') params.append('card_provider', this.providerFilter);
+            const qs = params.toString();
+            this.cards = await fetchJson(`/api/cards${qs ? '?' + qs : ''}`);
+
+            // 顺便拉一次全量算每个 provider 的数量给 tab 显示
+            try {
+                const all = await fetchJson(this.includeInvalidated ? '/api/cards?include_invalidated=true' : '/api/cards');
+                const counts = {};
+                all.forEach(c => { counts[c.card_provider] = (counts[c.card_provider] || 0) + 1; });
+                this.providerCounts = counts;
+            } catch (_) {}
+        },
+
+        async invalidateCard(card) {
+            if (!confirm(`确认作废卡密 ${card.card_key.substring(0, 12)}... (last4=${card.last4}) 吗？\n\n注意：X988 卡密作废后无法恢复。`)) return;
+            const reason = prompt('作废原因（可选）:', 'manual');
+            await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: reason || 'manual' }),
+            });
+            showToast('卡密已作废', 'success');
+            await this.fetchCards();
+        },
+    }
+}
+</script>
+{% endblock %}

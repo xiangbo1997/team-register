@@ -8,6 +8,7 @@ import main
 from src.automation.models import AutomationState, MachineResult
 from src.config import AppConfig
 from src.models import CardInfo
+from src.providers.mail import MailServiceError
 
 
 class TestMainHelpers(unittest.TestCase):
@@ -474,9 +475,140 @@ class TestMainHelpers(unittest.TestCase):
         result = main._handle_email_verification_step(page, mail_api, "user@example.com")
 
         self.assertTrue(result)
-        code_input.fill.assert_any_call("")
-        code_input.fill.assert_any_call("123456")
+        # 新逻辑：直接 fill(mail_code, timeout=5000)，不再 click + fill("") 预清空
+        code_input.fill.assert_any_call("123456", timeout=5000)
         submit_button.click.assert_called_once_with(timeout=5000)
+        self.assertEqual(
+            mail_api.get_verification_code_via_browser.call_args.kwargs["wait_timeout"],
+            main._EMAIL_CODE_POLL_TIMEOUT_SECONDS,
+        )
+
+    @patch("main._click_first_visible")
+    @patch("main.human_delay")
+    def test_handle_email_verification_step_retries_after_resend(
+        self,
+        mock_human_delay,
+        mock_click_first_visible,
+    ):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+
+        code_input = MagicMock()
+        code_input.first = code_input
+        code_input.is_visible.return_value = True
+
+        page.locator.return_value = code_input
+
+        mail_api = MagicMock()
+        mail_api.get_verification_code_via_browser.side_effect = [None, "654321"]
+
+        def _click_side_effect(*args, **kwargs):
+            description = kwargs.get("description", "")
+            return "Resend" in description or "继续按钮" in description
+
+        mock_click_first_visible.side_effect = _click_side_effect
+
+        result = main._handle_email_verification_step(page, mail_api, "user@example.com")
+
+        self.assertTrue(result)
+        self.assertEqual(mail_api.get_verification_code_via_browser.call_count, 2)
+        # 新逻辑：直接 fill(mail_code, timeout=5000)，不再 fill("") 预清空
+        code_input.fill.assert_any_call("654321", timeout=5000)
+        descriptions = [call.kwargs.get("description", "") for call in mock_click_first_visible.call_args_list]
+        self.assertTrue(any("Resend email 按钮" in item for item in descriptions))
+        for call in mail_api.get_verification_code_via_browser.call_args_list:
+            self.assertEqual(call.kwargs["wait_timeout"], main._EMAIL_CODE_POLL_TIMEOUT_SECONDS)
+
+    @patch("main.human_delay")
+    @patch("main._click_first_visible", return_value=False)
+    def test_handle_email_verification_step_uses_short_polling_and_quick_manual_handoff(
+        self,
+        mock_click_first_visible,
+        mock_human_delay,
+    ):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.locator.return_value = MagicMock(first=MagicMock())
+
+        delay_calls = {"count": 0}
+
+        def _delay_side_effect(*_args, **_kwargs):
+            delay_calls["count"] += 1
+            if delay_calls["count"] >= 5:
+                page.url = "https://auth.openai.com/about-you"
+
+        mock_human_delay.side_effect = _delay_side_effect
+
+        mail_api = MagicMock()
+        mail_api.get_verification_code_via_browser.return_value = None
+
+        result = main._handle_email_verification_step(page, mail_api, "user@example.com")
+
+        self.assertTrue(result)
+        self.assertEqual(mail_api.get_verification_code_via_browser.call_count, main._EMAIL_CODE_MAX_POLL_ATTEMPTS)
+        for call in mail_api.get_verification_code_via_browser.call_args_list:
+            self.assertEqual(call.kwargs["wait_timeout"], main._EMAIL_CODE_POLL_TIMEOUT_SECONDS)
+
+    @patch("main._emit_task_event")
+    def test_handle_email_verification_step_reraises_mail_service_error(self, mock_emit_task_event):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/email-verification"
+        page.locator.return_value = MagicMock(first=MagicMock())
+
+        mail_api = MagicMock()
+        mail_api.get_verification_code_via_browser.side_effect = MailServiceError("provider failed")
+
+        with self.assertRaises(MailServiceError):
+            main._handle_email_verification_step(page, mail_api, "user@example.com")
+        mail_api.get_verification_code_via_browser.assert_called_once()
+        self.assertTrue(
+            any(
+                call.kwargs.get("payload", {}).get("action_id") == "verify_email"
+                and call.kwargs.get("payload", {}).get("result") == "failed"
+                and "provider failed" in call.kwargs.get("payload", {}).get("error", "")
+                for call in mock_emit_task_event.call_args_list
+            )
+        )
+
+    @patch("main.human_delay")
+    @patch("main.human_typing")
+    def test_submit_password_ignores_detach_when_page_already_verification(
+        self,
+        mock_human_typing,
+        mock_human_delay,
+    ):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/create-account/password"
+
+        def _typing_side_effect(*_args, **_kwargs):
+            page.url = "https://auth.openai.com/email-verification"
+            raise RuntimeError("element was detached from the DOM")
+
+        mock_human_typing.side_effect = _typing_side_effect
+
+        main._submit_password(page, "Password123!")
+
+        page.keyboard.press.assert_not_called()
+
+    @patch("main.human_delay")
+    @patch("main.human_typing")
+    def test_submit_password_ignores_detach_when_input_disappears_before_url_changes(
+        self,
+        mock_human_typing,
+        mock_human_delay,
+    ):
+        page = MagicMock()
+        page.url = "https://auth.openai.com/create-account/password"
+        password_input = MagicMock()
+        password_input.first = password_input
+        password_input.is_visible.return_value = False
+        page.locator.return_value = password_input
+
+        mock_human_typing.side_effect = RuntimeError("element was detached from the DOM")
+
+        main._submit_password(page, "Password123!")
+
+        page.keyboard.press.assert_not_called()
 
     @patch("main.human_delay")
     @patch("main.random.choices")
@@ -531,7 +663,7 @@ class TestMainHelpers(unittest.TestCase):
 class TestMainOrchestration(unittest.TestCase):
     """main() 编排测试"""
 
-    @patch("main.EfunCard")
+    @patch("src.providers.card.EfunCardProvider")
     @patch("main.SMSManager")
     @patch("main.MailManager")
     def test_build_runtime_clients(self, mock_mail, mock_sms, mock_card):
@@ -539,7 +671,10 @@ class TestMainOrchestration(unittest.TestCase):
             efuncard_token="card-token",
             sms_api_key="sms-key",
             sms_country="12",
-            mail_domain="https://mail.test",
+            email_provider_base_url="http://127.0.0.1:8000",
+            email_provider_api_key="test-api-key",
+            email_provider_name="applemail",
+            known_mail_accounts_json='{"applemail":[{"email":"known@example.com","client_id":"cid-known","refresh_token":"rt-known"}]}',
             mail_refresh_token="refresh-token",
             mail_client_id="client-id",
             proxy="socks5h://127.0.0.1:7890",
@@ -547,6 +682,7 @@ class TestMainOrchestration(unittest.TestCase):
 
         card_api, sms_api, mail_api = main._build_runtime_clients(config)
 
+        # 现在 _build_card_client 走 EfunCardProvider 包装层（带 audit 写入）
         self.assertIs(card_api, mock_card.return_value)
         self.assertIs(sms_api, mock_sms.return_value)
         self.assertIs(mail_api, mock_mail.return_value)
@@ -557,10 +693,23 @@ class TestMainOrchestration(unittest.TestCase):
             proxy="socks5h://127.0.0.1:7890",
         )
         mock_mail.assert_called_once_with(
-            base_url="https://mail.test",
+            base_url="http://127.0.0.1:8000",
+            api_key="test-api-key",
+            provider_name="applemail",
+            known_accounts={
+                "applemail": [
+                    {
+                        "email": "known@example.com",
+                        "client_id": "cid-known",
+                        "refresh_token": "rt-known",
+                    }
+                ]
+            },
             refresh_token="refresh-token",
             client_id="client-id",
             proxy="socks5h://127.0.0.1:7890",
+            preferred_session_mode="",
+            config_name="",
         )
 
     @patch("main.EfunCard")
@@ -571,9 +720,9 @@ class TestMainOrchestration(unittest.TestCase):
             efuncard_token="",
             sms_api_key="sms-key",
             sms_country="12",
-            mail_domain="https://mail.test",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_base_url="http://127.0.0.1:8000",
+            email_provider_api_key="test-key",
+            email_provider_name="luckmail",
             proxy="socks5h://127.0.0.1:7890",
         )
 
@@ -583,6 +732,17 @@ class TestMainOrchestration(unittest.TestCase):
         self.assertIs(sms_api, mock_sms.return_value)
         self.assertIs(mail_api, mock_mail.return_value)
         mock_card.assert_not_called()
+        mock_mail.assert_called_once_with(
+            base_url="http://127.0.0.1:8000",
+            api_key="test-key",
+            provider_name="luckmail",
+            known_accounts={},
+            refresh_token="",
+            client_id="",
+            proxy="socks5h://127.0.0.1:7890",
+            preferred_session_mode="",
+            config_name="",
+        )
 
     @patch("main.run_task")
     @patch("main._build_runtime_clients")
@@ -592,8 +752,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="",
             task_email="",
             task_password="",
@@ -614,8 +773,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="cdk-001",
             task_email="user@example.com",
@@ -646,8 +804,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="",
             task_email="user@example.com",
@@ -663,6 +820,41 @@ class TestMainOrchestration(unittest.TestCase):
 
         mock_build_clients.assert_called_once_with(config)
         mock_run_task.assert_called_once()
+
+    @patch("main.get_browser_ws")
+    @patch("main.run_preflight_checks")
+    def test_run_task_stops_before_browser_when_mail_runtime_preflight_fails(
+        self,
+        mock_preflight,
+        mock_get_browser_ws,
+    ):
+        config = AppConfig(
+            ads_api="http://mock-ads",
+            ads_api_key="ads-key",
+            sms_api_key="sms-key",
+            email_provider_api_key="test-api-key",
+            task_ads_id="ads-001",
+            task_email="user@example.com",
+            task_password="Password123!",
+            enable_payment_flow=False,
+        )
+        mail_api = MagicMock()
+        mail_api.ensure_runtime_ready.side_effect = MailServiceError("old runtime")
+
+        main.run_task(
+            config=config,
+            card_api=MagicMock(),
+            sms_api=MagicMock(),
+            mail_api=mail_api,
+            ads_id="ads-001",
+            cdk="",
+            email="user@example.com",
+            password="Password123!",
+        )
+
+        mail_api.ensure_runtime_ready.assert_called_once_with("user@example.com")
+        mock_preflight.assert_not_called()
+        mock_get_browser_ws.assert_not_called()
 
     @patch("main._complete_payment_flow")
     @patch("main.export_success")
@@ -688,8 +880,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="cdk-001",
             task_email="user@example.com",
@@ -749,6 +940,153 @@ class TestMainOrchestration(unittest.TestCase):
     @patch("main.run_preflight_checks")
     @patch("main.get_browser_ws")
     @patch("main.sync_playwright")
+    def test_run_task_resume_mode_reuses_existing_page_for_registration(
+        self,
+        mock_sync_playwright,
+        mock_get_browser_ws,
+        mock_preflight,
+        mock_artifacts,
+        mock_machine_cls,
+        mock_extract_session,
+        mock_export_success,
+        mock_payment,
+    ):
+        config = AppConfig(
+            ads_api="http://mock-ads",
+            ads_api_key="ads-key",
+            efuncard_token="card-token",
+            sms_api_key="sms-key",
+            email_provider_api_key="test-api-key",
+            task_ads_id="ads-001",
+            task_cdk="cdk-001",
+            task_email="user@example.com",
+            task_password="Password123!",
+            enable_payment_flow=False,
+            run_artifacts_dir="artifacts/test-runs",
+        )
+
+        mock_get_browser_ws.return_value = "ws://127.0.0.1:9222/devtools/browser/abc"
+        mock_extract_session.return_value = ("access_123", "refresh_456")
+        mock_machine = mock_machine_cls.return_value
+        mock_machine.run.return_value = MachineResult(success=True, final_state=AutomationState.HOME)
+
+        page = MagicMock()
+        page.evaluate.return_value = "Mozilla/5.0"
+        context = MagicMock()
+        context.cookies.return_value = [
+            {"name": "__Secure-next-auth.session-token", "value": "refresh_456", "domain": "chatgpt.com"}
+        ]
+        browser = MagicMock()
+        browser.contexts = [context]
+        chromium = MagicMock()
+        chromium.connect_over_cdp.return_value = browser
+
+        playwright_manager = MagicMock()
+        playwright_manager.__enter__.return_value = MagicMock(chromium=chromium)
+        playwright_manager.__exit__.return_value = False
+        mock_sync_playwright.return_value = playwright_manager
+
+        with patch("main._prepare_retry_resume_page", return_value=page) as mock_resume_page, patch(
+            "main._prepare_clean_start_page"
+        ) as mock_clean_page, patch("main._build_llm_provider", return_value=None):
+            main.run_task(
+                config=config,
+                card_api=MagicMock(),
+                sms_api=MagicMock(),
+                mail_api=MagicMock(),
+                ads_id="ads-001",
+                cdk="cdk-001",
+                email="user@example.com",
+                password="Password123!",
+                retry_mode="resume",
+                start_phase="registration",
+            )
+
+        mock_resume_page.assert_called_once_with(context)
+        mock_clean_page.assert_not_called()
+        mock_machine.run.assert_called_once()
+        mock_export_success.assert_called_once()
+
+    @patch("main._complete_payment_flow")
+    @patch("main.export_success")
+    @patch("main.extract_session_tokens_with_http")
+    @patch("main.RegistrationStateMachine")
+    @patch("main.ArtifactRecorder")
+    @patch("main.run_preflight_checks")
+    @patch("main.get_browser_ws")
+    @patch("main.sync_playwright")
+    def test_run_task_start_phase_token_extraction_skips_registration_state_machine(
+        self,
+        mock_sync_playwright,
+        mock_get_browser_ws,
+        mock_preflight,
+        mock_artifacts,
+        mock_machine_cls,
+        mock_extract_session,
+        mock_export_success,
+        mock_payment,
+    ):
+        config = AppConfig(
+            ads_api="http://mock-ads",
+            ads_api_key="ads-key",
+            efuncard_token="card-token",
+            sms_api_key="sms-key",
+            email_provider_api_key="test-api-key",
+            task_ads_id="ads-001",
+            task_cdk="cdk-001",
+            task_email="user@example.com",
+            task_password="Password123!",
+            enable_payment_flow=False,
+            run_artifacts_dir="artifacts/test-runs",
+        )
+
+        mock_get_browser_ws.return_value = "ws://127.0.0.1:9222/devtools/browser/abc"
+        mock_extract_session.return_value = ("access_123", "refresh_456")
+
+        page = MagicMock()
+        page.evaluate.return_value = "Mozilla/5.0"
+        context = MagicMock()
+        context.cookies.return_value = [
+            {"name": "__Secure-next-auth.session-token", "value": "refresh_456", "domain": "chatgpt.com"}
+        ]
+        browser = MagicMock()
+        browser.contexts = [context]
+        chromium = MagicMock()
+        chromium.connect_over_cdp.return_value = browser
+
+        playwright_manager = MagicMock()
+        playwright_manager.__enter__.return_value = MagicMock(chromium=chromium)
+        playwright_manager.__exit__.return_value = False
+        mock_sync_playwright.return_value = playwright_manager
+
+        with patch("main._prepare_retry_resume_page", return_value=page), patch(
+            "main._build_llm_provider", return_value=None
+        ):
+            main.run_task(
+                config=config,
+                card_api=MagicMock(),
+                sms_api=MagicMock(),
+                mail_api=MagicMock(),
+                ads_id="ads-001",
+                cdk="cdk-001",
+                email="user@example.com",
+                password="Password123!",
+                retry_mode="resume",
+                start_phase="token_extraction",
+            )
+
+        mock_machine_cls.return_value.run.assert_not_called()
+        mock_extract_session.assert_called_once()
+        mock_export_success.assert_called_once()
+
+    @patch("main._complete_payment_flow")
+    @patch("main.export_success")
+    @patch("main.extract_session_tokens_with_http")
+    @patch("main.RegistrationStateMachine")
+    @patch("main.ArtifactRecorder")
+    @patch("main.run_preflight_checks")
+    @patch("main.get_browser_ws")
+    @patch("main.sync_playwright")
     def test_run_task_falls_back_to_direct_browser_start_when_preflight_fails(
         self,
         mock_sync_playwright,
@@ -765,8 +1103,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="cdk-001",
             task_email="user@example.com",
@@ -837,8 +1174,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="cdk-001",
             task_email="user@example.com",
@@ -924,8 +1260,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="",
             task_email="user@example.com",
@@ -1003,8 +1338,7 @@ class TestMainOrchestration(unittest.TestCase):
             ads_api_key="ads-key",
             efuncard_token="card-token",
             sms_api_key="sms-key",
-            mail_refresh_token="refresh-token",
-            mail_client_id="client-id",
+            email_provider_api_key="test-api-key",
             task_ads_id="ads-001",
             task_cdk="cdk-001",
             task_email="user@example.com",

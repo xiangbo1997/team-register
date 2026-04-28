@@ -7,13 +7,15 @@ Efuncard 虚拟信用卡支付模块
 
 import time
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote
 
 import requests
 
-from src.models import CardInfo
+from src.fintech.bin_lookup import lookup_bin_country
+from src.models import BillingInfo, CardInfo
 from src.utils import human_delay
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,23 @@ class EfunCard:
         self.last_query_meta: dict[str, object] = {}
         self.last_redeem_meta: dict[str, object] = {}
         self.last_lookup_meta: dict[str, object] = {}
+        self.last_cancel_meta: dict[str, object] = {}
+        self.last_billing_meta: dict[str, object] = {}
+
+    @staticmethod
+    def _attach_bin_country(card: CardInfo) -> CardInfo:
+        """
+        为新构造的 CardInfo 填充 bin_country 字段。
+
+        用于 Stripe 身份一致性校验；失败时保持空串，由上游 coherence
+        校验视为"未知字段"并阻断。
+        """
+        if not card.card_number:
+            return card
+        bin_country = lookup_bin_country(card.card_number)
+        if bin_country == card.bin_country:
+            return card
+        return replace(card, bin_country=bin_country)
 
     @staticmethod
     def _parse_timestamp(value: object) -> Optional[datetime]:
@@ -160,7 +179,7 @@ class EfunCard:
                     "valid_until": valid_until.isoformat() if valid_until else "",
                 }
                 logger.info("查询到可复用卡片信息，跳过再次激活。")
-                return card
+                return self._attach_bin_country(card)
 
             message = str(data.get("message") or data.get("error") or "未知错误")
             normalized_message = " ".join(message.lower().split())
@@ -219,7 +238,7 @@ class EfunCard:
                         "data_keys": sorted(list((data.get("data", {}) or {}).keys())),
                     }
                     logger.info("CDK 激活成功，获取卡片信息。")
-                    return card
+                    return self._attach_bin_country(card)
                 self.last_redeem_meta = {
                     "status": "shape_mismatch",
                     "data_keys": sorted(list((data.get("data", {}) or {}).keys())),
@@ -299,6 +318,93 @@ class EfunCard:
             "query_meta": query_meta,
             "redeem_meta": dict(self.last_redeem_meta),
         }
+        return None
+
+    def cancel(self, cdk: str) -> bool:
+        """
+        通过 CDK 销卡。
+
+        Args:
+            cdk: 激活码
+
+        Returns:
+            是否成功
+        """
+        logger.info("正在销卡 (CDK): %s", cdk)
+        self.last_cancel_meta = {}
+        try:
+            resp = requests.post(
+                f"{self._base_url}/cards/cancel",
+                json={"code": cdk},
+                headers=self._headers,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+            if data.get("success"):
+                self.last_cancel_meta = {
+                    "status": "success",
+                    "data": data.get("data", {}),
+                }
+                logger.info("销卡成功: %s", cdk)
+                return True
+            
+            self.last_cancel_meta = {
+                "status": "api_failure",
+                "message": data.get("message", "未知错误"),
+            }
+            logger.error("销卡失败: %s", data.get("message", "未知错误"))
+        except Exception as exc:
+            self.last_cancel_meta = {
+                "status": "exception",
+                "message": str(exc),
+            }
+            logger.error("销卡异常: %s", exc)
+        return False
+
+    def billing(self, cdk: str) -> Optional[BillingInfo]:
+        """
+        查询卡片账单信息。
+
+        Args:
+            cdk: 激活码
+
+        Returns:
+            BillingInfo 实例或 None
+        """
+        logger.info("正在查询账单 (CDK): %s", cdk)
+        self.last_billing_meta = {}
+        encoded_cdk = quote(cdk, safe="")
+        try:
+            resp = requests.get(
+                f"{self._base_url}/billing/{encoded_cdk}",
+                headers=self._headers,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            data = resp.json()
+            if data.get("success"):
+                billing_info = BillingInfo.from_api_response(data.get("data", {}))
+                if billing_info:
+                    self.last_billing_meta = {
+                        "status": "success",
+                    }
+                    return billing_info
+                
+                self.last_billing_meta = {
+                    "status": "shape_mismatch",
+                }
+                logger.error("账单查询成功但返回数据格式异常")
+            else:
+                self.last_billing_meta = {
+                    "status": "api_failure",
+                    "message": data.get("message", "未知错误"),
+                }
+                logger.error("账单查询失败: %s", data.get("message", "未知错误"))
+        except Exception as exc:
+            self.last_billing_meta = {
+                "status": "exception",
+                "message": str(exc),
+            }
+            logger.error("账单查询异常: %s", exc)
         return None
 
     def wait_for_3ds(self, cdk: str, timeout_sec: int = 300) -> Optional[str]:

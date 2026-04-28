@@ -46,28 +46,15 @@ class TestAppConfig(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_validate_missing_mail(self):
-        """邮件模块缺失 token/client_id 时应全部报告"""
+        """邮件模块缺失 api_key 时应报告"""
         cfg = AppConfig()
         missing = cfg.validate(required_modules=["mail"])
-        self.assertEqual(len(missing), 2)
-        self.assertIn("MAIL_REFRESH_TOKEN", missing)
-        self.assertIn("MAIL_CLIENT_ID", missing)
-
-    def test_validate_partial_mail(self):
-        """部分填写邮件配置应只报告缺失项"""
-        cfg = AppConfig(mail_refresh_token="rt_abc")
-        missing = cfg.validate(required_modules=["mail"])
         self.assertEqual(len(missing), 1)
-        self.assertNotIn("MAIL_REFRESH_TOKEN", missing)
-        self.assertIn("MAIL_CLIENT_ID", missing)
+        self.assertIn("EMAIL_PROVIDER_API_KEY", missing)
 
-    def test_validate_mail_domain_optional(self):
-        """MAIL_DOMAIN 为兼容字段，不应阻塞 mail 模块校验"""
-        cfg = AppConfig(
-            mail_refresh_token="rt_abc",
-            mail_client_id="cid_xyz",
-            mail_domain="",
-        )
+    def test_validate_mail_configured(self):
+        """邮件模块配置完整时无缺失"""
+        cfg = AppConfig(email_provider_api_key="test-key")
         missing = cfg.validate(required_modules=["mail"])
         self.assertEqual(missing, [])
 
@@ -113,6 +100,35 @@ class TestAppConfig(unittest.TestCase):
             },
         )
 
+    def test_parse_known_mail_accounts_normalizes_provider_and_email(self):
+        cfg = AppConfig(
+            known_mail_accounts_json=(
+                '{"AppleMail":[{"email":"Foo@Example.com","client_id":"cid","refresh_token":"rt"}]}'
+            )
+        )
+
+        self.assertEqual(
+            cfg.parse_known_mail_accounts(),
+            {
+                "applemail": [
+                    {
+                        "email": "foo@example.com",
+                        "client_id": "cid",
+                        "refresh_token": "rt",
+                    }
+                ]
+            },
+        )
+
+    def test_parse_known_mail_accounts_invalid_json_returns_empty(self):
+        cfg = AppConfig(known_mail_accounts_json="{oops")
+
+        with self.assertLogs("src.config", level="WARNING") as captured:
+            parsed = cfg.parse_known_mail_accounts()
+
+        self.assertEqual(parsed, {})
+        self.assertTrue(any("KNOWN_MAIL_ACCOUNTS_JSON" in item for item in captured.output))
+
 
 class TestLoadConfig(unittest.TestCase):
     """load_config 加载测试"""
@@ -123,6 +139,8 @@ class TestLoadConfig(unittest.TestCase):
         "EFUNCARD_TOKEN": "token456",
         "SMS_API_KEY": "sms789",
         "SMS_COUNTRY": "12",
+        "EMAIL_PROVIDER_NAME": "AppleMail",
+        "KNOWN_MAIL_ACCOUNTS_JSON": '{"applemail":[{"email":"known@example.com","client_id":"cid-known","refresh_token":"rt-known"}]}',
         "MAIL_DOMAIN": "https://mail.test",
         "MAIL_REFRESH_TOKEN": "rt_abc",
         "MAIL_CLIENT_ID": "cid_xyz",
@@ -151,6 +169,11 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg.efuncard_token, "token456")
         self.assertEqual(cfg.sms_api_key, "sms789")
         self.assertEqual(cfg.sms_country, "12")
+        self.assertEqual(cfg.email_provider_name, "applemail")
+        self.assertEqual(
+            cfg.parse_known_mail_accounts()["applemail"][0]["email"],
+            "known@example.com",
+        )
         self.assertEqual(cfg.mail_domain, "https://mail.test")
         self.assertTrue(cfg.llm_enabled)
         self.assertEqual(cfg.llm_base_url, "https://proxy.example.com/v1")
@@ -169,12 +192,29 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg.billing_state, "A")
         self.assertEqual(cfg.billing_postal_code, "03012")
 
+    def test_humanize_enabled_default_true(self):
+        """HUMANIZE_ENABLED 未设置时默认启用拟人化。"""
+        saved = os.environ.pop("HUMANIZE_ENABLED", None)
+        try:
+            cfg = load_config(dotenv_path="/tmp/__nonexistent__.env")
+            self.assertTrue(cfg.humanize_enabled)
+        finally:
+            if saved is not None:
+                os.environ["HUMANIZE_ENABLED"] = saved
+
+    @patch.dict(os.environ, {"HUMANIZE_ENABLED": "false"}, clear=False)
+    def test_humanize_enabled_env_override(self):
+        """HUMANIZE_ENABLED=false 应关闭拟人化。"""
+        cfg = load_config(dotenv_path="/tmp/__nonexistent__.env")
+        self.assertFalse(cfg.humanize_enabled)
+
     def test_load_defaults(self):
         """环境变量缺失时使用默认值"""
         # 临时移除可能残留的环境变量，避免 clear=True 影响系统变量
         keys_to_remove = [
             "ADS_API", "ADS_API_KEY", "EFUNCARD_TOKEN",
             "SMS_API_KEY", "SMS_COUNTRY",
+            "EMAIL_PROVIDER_NAME", "KNOWN_MAIL_ACCOUNTS_JSON",
             "MAIL_DOMAIN", "MAIL_REFRESH_TOKEN", "MAIL_CLIENT_ID",
             "TASK_ADS_ID", "TASK_CDK", "TASK_EMAIL", "TASK_PASSWORD"
         ]

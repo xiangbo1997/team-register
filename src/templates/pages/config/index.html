@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}{{ _('config.title') }} - Team Register{% endblock %}
+{% block nav_config %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}{{ _('config.title') }}{% endblock %}
+
+{% block content %}
+<div x-data="configData()" x-init="fetchConfig()">
+    <!-- Tabs -->
+    <div class="flex border-b mb-6">
+        <template x-for="t in tabs" :key="t.key">
+            <button @click="activeTab = t.key"
+                    class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition"
+                    :class="activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+                    x-text="i18n('config.tabs.' + t.key)"></button>
+        </template>
+    </div>
+
+    <!-- Config Form -->
+    <div class="bg-white rounded-lg shadow-sm border p-6">
+        <template x-for="t in tabs" :key="t.key">
+            <div x-show="activeTab === t.key">
+                <div class="space-y-4">
+                    <template x-for="field in t.fields" :key="field.key">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1" x-text="field.labelKey ? i18n(field.labelKey) : field.label"></label>
+                            <div class="flex gap-2">
+                                <input :type="field.secret ? 'password' : 'text'"
+                                       :value="config[field.key] || ''"
+                                       @input="setField(field.key, $event.target.value)"
+                                       class="flex-1 text-sm border rounded-md px-3 py-2 font-mono focus:ring-2 focus:ring-blue-500"
+                                       :placeholder="field.placeholder || ''">
+                                <button x-show="field.secret" @click="field.secret = !field.secret"
+                                        class="text-xs px-2 border rounded hover:bg-gray-50" x-text="i18n('common.show')"></button>
+                            </div>
+                            <p x-show="field.hint || field.hintKey" class="text-xs text-gray-400 mt-1" x-text="field.hintKey ? i18n(field.hintKey) : field.hint"></p>
+                            <!-- L2 覆盖提示（消除 Ambiguity #1）：当字段被 ProviderConfig profile 覆盖时显示 -->
+                            <p x-show="effective[field.key] && (effective[field.key].source || '').startsWith('provider_profile:')"
+                               class="mt-1 text-[11px] text-amber-600 bg-amber-50 px-2 py-1 rounded">
+                                ⚠ 当前值被 provider profile 覆盖：<span class="font-mono" x-text="(effective[field.key] || {}).source"></span>。在此处编辑可能不生效，需到 /providers 改对应档案。
+                            </p>
+                            <p x-show="effective[field.key] && (effective[field.key].source) === 'appsetting'"
+                               class="mt-1 text-[11px] text-blue-500">
+                                ℹ 此字段被运行时 AppSetting 覆盖（来自之前的 /config 修改），改动将立即生效。
+                            </p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <div class="flex items-center justify-between mt-6 pt-4 border-t">
+            <button @click="fetchConfig()" class="text-sm text-gray-500 hover:text-gray-700" x-text="i18n('config.reset')"></button>
+            <div class="flex gap-2">
+                <button @click="reloadBase()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('config.reload_env')"></button>
+                <button @click="saveConfig()" :disabled="!dirty"
+                        class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+                        x-text="i18n('config.save_changes')"></button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function configData() {
+    return {
+        config: {},
+        // effective[fieldKey] = {value, source}（来自 GET /api/config/effective）
+        // source 取值: 'appconfig' / 'appsetting' / 'provider_profile:type:name,...'
+        // 用于在每个字段下方显示 L2 覆盖警告（消除 Ambiguity #1）
+        effective: {},
+        dirty: false,
+        changes: {},
+        activeTab: 'basic',
+        tabs: [
+            { key: 'basic', fields: [
+                { key: 'ads_api', labelKey: 'config.fields.basic.ads_api', placeholder: 'http://local.adspower.net:50325' },
+                { key: 'ads_api_key', labelKey: 'config.fields.basic.ads_api_key', secret: true },
+                { key: 'proxy', label: '代理地址', placeholder: 'socks5://user:pass@host:port' },
+                { key: 'default_browser_provider', label: '默认浏览器 Provider', placeholder: 'browser-default' },
+                { key: 'default_card_provider', label: '默认卡 Provider', placeholder: 'card-default' },
+                { key: 'default_mail_provider', label: '默认邮件 Provider', placeholder: 'mail-default' },
+                { key: 'default_mail_account_id', label: '默认邮件账号 ID', placeholder: '可留空' },
+                { key: 'max_navigation_retries', labelKey: 'config.fields.basic.max_navigation_retries', placeholder: '2' },
+                { key: 'max_email_attempts', labelKey: 'config.fields.basic.max_email_attempts', placeholder: '3' },
+                { key: 'max_profile_reconnects', label: '最大 Profile 重连次数', placeholder: '2' },
+                { key: 'max_manual_handoffs', label: '最大人工接管次数', placeholder: '2' },
+                { key: 'clean_context_mode', label: '上下文清理模式', placeholder: 'reuse_and_clean', hint: 'reuse_and_clean / new_context' },
+                { key: 'run_artifacts_dir', label: '运行产物目录', placeholder: 'artifacts/runs' },
+                { key: 'trace_on_failure', label: '失败时录制 Trace', placeholder: 'true / false' },
+            ]},
+            { key: 'mail', fields: [
+                { key: 'email_provider_base_url', label: '邮件服务地址', placeholder: 'http://127.0.0.1:8000' },
+                { key: 'email_provider_api_key', label: '邮件服务 API Key', secret: true },
+            ]},
+            { key: 'card', fields: [
+                { key: 'card_provider', labelKey: 'config.fields.card.card_provider', hintKey: 'config.hints.card_provider', placeholder: 'efuncard / nodecard / x988card' },
+                { key: 'efuncard_token', labelKey: 'config.fields.card.efuncard_token', secret: true },
+                { key: 'nodecard_api_url', label: 'NodeCard API URL', placeholder: 'https://api.node-card.com' },
+                { key: 'nodecard_merchant_id', label: 'NodeCard Merchant ID', placeholder: '0' },
+                { key: 'nodecard_platform_id', label: 'NodeCard Platform ID', placeholder: '0' },
+                { key: 'x988card_api_base', label: 'X988Card API Base', placeholder: 'https://cards.779.chat', hint: '当 card_provider=x988card 时使用；卡商域名 cards.779.chat / card.988.chat' },
+                { key: 'x988card_request_timeout', label: 'X988Card 请求超时 (秒)', placeholder: '15' },
+            ]},
+            { key: 'sms', fields: [
+                { key: 'sms_api_key', labelKey: 'config.fields.sms.sms_api_key', secret: true },
+                { key: 'sms_country', labelKey: 'config.fields.sms.sms_country', placeholder: '6' },
+            ]},
+            { key: 'llm', fields: [
+                { key: 'llm_enabled', labelKey: 'config.fields.llm.llm_enabled', placeholder: 'true / false' },
+                { key: 'llm_base_url', labelKey: 'config.fields.llm.llm_base_url' },
+                { key: 'llm_api_key', labelKey: 'config.fields.llm.llm_api_key', secret: true },
+                { key: 'llm_model', labelKey: 'config.fields.llm.llm_model', placeholder: 'gpt-4o-mini' },
+                { key: 'llm_timeout_ms', label: 'LLM 超时 (ms)', placeholder: '8000' },
+                { key: 'llm_confidence_threshold', label: 'LLM 置信度阈值', placeholder: '0.6' },
+                { key: 'llm_max_consecutive_uncertain', label: 'LLM 最大连续不确定次数', placeholder: '2' },
+            ]},
+            { key: 'payment', fields: [
+                { key: 'enable_payment_flow', labelKey: 'config.fields.payment.enable_payment_flow', placeholder: 'true / false' },
+                { key: 'enable_card_warmup', label: '启用绑卡前预热 (Card Warm-up)', placeholder: 'true / false', hint: '开启后将先使用垫脚石账号触发 3DS 并拦截报错以提升主账号成功率。号池在 /mail-accounts 管理（role=pro_warmup）' },
+                { key: 'warmup_max_retries', label: '预热最大重试次数', placeholder: '2' },
+                { key: 'payment_plan', labelKey: 'config.fields.payment.payment_plan', hintKey: 'config.hints.payment_plan' },
+                { key: 'payment_link_only', labelKey: 'config.fields.payment.payment_link_only', placeholder: 'true / false', hintKey: 'config.hints.payment_link_only' },
+                { key: 'payment_link_return_mode', label: '支付链接返回模式', placeholder: 'long', hint: 'long / short' },
+                { key: 'aimizy_country', label: 'Aimizy 国家', placeholder: 'SG' },
+                { key: 'aimizy_currency', label: 'Aimizy 货币', placeholder: 'SGD' },
+                { key: 'billing_country', label: '账单国家', placeholder: 'US' },
+                { key: 'billing_line1', label: '账单地址行1', placeholder: '350 5th Ave' },
+                { key: 'billing_line2', label: '账单地址行2', placeholder: '' },
+                { key: 'billing_city', label: '账单城市', placeholder: 'New York' },
+                { key: 'billing_state', label: '账单州', placeholder: 'NY' },
+                { key: 'billing_postal_code', label: '账单邮编', placeholder: '10118' },
+            ]},
+        ],
+
+        async fetchConfig() {
+            this.config = await fetchJson('/api/config');
+            this.dirty = false;
+            this.changes = {};
+            // 异步拉 effective source（admin only），失败不影响主流程
+            try {
+                const data = await fetchJson('/api/config/effective');
+                this.effective = (data && data.fields) || {};
+            } catch (err) {
+                this.effective = {};
+            }
+        },
+
+        setField(key, value) {
+            this.config[key] = value;
+            this.changes[key] = value;
+            this.dirty = true;
+        },
+
+        async saveConfig() {
+            try {
+                await fetchJson('/api/config', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ updates: this.changes })
+                });
+                showToast(i18n('config.saved'), 'success');
+                this.dirty = false;
+                this.changes = {};
+            } catch (_) {
+                showToast(i18n('config.save_failed'), 'error');
+            }
+        },
+
+        async reloadBase() {
+            try {
+                await fetchJson('/api/config/reload', { method: 'POST' });
+                await this.fetchConfig();
+                showToast(i18n('config.reloaded'), 'success');
+            } catch (error) {
+                showToast(error.message || i18n('config.save_failed'), 'error');
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

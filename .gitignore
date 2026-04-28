@@ -5,6 +5,9 @@
 .venv/
 codex-bootstrap/
 .env
+.env.bak-*
+.env.bak
+.tmp-remote/
 __pycache__/
 .pytest_cache/
 artifacts/
@@ -14,3 +17,13 @@ error_debug.png
 *.pyc
 config.json
 log.txt
+# 运行时数据（含加密敏感字段）
+team_register.db
+team_register.db-journal
+team_register.db-shm
+team_register.db-wal
+# 一次性生成的 HTML / 调试文件
+*.html
+!docs/**/*.html
+!src/templates/**/*.html
+!src/static/**/*.html

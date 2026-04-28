@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}{{ _('tasks.detail.title') }} - Team Register{% endblock %}
+{% block nav_tasks %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}{{ _('tasks.detail.title') }}{% endblock %}
+
+{% block content %}
+{% set can_manage_tasks = current_user and current_user.role in ('operator', 'admin') %}
+<div x-data="taskDetailData()" x-init="fetchTask()">
+    <!-- Back + Actions -->
+    <div class="flex items-center justify-between mb-4">
+        <a href="/tasks" class="text-sm text-gray-500 hover:text-gray-700">&larr; <span x-text="i18n('tasks.detail.back')"></span></a>
+        {% if can_manage_tasks %}
+        <div class="flex gap-2">
+            <button x-show="task.status === 'failed' || task.status === 'cancelled'"
+                    @click="retryTask('resume')" :disabled="actionBusy"
+                    class="text-sm px-3 py-1.5 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.detail.retry_resume')"></button>
+            <button x-show="task.status === 'failed' || task.status === 'cancelled'"
+                    @click="retryTask('restart')" :disabled="actionBusy"
+                    class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.detail.retry_restart')"></button>
+            <button x-show="task.status === 'pending' || task.status === 'running'"
+                    @click="cancelTask()" :disabled="actionBusy"
+                    class="text-sm px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.detail.cancel')"></button>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Info Card -->
+    <div class="bg-white rounded-lg shadow-sm border p-6 mb-6">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.id')"></p>
+                <p class="font-mono text-xs mt-1" x-text="task.id || '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.email')"></p>
+                <p class="font-mono mt-1" x-text="task.email || '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.status')"></p>
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium mt-1 inline-block"
+                      :class="{
+                          'bg-green-100 text-green-700': task.status === 'success',
+                          'bg-red-100 text-red-700': task.status === 'failed',
+                          'bg-blue-100 text-blue-700': task.status === 'running',
+                          'bg-yellow-100 text-yellow-700': task.status === 'pending',
+                          'bg-gray-100 text-gray-700': task.status === 'cancelled'
+                      }"
+                      x-text="task.status ? translateEnum('status', task.status, task.status) : '-'"></span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.phase')"></p>
+                <p class="mt-1" x-text="task.phase ? translateEnum('phase', task.phase, task.phase) : '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.profile_id')"></p>
+                <p class="font-mono text-xs mt-1" x-text="task.profile_id || '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.card_key')"></p>
+                <p class="font-mono text-xs mt-1" x-text="task.card_key || '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.created')"></p>
+                <p class="mt-1 text-xs" x-text="task.created_at ? new Date(task.created_at).toLocaleString(window._locale) : '-'"></p>
+            </div>
+            <div>
+                <p class="text-xs text-gray-400 uppercase" x-text="i18n('tasks.detail.fields.updated')"></p>
+                <p class="mt-1 text-xs" x-text="task.updated_at ? new Date(task.updated_at).toLocaleString(window._locale) : '-'"></p>
+            </div>
+        </div>
+        <div x-show="task.error_reason" class="mt-4 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">
+            <p class="font-medium text-xs uppercase mb-1" x-text="i18n('tasks.detail.error_section')"></p>
+            <p x-text="translateEnum('errors', task.error_reason, task.error_reason)"></p>
+        </div>
+    </div>
+
+    <!-- State Progress -->
+    <div class="bg-white rounded-lg shadow-sm border p-4 mb-6" x-show="task.phase === 'registration' || task.status === 'running'">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3" x-text="i18n('tasks.detail.state_progress')"></h3>
+        <div class="flex items-center gap-1 text-xs flex-wrap">
+            <template x-for="(s, idx) in states" :key="s">
+                <div class="flex items-center gap-1">
+                    <span class="w-6 h-6 rounded-full flex items-center justify-center text-[10px]"
+                          :class="stateClass(s, idx)">
+                        <span x-text="stateIcon(s, idx)"></span>
+                    </span>
+                    <span class="hidden sm:inline text-xs" :class="stateLabelClass(s, idx)" x-text="translateEnum('states', s, s)"></span>
+                    <div x-show="idx < states.length - 1" class="w-4 h-px"
+                         :class="idx < currentStateIdx ? 'bg-green-400' : 'bg-gray-200'"></div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Live Events (SSE) -->
+    <div class="bg-white rounded-lg shadow-sm border mb-6">
+        <div class="px-4 py-3 border-b flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-gray-700" x-text="i18n('tasks.detail.live_events')"></h3>
+            <div class="flex items-center gap-2">
+                <span x-show="sseConnected" class="w-2 h-2 rounded-full bg-green-500 pulse-dot"></span>
+                <span x-show="!sseConnected" class="w-2 h-2 rounded-full bg-gray-300"></span>
+                <button @click="clearEvents()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50"
+                        x-text="i18n('tasks.detail.clear_events')"></button>
+                <button @click="toggleSSE()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50"
+                        x-text="sseConnected ? i18n('tasks.detail.disconnect') : i18n('tasks.detail.connect')"></button>
+            </div>
+        </div>
+        <div class="max-h-80 overflow-y-auto p-4 font-mono text-xs space-y-1" id="event-log">
+            <template x-for="e in events" :key="e.id || e.timestamp">
+                <div class="flex gap-2 py-0.5"
+                     :class="{'text-red-600': e.event_type === 'error', 'text-green-600': e.event_type === 'phase_complete', 'text-blue-600': e.event_type === 'state_change', 'text-gray-600': !['error','phase_complete','state_change'].includes(e.event_type)}">
+                    <span class="text-gray-400 shrink-0" x-text="new Date(e.timestamp).toLocaleTimeString(window._locale)"></span>
+                    <span class="font-medium shrink-0" x-text="'[' + translateEnum('tasks.detail.event_types', e.event_type, e.event_type) + ']'"></span>
+                    <span x-text="e.state ? translateEnum('states', e.state, e.state) : ''"></span>
+                    <span class="text-gray-400 truncate" x-text="e.payload ? (e.payload.message || JSON.stringify(e.payload)) : ''"></span>
+                </div>
+            </template>
+            <div x-show="events.length === 0" class="text-gray-400 text-center py-4" x-text="i18n('tasks.detail.no_events')"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+function taskDetailData() {
+    const taskId = window.location.pathname.split('/').pop();
+    return {
+        task: {},
+        events: [],
+        sseConnected: false,
+        eventSource: null,
+        manualDisconnect: false,
+        reconnectTimer: null,
+        actionBusy: false,
+        states: ['ENTRY', 'AUTH', 'VERIFY_EMAIL', 'ABOUT_YOU', 'HOME', 'PHONE', 'PAYMENT'],
+        currentStateIdx: -1,
+
+        normalizeEvent(event) {
+            const payload = event && typeof event.payload === 'object' && event.payload !== null ? event.payload : {};
+            return {
+                id: event?.id ?? null,
+                event_type: event?.event_type || 'log',
+                state: event?.state || '',
+                payload,
+                timestamp: event?.timestamp || new Date().toISOString(),
+            };
+        },
+
+        sortEvents(events) {
+            return [...events].sort((a, b) => {
+                const left = Date.parse(a?.timestamp || '') || 0;
+                const right = Date.parse(b?.timestamp || '') || 0;
+                return left - right;
+            });
+        },
+
+        appendEvent(event) {
+            const normalized = this.normalizeEvent(event);
+            const duplicated = this.events.some((item) => {
+                if (normalized.id != null && item.id != null) {
+                    return item.id === normalized.id;
+                }
+                return (
+                    item.timestamp === normalized.timestamp &&
+                    item.event_type === normalized.event_type &&
+                    item.state === normalized.state &&
+                    JSON.stringify(item.payload || {}) === JSON.stringify(normalized.payload || {})
+                );
+            });
+            if (duplicated) return;
+
+            this.events = this.sortEvents([...this.events, normalized]);
+            if (normalized.payload?.phase) {
+                this.task.phase = normalized.payload.phase;
+            }
+            this.updateStateIdx();
+            this.$nextTick(() => {
+                const log = document.getElementById('event-log');
+                if (log) log.scrollTop = log.scrollHeight;
+            });
+        },
+
+        async fetchTask() {
+            const res = await fetchJson(`/api/tasks/${taskId}`);
+            this.task = res;
+            this.events = this.sortEvents((res.events || []).map(item => this.normalizeEvent(item)));
+            this.updateStateIdx();
+            if ((this.task.status === 'running' || this.task.status === 'pending') && !this.manualDisconnect) {
+                this.connectSSE();
+                return;
+            }
+            if (this.task.status !== 'running' && this.task.status !== 'pending') {
+                clearTimeout(this.reconnectTimer);
+                this.eventSource?.close();
+                this.eventSource = null;
+                this.sseConnected = false;
+            }
+        },
+
+        updateStateIdx() {
+            const stateEvents = this.events.filter(e => e.state);
+            const lastStateEvent = stateEvents.length > 0 ? stateEvents[stateEvents.length - 1] : null;
+            if (lastStateEvent) {
+                this.currentStateIdx = this.states.indexOf(lastStateEvent.state);
+            } else {
+                this.currentStateIdx = -1;
+            }
+        },
+
+        stateClass(s, idx) {
+            if (idx < this.currentStateIdx) return 'bg-green-500 text-white';
+            if (idx === this.currentStateIdx) return 'bg-blue-500 text-white pulse-dot';
+            return 'bg-gray-200 text-gray-400';
+        },
+        stateIcon(s, idx) {
+            if (idx < this.currentStateIdx) return '\u2713';
+            if (idx === this.currentStateIdx) return '\u25CF';
+            return '\u25CB';
+        },
+        stateLabelClass(s, idx) {
+            if (idx < this.currentStateIdx) return 'text-green-700 font-medium';
+            if (idx === this.currentStateIdx) return 'text-blue-700 font-semibold';
+            return 'text-gray-400';
+        },
+
+        connectSSE() {
+            clearTimeout(this.reconnectTimer);
+            if (this.eventSource) this.eventSource.close();
+            const source = new EventSource(`/api/tasks/${taskId}/events`);
+            this.eventSource = source;
+            this.sseConnected = true;
+            source.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    this.appendEvent(data);
+                    if (data?.event_type === 'orchestrator_complete') {
+                        setTimeout(() => this.fetchTask(), 500);
+                    }
+                } catch {}
+            };
+            source.onerror = () => {
+                this.sseConnected = false;
+                source.close();
+                if (this.eventSource === source) {
+                    this.eventSource = null;
+                }
+                if (!this.manualDisconnect && this.task.status === 'running') {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = setTimeout(() => this.connectSSE(), 3000);
+                }
+            };
+        },
+
+        toggleSSE() {
+            if (this.sseConnected) {
+                this.manualDisconnect = true;
+                clearTimeout(this.reconnectTimer);
+                this.eventSource?.close();
+                this.eventSource = null;
+                this.sseConnected = false;
+            } else {
+                this.manualDisconnect = false;
+                this.connectSSE();
+            }
+        },
+
+        async retryTask(mode = 'restart') {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${taskId}/retry`, {
+                    method: 'POST',
+                    body: { mode },
+                });
+                await this.fetchTask();
+                showToast(
+                    mode === 'resume'
+                        ? i18n('tasks.detail.retry_resume_submitted')
+                        : i18n('tasks.detail.retry_restart_submitted'),
+                    'success'
+                );
+            } catch (error) {
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.actionBusy = false;
+            }
+        },
+        async cancelTask() {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+                await this.fetchTask();
+                showToast(i18n('tasks.detail.cancel_submitted'), 'success');
+            } catch (error) {
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.actionBusy = false;
+            }
+        },
+        async clearEvents() {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${taskId}/events/clear`, { method: 'POST' });
+                this.events = [];
+                this.updateStateIdx();
+                showToast(i18n('tasks.detail.clear_events_success'), 'success');
+            } catch (error) {
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.actionBusy = false;
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

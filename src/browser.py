@@ -7,7 +7,7 @@
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -21,6 +21,69 @@ _PROXY_URL = "https://white.1024proxy.com/white/api?region=Rand&num=1&time=10&fo
 
 # 请求超时（秒）
 _REQUEST_TIMEOUT = 20
+
+# 代理出口国家查询地址（免费，无需 API key）
+_IP_GEO_URL = "https://ipapi.co/json/"
+
+
+def _lookup_proxy_country(
+    host: str,
+    port: str,
+    *,
+    timeout: float = 5.0,
+    http_get: Optional[Callable[[str, dict], Any]] = None,
+) -> str:
+    """
+    通过给定代理主动发起 HTTPS 请求到 ip-api 类服务，验证真实出口国家。
+
+    策略：
+      - 使用 https://ipapi.co/json/ 作为主源（无需 API key，免费额度）
+      - 返回 JSON 中的 `country_code` 字段（统一大写）
+      - 超时 / 非 200 / JSON 错误 / 无字段 → 返回 ""
+      - 不做重试：调用方（fetch_proxy）失败时仅记 warning，不影响代理本身可用性
+
+    Args:
+        host: 代理主机
+        port: 代理端口
+        timeout: 请求超时（秒），默认 5.0
+        http_get: 可注入的 HTTP GET（签名 (url, proxies_dict) → response-like），用于测试
+
+    Returns:
+        ISO alpha-2 大写国家代码；任何失败返回 ""
+    """
+    proxies = {
+        "http": f"http://{host}:{port}",
+        "https": f"http://{host}:{port}",
+    }
+
+    def _default_http_get(url: str, proxies_dict: dict) -> Any:
+        return requests.get(url, proxies=proxies_dict, timeout=timeout)
+
+    getter = http_get or _default_http_get
+
+    try:
+        resp = getter(_IP_GEO_URL, proxies)
+        status = getattr(resp, "status_code", 200)
+        if status != 200:
+            logger.warning("代理国家查询返回非 200 状态: %s", status)
+            return ""
+
+        data = resp.json()
+        country = data.get("country_code")
+        if not country or not isinstance(country, str):
+            logger.warning("代理国家查询响应缺少 country_code 字段: %s", data)
+            return ""
+        return country.strip().upper()
+    except requests.RequestException as exc:
+        logger.warning("代理国家查询请求异常: %s", exc)
+        return ""
+    except ValueError as exc:
+        # resp.json() 解析失败
+        logger.warning("代理国家查询 JSON 解析失败: %s", exc)
+        return ""
+    except Exception as exc:  # noqa: BLE001 - 保底返回 ""
+        logger.warning("代理国家查询未知异常: %s", exc)
+        return ""
 
 
 def _build_requests_proxies(proxy_url: str = "") -> Optional[dict[str, str]]:
@@ -63,8 +126,11 @@ def fetch_proxy(proxy_url: str = _PROXY_URL) -> Optional[ProxyInfo]:
 
         if ":" in text:
             host, port = text.split(":", 1)
-            proxy = ProxyInfo(host=host, port=port)
-            logger.info("成功提取代理: %s", proxy)
+            country = _lookup_proxy_country(host, port)
+            if not country:
+                logger.warning("未能确认代理出口国家，coherence 校验将按 block 处理")
+            proxy = ProxyInfo(host=host, port=port, country=country)
+            logger.info("成功提取代理: %s (country=%s)", proxy, country or "unknown")
             return proxy
 
         logger.error("1024Proxy 返回格式未知: %s", text)

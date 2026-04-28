@@ -23,6 +23,7 @@ from src.automation.models import (
     MachineResult,
     VerificationResult,
 )
+from src.providers.mail import MailServiceError
 
 _PASSWORD_SELECTOR = 'input#password, input[name="password"], input[type="password"]'
 _PHONE_SELECTOR = 'input[name="phoneNumber"]'
@@ -51,10 +52,31 @@ class AutomationRuntime:
     run_id: str = ""
     llm_provider: Optional[LLMDecisionProvider] = None
     experience_store: Optional[ExperienceStore] = None
+    emit_event: Optional[Callable[..., Any]] = None
+    cancel_check: Optional[Callable[[str], Any]] = None
     last_actions: list[dict[str, Any]] = field(default_factory=list)
     retry_counters: dict[str, int] = field(default_factory=dict)
     llm_uncertain_counters: dict[str, int] = field(default_factory=dict)
     manual_handoff_used: bool = False
+    triage_provider: Optional[Any] = None
+    recent_log_buffer: list[str] = field(default_factory=list)
+
+
+def _emit_runtime_event(
+    runtime: AutomationRuntime,
+    event_type: str,
+    *,
+    state: AutomationState | str | None = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    emitter = getattr(runtime, "emit_event", None)
+    if not callable(emitter):
+        return
+    normalized_state = state.value if isinstance(state, AutomationState) else state
+    try:
+        emitter(event_type, state=normalized_state, payload=payload or {})
+    except Exception:
+        return
 
 
 def _safe_call(func: Callable[[], Any], default: Any) -> Any:
@@ -62,6 +84,59 @@ def _safe_call(func: Callable[[], Any], default: Any) -> Any:
         return func()
     except Exception:
         return default
+
+
+def _run_triage(runtime: AutomationRuntime, evidence: Any, last_error: str) -> None:
+    """
+    在 BLOCKED / ERROR / 重试超限时，调分诊器给出类别建议。
+
+    设计约束（见 triage.py system prompt）：
+      - 只观察不动作：结果仅落盘到事件流，不自动换代理/换卡/跳状态
+      - 失败静默：任何异常降级为 no-op，绝不打断主流程
+    """
+    provider = getattr(runtime, "triage_provider", None)
+    if provider is None:
+        return
+
+    # 抓一张截图（可选，供 Vision 模型看）
+    screenshot_bytes: Optional[bytes] = None
+    try:
+        page = runtime.page
+        if page is not None and hasattr(page, "screenshot"):
+            screenshot_bytes = page.screenshot(type="png", full_page=False)
+    except Exception:
+        screenshot_bytes = None
+
+    try:
+        decision = provider.diagnose(
+            screenshot_bytes=screenshot_bytes,
+            page_url=getattr(evidence, "url", ""),
+            recent_logs=list(getattr(runtime, "recent_log_buffer", []))[-10:],
+            signals=dict(getattr(evidence, "signals", {}) or {}),
+            last_error=str(last_error or ""),
+        )
+    except Exception as exc:
+        runtime.logger.warning("分诊器异常，跳过: %s", exc)
+        return
+
+    _emit_runtime_event(
+        runtime,
+        "triage",
+        payload={
+            "category": decision.category,
+            "suggested_action": decision.suggested_action,
+            "confidence": decision.confidence,
+            "rationale": decision.rationale,
+            "evidence_summary": decision.evidence_summary,
+            "is_actionable": decision.is_actionable,
+        },
+    )
+
+
+def _check_runtime_active(runtime: AutomationRuntime, checkpoint: str) -> None:
+    checker = getattr(runtime, "cancel_check", None)
+    if callable(checker):
+        checker(checkpoint)
 
 
 def infer_state(url: str, signals: dict[str, Any]) -> AutomationState:
@@ -72,7 +147,7 @@ def infer_state(url: str, signals: dict[str, Any]) -> AutomationState:
         return AutomationState.ERROR
     if signals.get("has_challenge_text") or signals.get("has_challenge_widget") or "challenge" in current:
         return AutomationState.BLOCKED
-    if "auth/error" in current or signals.get("has_auth_error"):
+    if "auth/error" in current or signals.get("has_auth_error") or signals.get("has_auth_timeout_error"):
         return AutomationState.ERROR
     if signals.get("has_phone_input") or "phone" in current or "onboarding" in current:
         return AutomationState.PHONE
@@ -173,6 +248,9 @@ class EvidenceCollector:
             "has_date_input": self._count(page, _DATE_SELECTOR) > 0,
             "has_role_alert": self._count(page, '[role="alert"]') > 0,
             "has_auth_error": "auth/error" in url,
+            "has_auth_timeout_error": self._page_contains_any(
+                page, ["operation timed out", "oops, an error occurred"]
+            ) and "auth.openai.com" in url,
             "has_chrome_error": url.startswith("chrome-error://"),
             "has_challenge_text": self._page_contains_any(page, ["captcha", "challenge", "verify you are human"]),
             "has_challenge_widget": self._count(page, _CHALLENGE_WIDGET_SELECTOR) > 0,
@@ -334,6 +412,7 @@ class ActionExecutor:
     }
 
     def execute(self, runtime: AutomationRuntime, action: Action) -> VerificationResult:
+        _check_runtime_active(runtime, f"before_action:{action.action_id}")
         if action.kind not in self._ALLOWED_KINDS:
             return VerificationResult(ok=False, reason_code="ACTION_NOT_ALLOWED")
 
@@ -355,7 +434,19 @@ class ActionExecutor:
                     "result": "ok" if result is not False else "noop",
                 }
             )
+            _emit_runtime_event(
+                runtime,
+                "action",
+                payload={
+                    "message": action.description,
+                    "action_id": action.action_id,
+                    "handler": handler_name,
+                    "result": "ok" if result is not False else "noop",
+                },
+            )
             return VerificationResult(ok=result is not False, reason_code="EXECUTED")
+        except MailServiceError:
+            raise
         except Exception as exc:  # pragma: no cover - 运行时异常通过集成验证
             runtime.last_actions.append(
                 {
@@ -365,6 +456,17 @@ class ActionExecutor:
                     "result": "error",
                     "error": str(exc),
                 }
+            )
+            _emit_runtime_event(
+                runtime,
+                "action",
+                payload={
+                    "message": action.description,
+                    "action_id": action.action_id,
+                    "handler": handler_name,
+                    "result": "error",
+                    "error": str(exc),
+                },
             )
             runtime.logger.error("动作执行失败 %s: %s", action.action_id, exc)
             return VerificationResult(ok=False, reason_code="HANDLER_EXCEPTION", details={"error": str(exc)})
@@ -407,15 +509,31 @@ class RegistrationStateMachine:
         self._max_steps = max_steps
 
     def run(self, runtime: AutomationRuntime) -> MachineResult:
+        last_emitted_state: AutomationState | None = None
         for index in range(1, self._max_steps + 1):
+            _check_runtime_active(runtime, f"state_machine_step_{index}")
             evidence = self._collector.collect(runtime, step_name=f"step_{index}")
             self._record(runtime, evidence, [])
             state = evidence.primary_state
+            if state != last_emitted_state:
+                _emit_runtime_event(
+                    runtime,
+                    "state_change",
+                    state=state,
+                    payload={
+                        "message": f"进入状态 {state.value}",
+                        "step_name": evidence.step_name,
+                        "url": evidence.url,
+                        "signals": evidence.signals,
+                    },
+                )
+                last_emitted_state = state
 
             if state == AutomationState.HOME:
                 return MachineResult(success=True, final_state=state, manual_handoff_used=runtime.manual_handoff_used)
 
             if state in {AutomationState.BLOCKED, AutomationState.PHONE}:
+                _run_triage(runtime, evidence, state.value)
                 if self._try_manual_handoff(runtime, evidence, state.value):
                     continue
                 return MachineResult(
@@ -478,6 +596,19 @@ class RegistrationStateMachine:
             after = self._collector.collect(runtime, step_name=f"{state.value.lower()}_after")
             verify = self._verifier.verify(action, after) if exec_result.ok else exec_result
             self._record(runtime, after, [action])
+            if after.primary_state != last_emitted_state:
+                _emit_runtime_event(
+                    runtime,
+                    "state_change",
+                    state=after.primary_state,
+                    payload={
+                        "message": f"进入状态 {after.primary_state.value}",
+                        "step_name": after.step_name,
+                        "url": after.url,
+                        "signals": after.signals,
+                    },
+                )
+                last_emitted_state = after.primary_state
             if verify.ok and runtime.experience_store and decision_source == "llm":
                 runtime.experience_store.record_success(
                     evidence=evidence,
@@ -491,6 +622,7 @@ class RegistrationStateMachine:
 
             runtime.retry_counters[state.value] = retry_count + 1
             if runtime.retry_counters[state.value] > self._retry_limit_for(state, runtime):
+                _run_triage(runtime, after, verify.reason_code or state.value)
                 if self._try_manual_handoff(runtime, after, verify.reason_code or state.value):
                     runtime.retry_counters[state.value] = 0
                     continue
@@ -594,7 +726,24 @@ class RegistrationStateMachine:
             ]
 
         if state == AutomationState.ERROR:
-            return [
+            actions: list[Action] = []
+            if evidence.signals.get("has_auth_timeout_error"):
+                actions.append(
+                    Action(
+                        action_id="click_auth_try_again",
+                        kind=ActionKind.CLICK,
+                        description="OpenAI 鉴权超时，点击 Try again 重试",
+                        params={"handler": "click_try_again"},
+                        expected_outcomes=[
+                            AutomationState.AUTH,
+                            AutomationState.VERIFY_EMAIL,
+                            AutomationState.ABOUT_YOU,
+                            AutomationState.HOME,
+                            AutomationState.PHONE,
+                        ],
+                    )
+                )
+            actions.append(
                 Action(
                     action_id="recover_from_error",
                     kind=ActionKind.CLEAR_TARGET_STORAGE,
@@ -607,7 +756,8 @@ class RegistrationStateMachine:
                         AutomationState.ABOUT_YOU,
                     ],
                 )
-            ]
+            )
+            return actions
 
         return [
             Action(
@@ -649,6 +799,18 @@ class RegistrationStateMachine:
             "url": evidence.url,
             "signals": evidence.signals,
         }
+        _emit_runtime_event(
+            runtime,
+            "action",
+            state=evidence.primary_state,
+            payload={
+                "message": f"进入人工接管：state={evidence.primary_state.value}, reason={reason}",
+                "action_id": "manual_handoff",
+                "result": "started",
+                "reason": reason,
+                "url": evidence.url,
+            },
+        )
         if runtime.artifact_recorder and runtime.run_id:
             runtime.artifact_recorder.record_handoff(run_id=runtime.run_id, payload=payload)
 

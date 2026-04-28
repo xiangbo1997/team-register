@@ -14,26 +14,35 @@ def setup_logger(name: str = "GPT_Automation", level: int = logging.INFO) -> log
     """
     创建并配置日志记录器。
 
-    Args:
-        name: 日志器名称
-        level: 日志级别
-
-    Returns:
-        配置好的 Logger 实例
+    同时把 root logger 也配上同样的 handler，这样 src/services/、src/providers/ 等
+    模块用 ``logging.getLogger(__name__)`` 拿的 logger 也能输出到 stderr。
+    否则它们的 logger 没 handler，日志被吞掉，排错时看不到 CardActivation /
+    号池调度等内部状态。
     """
-    log = logging.getLogger(name)
+    formatter = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-    # 避免重复添加 handler
+    log = logging.getLogger(name)
     if not log.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
         handler.setFormatter(formatter)
         log.addHandler(handler)
-
     log.setLevel(level)
+    # 已经有自己的 handler，不要再让 root 重复输出一遍
+    log.propagate = False
+
+    # 同步配置 root logger，让所有模块 logger（src.services.* 等）都能输出
+    root = logging.getLogger()
+    if not any(getattr(h, "_team_register_marker", False) for h in root.handlers):
+        root_handler = logging.StreamHandler()
+        root_handler.setFormatter(formatter)
+        # 标记一下，避免反复添加
+        root_handler._team_register_marker = True  # type: ignore[attr-defined]
+        root.addHandler(root_handler)
+    root.setLevel(level)
+
     return log
 
 

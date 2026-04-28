@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}{{ _('tasks.list.title') }} - Team Register{% endblock %}
+{% block nav_tasks %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}{{ _('tasks.list.title') }}{% endblock %}
+
+{% block content %}
+{% set can_manage_tasks = current_user and current_user.role in ('operator', 'admin') %}
+<div x-data="taskListData()" x-init="fetchTasks()">
+    <!-- Toolbar -->
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-2">
+            <select x-model="filter" @change="fetchTasks()" class="text-sm border rounded-md px-3 py-1.5">
+                <option value="" x-text="i18n('tasks.list.filter_all')"></option>
+                <option value="pending" x-text="i18n('status.pending')"></option>
+                <option value="running" x-text="i18n('status.running')"></option>
+                <option value="success" x-text="i18n('status.success')"></option>
+                <option value="failed" x-text="i18n('status.failed')"></option>
+                <option value="cancelled" x-text="i18n('status.cancelled')"></option>
+            </select>
+            <button @click="fetchTasks()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('common.refresh')"></button>
+        </div>
+        <a href="/tasks/create" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+           x-text="'+ ' + i18n('overview.new_task')"></a>
+    </div>
+
+    <!-- Table -->
+    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+                <tr>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.id')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.email')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.status')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.phase')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.error')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.created')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.actions')"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                <template x-for="t in tasks" :key="t.id">
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-4 py-3 font-mono text-xs text-gray-400">
+                            <a :href="'/tasks/' + t.id" class="hover:text-blue-600" x-text="t.id.slice(0,8)"></a>
+                        </td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="t.email"></td>
+                        <td class="px-4 py-3">
+                            <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                                  :class="{
+                                      'bg-green-100 text-green-700': t.status === 'success',
+                                      'bg-red-100 text-red-700': t.status === 'failed',
+                                      'bg-blue-100 text-blue-700': t.status === 'running',
+                                      'bg-yellow-100 text-yellow-700': t.status === 'pending',
+                                      'bg-gray-100 text-gray-700': t.status === 'cancelled'
+                                  }"
+                                  x-text="translateEnum('status', t.status, t.status)"></span>
+                        </td>
+                        <td class="px-4 py-3 text-gray-500 text-xs" x-text="translateEnum('phase', t.phase, t.phase)"></td>
+                        <td class="px-4 py-3 text-red-500 text-xs truncate max-w-[200px]" x-text="t.error_reason ? translateEnum('errors', t.error_reason, t.error_reason) : ''"></td>
+                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="new Date(t.created_at).toLocaleString(window._locale)"></td>
+                        <td class="px-4 py-3">
+                            {% if can_manage_tasks %}
+                            <div class="flex gap-1">
+                                <button x-show="t.status === 'failed' || t.status === 'cancelled'"
+                                        :disabled="actionBusy"
+                                        @click="retryTask(t.id, 'resume')"
+                                        class="text-xs px-2 py-1 text-amber-600 hover:bg-amber-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.retry_resume')"></button>
+                                <button x-show="t.status === 'failed' || t.status === 'cancelled'"
+                                        :disabled="actionBusy"
+                                        @click="retryTask(t.id, 'restart')"
+                                        class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.retry_restart')"></button>
+                                <button x-show="t.status === 'pending' || t.status === 'running'"
+                                        :disabled="actionBusy"
+                                        @click="cancelTask(t.id)"
+                                        class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.cancel')"></button>
+                            </div>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="tasks.length === 0">
+                    <td colspan="7" class="px-4 py-8 text-center text-gray-400" x-text="i18n('tasks.list.no_tasks')"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="flex items-center justify-between mt-4 text-sm text-gray-500">
+        <span><span x-text="i18n('common.total')"></span>: <span x-text="total"></span></span>
+        <div class="flex gap-2">
+            <button @click="page > 1 && (page--, fetchTasks())" :disabled="page <= 1"
+                    class="px-3 py-1 border rounded disabled:opacity-30" x-text="i18n('common.prev')"></button>
+            <span class="px-3 py-1"><span x-text="i18n('common.page')"></span> <span x-text="page"></span></span>
+            <button @click="page * 20 < total && (page++, fetchTasks())" :disabled="page * 20 >= total"
+                    class="px-3 py-1 border rounded disabled:opacity-30" x-text="i18n('common.next')"></button>
+        </div>
+    </div>
+</div>
+
+<script>
+function taskListData() {
+    return {
+        tasks: [], total: 0, page: 1, filter: '', actionBusy: false,
+        async fetchTasks() {
+            const params = new URLSearchParams({ page: this.page, limit: 20 });
+            if (this.filter) params.set('status', this.filter);
+            const res = await fetchJson('/api/tasks?' + params);
+            this.tasks = res.items || [];
+            this.total = res.total || 0;
+        },
+        async retryTask(id, mode = 'restart') {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${id}/retry`, {
+                    method: 'POST',
+                    body: { mode },
+                });
+                await this.fetchTasks();
+                showToast(
+                    mode === 'resume'
+                        ? i18n('tasks.list.retry_resume_submitted')
+                        : i18n('tasks.list.retry_restart_submitted'),
+                    'success'
+                );
+            } catch (error) {
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.actionBusy = false;
+            }
+        },
+        async cancelTask(id) {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${id}/cancel`, { method: 'POST' });
+                await this.fetchTasks();
+                showToast(i18n('tasks.list.cancel_submitted'), 'success');
+            } catch (error) {
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.actionBusy = false;
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

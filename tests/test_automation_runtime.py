@@ -124,6 +124,30 @@ class TestAutomationStateInference(unittest.TestCase):
         )
         self.assertEqual(state, AutomationState.HOME)
 
+    def test_infer_state_auth_timeout_error_maps_to_error(self):
+        """OpenAI 鉴权页 'Operation timed out' 应识别为 ERROR 状态。"""
+        state = infer_state(
+            "https://auth.openai.com/create-account/password",
+            {"has_auth_timeout_error": True},
+        )
+        self.assertEqual(state, AutomationState.ERROR)
+
+    def test_error_state_with_timeout_signal_emits_try_again_action(self):
+        """ERROR 状态且检测到 timeout 信号时，应优先生成 click_try_again 动作。"""
+        machine = RegistrationStateMachine()
+        evidence = Evidence(
+            url="https://auth.openai.com/create-account/password",
+            title="Oops, an error occurred! - OpenAI",
+            step_name="step_7",
+            state_candidates=[AutomationState.ERROR],
+            signals={"has_auth_timeout_error": True},
+        )
+        actions = machine._build_actions(runtime=None, evidence=evidence)  # noqa: SLF001
+        self.assertEqual(actions[0].action_id, "click_auth_try_again")
+        self.assertEqual(actions[0].params.get("handler"), "click_try_again")
+        # 兜底动作仍保留
+        self.assertEqual(actions[-1].action_id, "recover_from_error")
+
 
 class TestLLMDecisionProvider(unittest.TestCase):
     """LLM 受限决策测试"""
@@ -350,6 +374,72 @@ class TestExperienceMemory(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(runtime.last_actions[0]["action_id"], "wait_short")
+
+
+class TestRuntimeEvents(unittest.TestCase):
+    """状态机结构化事件发射测试"""
+
+    def test_state_machine_emits_state_and_action_events(self):
+        events = []
+
+        class StubCollector:
+            def __init__(self):
+                self.calls = 0
+
+            def collect(self, runtime, *, step_name):
+                self.calls += 1
+                if self.calls == 1:
+                    return Evidence(
+                        url="https://chatgpt.com/",
+                        step_name=step_name,
+                        state_candidates=[AutomationState.ENTRY],
+                        signals={"has_app_shell": False},
+                    )
+                if self.calls == 2:
+                    return Evidence(
+                        url="https://auth.openai.com/create-account/password",
+                        step_name=step_name,
+                        state_candidates=[AutomationState.AUTH],
+                        signals={"has_password_input": True},
+                    )
+                return Evidence(
+                    url="https://chatgpt.com/",
+                    step_name=step_name,
+                    state_candidates=[AutomationState.HOME],
+                    signals={"has_app_shell": True},
+                )
+
+        runtime = AutomationRuntime(
+            page=object(),
+            context=object(),
+            config=type("Cfg", (), {
+                "max_email_attempts": 1,
+                "max_navigation_retries": 1,
+                "max_manual_handoffs": 0,
+                "llm_max_consecutive_uncertain": 1,
+            })(),
+            email="user@example.com",
+            password="Password123!",
+            mail_api=None,
+            logger=type("Log", (), {"error": lambda *args, **kwargs: None})(),
+            handlers={"enter_signup": lambda runtime, action: True},
+            emit_event=lambda event_type, **kwargs: events.append({"event_type": event_type, **kwargs}),
+        )
+
+        machine = RegistrationStateMachine(collector=StubCollector(), max_steps=2)
+        result = machine.run(runtime)
+
+        self.assertTrue(result.success)
+        self.assertTrue(any(item["event_type"] == "state_change" and item["state"] == "ENTRY" for item in events))
+        self.assertTrue(any(item["event_type"] == "state_change" and item["state"] == "AUTH" for item in events))
+        self.assertTrue(
+            any(
+                item["event_type"] == "action"
+                and item["payload"]["action_id"] == "enter_signup"
+                and item["payload"]["result"] == "ok"
+                for item in events
+            )
+        )
 
 
 if __name__ == "__main__":

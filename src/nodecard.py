@@ -13,6 +13,7 @@ from typing import Optional
 
 import requests
 
+from src.fintech.bin_lookup import lookup_bin_country
 from src.models import CardInfo
 from src.utils import human_delay
 
@@ -79,6 +80,9 @@ class NodeCard:
                     int(redeem_time), tz=timezone.utc
                 ).isoformat()
 
+            # 填充 bin_country，用于 Stripe 身份一致性校验
+            bin_country = lookup_bin_country(card_number)
+
             return CardInfo(
                 card_number=card_number,
                 expiry_month=expiry_month,
@@ -89,6 +93,7 @@ class NodeCard:
                 created_at=created_at,
                 auto_cancel_at=auto_cancel_at,
                 billing_address=str(data.get("full_billing_address", "") or ""),
+                bin_country=bin_country,
             )
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("NodeCard 响应解析失败: %s", exc)

@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}邮件账号 - Team Register{% endblock %}
+{% block nav_mail_accounts %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}邮件账号{% endblock %}
+
+{% block content %}
+<div x-data="mailAccountsData()" x-init="fetchAccounts()">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h3 class="text-sm text-gray-500">管理 credentialed 邮箱账号池（如 AppleMail）。</h3>
+        </div>
+        <button @click="toggleForm()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+            <span x-text="showForm ? '取消' : '+ 新增账号'"></span>
+        </button>
+    </div>
+
+    <div x-show="showForm" x-cloak class="bg-white rounded-lg shadow-sm border p-6 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">标签</label>
+                <input type="text" x-model="form.label" class="w-full text-sm border rounded-md px-3 py-2" placeholder="工作账号 A">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Provider</label>
+                <input type="text" x-model="form.provider_name" class="w-full text-sm border rounded-md px-3 py-2" placeholder="applemail">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">邮箱</label>
+                <input type="email" x-model="form.email" class="w-full text-sm border rounded-md px-3 py-2" placeholder="name@example.com">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">启用</label>
+                <select x-model="form.is_active" class="w-full text-sm border rounded-md px-3 py-2">
+                    <option :value="true">是</option>
+                    <option :value="false">否</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">角色</label>
+                <select x-model="form.role" class="w-full text-sm border rounded-md px-3 py-2">
+                    <option value="regular">regular（注册流程用）</option>
+                    <option value="pro_warmup">pro_warmup（卡预热垫脚石）</option>
+                </select>
+                <p class="mt-1 text-[11px] text-gray-400">regular = 任务级 mail_account_id 下拉显示；pro_warmup = 仅卡预热使用，不在任务下拉显示</p>
+            </div>
+            <!-- 所有角色都允许填 client_id / refresh_token / 登录密码 / AdsPower Profile，
+                 但都不强制必填 — 服务端按角色与凭据组合自行决定走哪条路径：
+                   - regular（注册流程用）：通常需要 client_id + refresh_token 走 OAuth 拉收件箱
+                   - pro_warmup（卡预热）：通常需要 登录密码 + AdsPower Profile 走 ChatGPT 密码登录；
+                     如果走的是 OAuth-only 邮箱（如 outlook + Microsoft Graph），同样可以填
+                     client_id + refresh_token 让 mail provider 直接拉验证码
+                 不互斥显示，由用户根据账号实际情况决定填哪些。 -->
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">client_id</label>
+                <input type="password" x-model="form.client_id" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：OAuth client id">
+                <p class="mt-1 text-[11px] text-gray-400">applemail / OAuth provider 拉收件箱用；不需要可留空</p>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">refresh_token</label>
+                <input type="password" x-model="form.refresh_token" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：OAuth refresh token">
+                <p class="mt-1 text-[11px] text-gray-400">applemail / OAuth provider 刷 access_token 用；不需要可留空</p>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">登录密码</label>
+                <input type="password" x-model="form.warmup_password" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：ChatGPT 账号登录密码">
+                <p class="mt-1 text-[11px] text-gray-400">pro_warmup 卡预热现场登录用；不需要可留空</p>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">AdsPower Profile ID</label>
+                <input type="text" x-model="form.warmup_profile_id" class="w-full text-sm border rounded-md px-3 py-2 font-mono" placeholder="可选：例如 k1b9945d">
+                <p class="mt-1 text-[11px] text-gray-400">pro_warmup 卡预热绑定的 AdsPower 浏览器环境 ID；不需要可留空</p>
+            </div>
+        </div>
+        <div class="mt-4">
+            <label class="block text-xs font-medium text-gray-600 mb-1">额外 JSON（可选）</label>
+            <textarea x-model="form.extra_json" rows="4" class="w-full text-xs font-mono border rounded-md px-3 py-2" placeholder='{"account_id":"optional","preserve_existing_mail":true}'></textarea>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+            <button @click="testAccount()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50">测试</button>
+            <button @click="saveAccount()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">保存</button>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+                <tr>
+                    <th class="px-4 py-3 text-left">标签</th>
+                    <th class="px-4 py-3 text-left">Provider</th>
+                    <th class="px-4 py-3 text-left">邮箱</th>
+                    <th class="px-4 py-3 text-left">角色</th>
+                    <th class="px-4 py-3 text-left">状态</th>
+                    <th class="px-4 py-3 text-left">预热调度</th>
+                    <th class="px-4 py-3 text-left">更新时间</th>
+                    <th class="px-4 py-3 text-left">操作</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                <template x-for="account in accounts" :key="account.id">
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-4 py-3" x-text="account.label"></td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="account.provider_name"></td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="account.email"></td>
+                        <td class="px-4 py-3 text-xs">
+                            <span class="px-2 py-0.5 rounded-full text-[11px]"
+                                :class="(account.role || 'regular') === 'pro_warmup' ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-700'"
+                                x-text="account.role || 'regular'"></span>
+                        </td>
+                        <td class="px-4 py-3">
+                            <span class="w-2 h-2 rounded-full inline-block" :class="account.is_active ? 'bg-green-500' : 'bg-gray-300'"></span>
+                            <template x-if="(account.role || 'regular') === 'pro_warmup' && account.consecutive_failures > 0">
+                                <span class="ml-1 text-[10px] text-red-600" x-text="'失败×' + account.consecutive_failures"></span>
+                            </template>
+                        </td>
+                        <td class="px-4 py-3 text-xs">
+                            <template x-if="(account.role || 'regular') === 'pro_warmup'">
+                                <div>
+                                    <div class="text-gray-500" x-text="account.last_used_at ? '上次: ' + new Date(account.last_used_at).toLocaleString(window._locale) : '从未使用'"></div>
+                                    <div class="text-gray-400 text-[11px]" x-show="account.cooldown_until && new Date(account.cooldown_until) > new Date()" x-text="'冷却至: ' + (account.cooldown_until ? new Date(account.cooldown_until).toLocaleString(window._locale) : '-')"></div>
+                                    <div class="text-red-500 text-[11px]" x-show="account.last_failure_reason" x-text="'原因: ' + account.last_failure_reason"></div>
+                                </div>
+                            </template>
+                            <template x-if="(account.role || 'regular') !== 'pro_warmup'">
+                                <span class="text-gray-300">-</span>
+                            </template>
+                        </td>
+                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="account.updated_at ? new Date(account.updated_at).toLocaleString(window._locale) : '-'"></td>
+                        <td class="px-4 py-3">
+                            <div class="flex gap-1">
+                                <button @click="editAccount(account)" class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded">编辑</button>
+                                <button @click="deleteAccount(account)" class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded">删除</button>
+                            </div>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="accounts.length === 0">
+                    <td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无邮箱账号</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function mailAccountsData() {
+    return {
+        accounts: [],
+        showForm: false,
+        editingId: '',
+        form: {
+            label: '',
+            provider_name: 'applemail',
+            email: '',
+            client_id: '',
+            refresh_token: '',
+            is_active: true,
+            role: 'regular',
+            extra_json: '{}',
+            // pro_warmup 专用字段（保存时合并到 extra）
+            warmup_password: '',
+            warmup_profile_id: '',
+        },
+
+        resetForm() {
+            this.editingId = '';
+            this.form = {
+                label: '',
+                provider_name: 'applemail',
+                email: '',
+                client_id: '',
+                refresh_token: '',
+                is_active: true,
+                role: 'regular',
+                extra_json: '{}',
+                warmup_password: '',
+                warmup_profile_id: '',
+            };
+        },
+
+        toggleForm() {
+            this.showForm = !this.showForm;
+            if (!this.showForm) this.resetForm();
+        },
+
+        async fetchAccounts() {
+            this.accounts = await fetchJson('/api/mail-accounts');
+        },
+
+        editAccount(account) {
+            this.editingId = account.id;
+            const ex = account.extra || {};
+            this.form = {
+                label: account.label || '',
+                provider_name: account.provider_name || 'applemail',
+                email: account.email || '',
+                client_id: '',
+                refresh_token: '',
+                is_active: !!account.is_active,
+                role: account.role || 'regular',
+                extra_json: JSON.stringify(ex, null, 2),
+                // pro_warmup 字段从 extra 回填（密码 redact 后看不到原值，留空让用户决定改不改）
+                warmup_password: '',
+                warmup_profile_id: ex.adspower_profile_id || '',
+            };
+            this.showForm = true;
+        },
+
+        async saveAccount() {
+            let extra = {};
+            const isWarmup = (this.form.role || 'regular') === 'pro_warmup';
+            if (isWarmup) {
+                // pro_warmup 用专用字段；前端校验密码 + profile_id 必填
+                if (!this.form.warmup_profile_id) {
+                    showToast('请填写 AdsPower Profile ID', 'error'); return;
+                }
+                // 密码留空表示不改（编辑场景）；新建必须填
+                if (!this.editingId && !this.form.warmup_password) {
+                    showToast('请填写登录密码', 'error'); return;
+                }
+                extra = { adspower_profile_id: this.form.warmup_profile_id };
+                if (this.form.warmup_password) extra.password = this.form.warmup_password;
+            } else {
+                try { extra = JSON.parse(this.form.extra_json || '{}'); }
+                catch { showToast('extra JSON 不合法', 'error'); return; }
+            }
+
+            const payload = {
+                label: this.form.label,
+                provider_name: this.form.provider_name,
+                email: this.form.email,
+                client_id: this.form.client_id,
+                refresh_token: this.form.refresh_token,
+                is_active: this.form.is_active,
+                role: this.form.role || 'regular',
+                extra,
+            };
+            const url = this.editingId ? `/api/mail-accounts/${this.editingId}` : '/api/mail-accounts';
+            const method = this.editingId ? 'PUT' : 'POST';
+            await fetchJson(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            showToast('邮箱账号已保存', 'success');
+            this.showForm = false;
+            this.resetForm();
+            await this.fetchAccounts();
+        },
+
+        async testAccount() {
+            if (!this.editingId) {
+                showToast('请先保存账号再测试', 'warning');
+                return;
+            }
+            const result = await fetchJson(`/api/mail-accounts/${this.editingId}/test`, { method: 'POST' });
+            showToast(result.message || '测试完成', result.ok ? 'success' : 'error');
+            await this.fetchAccounts();
+        },
+
+        async deleteAccount(account) {
+            if (!confirm(`确认删除邮箱账号 ${account.label || account.email} 吗？`)) return;
+            await fetchJson(`/api/mail-accounts/${account.id}`, { method: 'DELETE' });
+            showToast('邮箱账号已删除', 'success');
+            await this.fetchAccounts();
+        },
+    }
+}
+</script>
+{% endblock %}

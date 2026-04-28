@@ -298,5 +298,126 @@ class TestEfunCardWaitFor3ds(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestEfunCardCancelAndBilling(unittest.TestCase):
+    """EfunCard.cancel() 和 EfunCard.billing() 测试"""
+
+    def setUp(self):
+        self.client = EfunCard(token="test-token", base_url="http://mock-api")
+
+    @patch("src.efuncard.requests.post")
+    def test_cancel_success(self, mock_post: MagicMock):
+        """成功销卡应返回 True"""
+        mock_post.return_value.json.return_value = {
+            "success": True,
+            "data": {
+                "cardId": 123,
+                "status": "cancelled",
+            },
+        }
+
+        result = self.client.cancel("CDK-CANCEL-001")
+        self.assertTrue(result)
+        self.assertEqual(self.client.last_cancel_meta["status"], "success")
+
+    @patch("src.efuncard.requests.post")
+    def test_cancel_failure(self, mock_post: MagicMock):
+        """API 返回失败应返回 False"""
+        mock_post.return_value.json.return_value = {
+            "success": False,
+            "message": "Card already cancelled",
+        }
+
+        result = self.client.cancel("CDK-CANCEL-BAD")
+        self.assertFalse(result)
+        self.assertEqual(self.client.last_cancel_meta["status"], "api_failure")
+
+    @patch("src.efuncard.requests.get")
+    def test_billing_success(self, mock_get: MagicMock):
+        """成功查询账单应返回 BillingInfo"""
+        mock_get.return_value.json.return_value = {
+            "success": True,
+            "data": {
+                "cardId": 123,
+                "code": "CDK-BILL-001",
+                "transactions": [
+                    {
+                        "id": "txn_001",
+                        "amount": -25.0,
+                        "currency": "USD",
+                        "merchant": "Amazon",
+                        "status": "completed",
+                        "createdAt": "2024-01-15T14:30:00Z",
+                    }
+                ],
+                "totalSpent": 25.0,
+                "remainingBalance": 75.0,
+            },
+        }
+
+        from src.models import BillingInfo
+        result = self.client.billing("CDK-BILL-001")
+        self.assertIsInstance(result, BillingInfo)
+        self.assertEqual(len(result.transactions), 1)
+        self.assertEqual(result.transactions[0].merchant, "Amazon")
+        self.assertEqual(self.client.last_billing_meta["status"], "success")
+
+
+class TestEfunCardBinCountry(unittest.TestCase):
+    """验证 CardInfo.bin_country 通过 lookup_bin_country 被填充"""
+
+    def setUp(self):
+        self.client = EfunCard(token="test-token", base_url="http://mock-api")
+
+    @patch("src.efuncard.lookup_bin_country")
+    @patch("src.efuncard.requests.post")
+    def test_redeem_populates_bin_country(
+        self, mock_post: MagicMock, mock_lookup: MagicMock
+    ):
+        """redeem 成功时应调用 lookup_bin_country 并把结果写入 CardInfo"""
+        mock_lookup.return_value = "HK"
+        mock_post.return_value.json.return_value = {
+            "success": True,
+            "data": {
+                "cardNumber": "4085999900001111",
+                "expiryMonth": "12",
+                "expiryYear": "2028",
+                "cvv": "123",
+            },
+        }
+
+        result = self.client.redeem("CDK-BIN-001")
+
+        self.assertIsInstance(result, CardInfo)
+        mock_lookup.assert_called_once_with("4085999900001111")
+        self.assertEqual(result.bin_country, "HK")
+
+    @patch("src.efuncard.lookup_bin_country")
+    @patch("src.efuncard.requests.get")
+    def test_query_populates_bin_country(
+        self, mock_get: MagicMock, mock_lookup: MagicMock
+    ):
+        """query 复用已激活卡时也应填充 bin_country"""
+        mock_lookup.return_value = "US"
+        future_iso = "2099-12-31T23:59:59+00:00"
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "success": True,
+            "data": {
+                "cardNumber": "4111111111111111",
+                "expiryMonth": "12",
+                "expiryYear": "2028",
+                "cvv": "999",
+                "status": "ACTIVE",
+                "autoCancelAt": future_iso,
+            },
+        }
+
+        result = self.client.query("CDK-BIN-002")
+
+        self.assertIsInstance(result, CardInfo)
+        mock_lookup.assert_called_once_with("4111111111111111")
+        self.assertEqual(result.bin_country, "US")
+
+
 if __name__ == "__main__":
     unittest.main()

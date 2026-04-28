@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}{{ _('providers.title') }} - Team Register{% endblock %}
+{% block nav_providers %}bg-gray-800 text-white{% endblock %}
+{% block page_title %}{{ _('providers.title') }}{% endblock %}
+
+{% block content %}
+<div x-data="providerData()" x-init="fetchProviders()">
+    <!-- Add Provider -->
+    <div class="flex items-center justify-between mb-4">
+        <h3 class="text-sm text-gray-500" x-text="i18n('providers.subtitle')"></h3>
+        <button @click="showForm = !showForm" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
+            <span x-text="showForm ? i18n('providers.cancel') : '+ ' + i18n('providers.add_provider')"></span>
+        </button>
+    </div>
+
+    <!-- Add/Edit Form -->
+    <div x-show="showForm" x-cloak class="bg-white rounded-lg shadow-sm border p-6 mb-6 fade-in">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.type')"></label>
+                <select x-model="form.provider_type" class="w-full text-sm border rounded-md px-3 py-2">
+                    <option value="browser" x-text="i18n('providers.types.browser')"></option>
+                    <option value="card" x-text="i18n('providers.types.card')"></option>
+                    <option value="mail" x-text="i18n('providers.types.mail')"></option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.name')"></label>
+                <input type="text" x-model="form.provider_name" class="w-full text-sm border rounded-md px-3 py-2"
+                       :placeholder="i18n('providers.placeholders.name')">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.active')"></label>
+                <select x-model="form.is_active" class="w-full text-sm border rounded-md px-3 py-2">
+                    <option :value="true" x-text="i18n('common.yes')"></option>
+                    <option :value="false" x-text="i18n('common.no')"></option>
+                </select>
+            </div>
+        </div>
+        <div class="mt-4">
+            <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.config_json')"></label>
+            <textarea x-model="form.config_json" rows="4"
+                      class="w-full text-xs font-mono border rounded-md px-3 py-2"
+                      :placeholder="i18n('providers.placeholders.config_json')"></textarea>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+            <button @click="testProvider()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('providers.test')"></button>
+            <button @click="saveProvider()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700" x-text="i18n('providers.save')"></button>
+        </div>
+    </div>
+
+    <!-- Provider List -->
+    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+                <tr>
+                    <th class="px-4 py-3 text-left" x-text="i18n('providers.type')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('providers.name')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('providers.active')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('providers.config_json')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('common.updated')"></th>
+                    <th class="px-4 py-3 text-left" x-text="i18n('common.actions')"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y">
+                <template x-for="p in providers" :key="p.provider_type + '/' + p.provider_name">
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-4 py-3">
+                            <span class="px-2 py-0.5 rounded text-xs font-medium"
+                                  :class="{'bg-purple-100 text-purple-700': p.provider_type === 'browser', 'bg-orange-100 text-orange-700': p.provider_type === 'card', 'bg-cyan-100 text-cyan-700': p.provider_type === 'mail'}"
+                                  x-text="translateEnum('providers.types', p.provider_type, p.provider_type)"></span>
+                        </td>
+                        <td class="px-4 py-3 font-mono text-xs" x-text="p.provider_name"></td>
+                        <td class="px-4 py-3">
+                            <span class="w-2 h-2 rounded-full inline-block" :class="p.is_active ? 'bg-green-500' : 'bg-gray-300'"></span>
+                        </td>
+                        <td class="px-4 py-3 font-mono text-xs text-gray-400 truncate max-w-[200px]" x-text="JSON.stringify(p.config)"></td>
+                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="p.updated_at ? new Date(p.updated_at).toLocaleString(window._locale) : '-'"></td>
+                        <td class="px-4 py-3">
+                            <div class="flex gap-1">
+                                <button @click="editProvider(p)" class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded" x-text="i18n('providers.edit')"></button>
+                                <button @click="deleteProvider(p)" class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded" x-text="i18n('providers.delete')"></button>
+                            </div>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="providers.length === 0">
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-400" x-text="i18n('providers.no_providers')"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function providerData() {
+    return {
+        providers: [],
+        showForm: false,
+        form: { provider_type: 'browser', provider_name: '', is_active: true, config_json: '{}' },
+        editing: null,
+
+        async fetchProviders() {
+            this.providers = await fetchJson('/api/providers');
+        },
+
+        editProvider(p) {
+            this.editing = p;
+            this.form = {
+                provider_type: p.provider_type,
+                provider_name: p.provider_name,
+                is_active: p.is_active,
+                config_json: JSON.stringify(p.config, null, 2)
+            };
+            this.showForm = true;
+        },
+
+        async saveProvider() {
+            let cfg;
+            try { cfg = JSON.parse(this.form.config_json); }
+            catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
+
+            try {
+                await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config: cfg, is_active: this.form.is_active })
+                });
+                showToast(i18n('providers.saved'), 'success');
+                this.showForm = false;
+                this.editing = null;
+                this.form = { provider_type: 'browser', provider_name: '', is_active: true, config_json: '{}' };
+                await this.fetchProviders();
+            } catch (_) { showToast(i18n('providers.save_failed'), 'error'); }
+        },
+
+        async deleteProvider(p) {
+            if (!confirm(i18n('providers.confirm_delete', { provider_type: p.provider_type, provider_name: p.provider_name }))) return;
+            await fetchJson(`/api/providers/${p.provider_type}/${p.provider_name}`, { method: 'DELETE' });
+            await this.fetchProviders();
+        },
+
+        async testProvider() {
+            let cfg;
+            try { cfg = JSON.parse(this.form.config_json); }
+            catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
+
+            const data = await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}/test`, { method: 'POST' });
+            showToast(data.message || i18n('providers.test_complete'), data.ok ? 'success' : 'warning');
+        }
+    }
+}
+</script>
+{% endblock %}

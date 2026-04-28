@@ -1,0 +1,12 @@
+<!-- Toast notification component -->
+<script>
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const colors = { info: 'bg-blue-500', success: 'bg-green-500', error: 'bg-red-500', warning: 'bg-yellow-500 text-gray-900' };
+    const el = document.createElement('div');
+    el.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-lg shadow-lg fade-in`;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3000);
+}
+</script>

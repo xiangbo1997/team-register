@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="{{ current_locale() }}" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Team Register{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .fade-in { animation: fadeIn 0.25s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body class="h-full bg-gray-50 text-gray-900">
+<div class="flex h-full" x-data="{ sidebarOpen: true }">
+    <aside class="w-56 bg-gray-900 text-gray-100 flex flex-col shrink-0" :class="sidebarOpen ? '' : 'hidden'">
+        <div class="px-4 py-5 border-b border-gray-700">
+            <h1 class="text-lg font-bold tracking-tight">{{ _('app.title') }}</h1>
+            <p class="text-xs text-gray-400 mt-0.5">{{ _('app.subtitle') }}</p>
+        </div>
+        <nav class="flex-1 px-2 py-3 space-y-1 text-sm">
+            <a href="/" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_overview %}{% endblock %}">
+                <span class="w-5 text-center">&#9635;</span> {{ _('nav.overview') }}
+            </a>
+            <a href="/tasks" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_tasks %}{% endblock %}">
+                <span class="w-5 text-center">&#9654;</span> {{ _('nav.tasks') }}
+            </a>
+            <a href="/config" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_config %}{% endblock %}">
+                <span class="w-5 text-center">&#9881;</span> {{ _('nav.config') }}
+            </a>
+            <a href="/providers" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_providers %}{% endblock %}">
+                <span class="w-5 text-center">&#9741;</span> {{ _('nav.providers') }}
+            </a>
+            <a href="/mail-accounts" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_mail_accounts %}{% endblock %}">
+                <span class="w-5 text-center">&#9993;</span> {{ _('nav.mail_accounts') }}
+            </a>
+            <a href="/cards" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_cards %}{% endblock %}">
+                <span class="w-5 text-center">&#128179;</span> 虚拟卡缓存
+            </a>
+            <a href="/help" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_help %}{% endblock %}">
+                <span class="w-5 text-center">?</span> {{ _('nav.help') }}
+            </a>
+        </nav>
+        <div class="px-4 py-3 border-t border-gray-700 text-xs text-gray-500 space-y-1">
+            <a href="/docs" target="_blank" class="block hover:text-gray-300">{{ _('app.api_docs') }} &rarr;</a>
+            <a href="/manual" target="_blank" class="block hover:text-gray-300">{{ _('assistant.open_manual') }} &rarr;</a>
+        </div>
+    </aside>
+
+    <main class="flex-1 overflow-y-auto">
+        <header class="bg-white border-b px-6 py-3 flex items-center justify-between sticky top-0 z-10">
+            <div class="flex items-center gap-3">
+                <button @click="sidebarOpen = !sidebarOpen" class="text-gray-500 hover:text-gray-700">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                </button>
+                <h2 class="text-base font-semibold">{% block page_title %}Dashboard{% endblock %}</h2>
+            </div>
+            <div class="flex items-center gap-4">
+                <div x-data="langSwitcher()" class="flex items-center gap-1 text-xs" role="group" aria-label="Language">
+                    <button @click="setLang('zh-CN')" class="px-1.5 py-0.5 rounded" :aria-pressed="currentLang === 'zh-CN'"
+                            :class="currentLang === 'zh-CN' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-400 hover:text-gray-600'">ZH</button>
+                    <span class="text-gray-300">|</span>
+                    <button @click="setLang('en')" class="px-1.5 py-0.5 rounded" :aria-pressed="currentLang === 'en'"
+                            :class="currentLang === 'en' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-400 hover:text-gray-600'">EN</button>
+                </div>
+                <div class="hidden sm:block text-xs text-gray-500">
+                    {% if current_user %}
+                    <span class="font-medium">{{ current_user.username }}</span>
+                    <span class="text-gray-400">/ {{ current_user.role }}</span>
+                    {% else %}
+                    <a href="/login" class="hover:text-gray-700">{{ _('auth.login') }}</a>
+                    {% endif %}
+                </div>
+                <div class="text-xs text-gray-400" id="clock" x-data x-init="setInterval(() => $el.textContent = new Date().toLocaleTimeString('{{ current_locale() }}'), 1000)"></div>
+                {% if current_user %}
+                <button onclick="logoutConsole()" class="text-xs px-3 py-1.5 border rounded-md hover:bg-gray-50">{{ _('auth.logout') }}</button>
+                {% endif %}
+            </div>
+        </header>
+        <div class="p-6">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+</div>
+
+{% if assistant_enabled %}
+<div
+    x-data="assistantWidget({ enabled: {{ 'true' if assistant_enabled else 'false' }}, backendReady: {{ 'true' if assistant_backend_ready else 'false' }} })"
+    x-init="init()"
+    class="fixed bottom-4 right-4 z-40"
+    x-cloak
+>
+    <button
+        x-show="!open"
+        @click="open = true"
+        class="inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-lg hover:bg-blue-700"
+    >
+        <span class="h-2.5 w-2.5 rounded-full bg-white pulse-dot"></span>
+        <span>{{ _('assistant.launcher') }}</span>
+    </button>
+
+    <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-gray-200 bg-white shadow-2xl fade-in">
+        <div class="flex items-start justify-between border-b px-4 py-3">
+            <div>
+                <h3 class="text-sm font-semibold text-gray-900">{{ _('assistant.title') }}</h3>
+                <p class="mt-1 text-xs text-gray-500" x-text="ready ? i18n('assistant.status_ready') : i18n('assistant.status_fallback')"></p>
+            </div>
+            <button @click="open = false" class="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700">{{ _('common.close') }}</button>
+        </div>
+
+        <div class="border-b bg-gray-50 px-4 py-3 space-y-3">
+            <div class="flex items-center gap-2 text-xs">
+                <button
+                    @click="intentMode = 'answer'"
+                    class="rounded-full px-2.5 py-1"
+                    :class="intentMode === 'answer' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 border'"
+                >{{ _('assistant.mode_answer') }}</button>
+                <button
+                    @click="intentMode = 'action'"
+                    class="rounded-full px-2.5 py-1"
+                    :class="intentMode === 'action' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 border'"
+                >{{ _('assistant.mode_action') }}</button>
+                <a href="/help" class="ml-auto text-blue-600 hover:text-blue-700">{{ _('common.learn_more') }}</a>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <template x-for="prompt in quickPrompts" :key="prompt">
+                    <button @click="sendPrompt(prompt)" class="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-700" x-text="prompt"></button>
+                </template>
+            </div>
+        </div>
+
+        <div class="max-h-[20rem] space-y-3 overflow-y-auto px-4 py-3">
+            <template x-for="(item, index) in messages" :key="index">
+                <div>
+                    <div class="mb-1 text-[11px] uppercase tracking-wide text-gray-400" x-text="item.role === 'user' ? i18n('assistant.you') : i18n('assistant.title')"></div>
+                    <div
+                        class="rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap"
+                        :class="item.role === 'user' ? 'bg-blue-600 text-white ml-8' : 'bg-gray-100 text-gray-800 mr-8'"
+                        x-text="item.content"
+                    ></div>
+
+                    <template x-if="item.manual_citations && item.manual_citations.length">
+                        <div class="mt-2 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                            <div class="text-xs font-medium text-blue-700">{{ _('assistant.manual_citations') }}</div>
+                            <div class="mt-2 space-y-2">
+                                <template x-for="cite in item.manual_citations" :key="cite.reference">
+                                    <div class="rounded-lg bg-white p-2 text-xs text-gray-700">
+                                        <div class="font-medium" x-text="cite.title"></div>
+                                        <div class="mt-1 text-gray-500" x-text="cite.reference"></div>
+                                        <div class="mt-1" x-text="cite.snippet"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template x-if="item.repo_citations && item.repo_citations.length">
+                        <div class="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+                            <div class="text-xs font-medium text-gray-700">{{ _('assistant.repo_citations') }}</div>
+                            <div class="mt-2 space-y-2">
+                                <template x-for="cite in item.repo_citations" :key="cite.reference">
+                                    <div class="rounded-lg bg-gray-50 p-2 text-xs text-gray-700">
+                                        <div class="font-medium" x-text="cite.title"></div>
+                                        <div class="mt-1 font-mono text-[11px] text-gray-500" x-text="cite.reference"></div>
+                                        <div class="mt-1" x-text="cite.snippet"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+
+                    <template x-if="item.required_fields && item.required_fields.length">
+                        <div class="mt-2 rounded-xl border border-yellow-200 bg-yellow-50 p-3 text-xs text-yellow-800">
+                            <div class="font-medium">{{ _('assistant.need_fields') }}</div>
+                            <div class="mt-1" x-text="item.required_fields.join(', ')"></div>
+                        </div>
+                    </template>
+
+                    <template x-if="item.preview">
+                        <div class="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="font-medium">{{ _('assistant.preview_title') }}</div>
+                                <button
+                                    x-show="item.can_commit"
+                                    @click="commitPreview(item.preview_id)"
+                                    class="rounded-md bg-emerald-600 px-2.5 py-1 text-white hover:bg-emerald-700"
+                                >{{ _('common.commit') }}</button>
+                            </div>
+                            <div class="mt-2" x-text="item.preview.summary"></div>
+                            <template x-if="item.preview.diff && item.preview.diff.length">
+                                <div class="mt-2 space-y-1">
+                                    <template x-for="diff in item.preview.diff" :key="diff.field + String(diff.after)">
+                                        <div class="rounded-lg bg-white px-2 py-1 text-[11px] text-gray-700">
+                                            <span class="font-medium" x-text="diff.field"></span>
+                                            <span class="mx-1 text-gray-400">:</span>
+                                            <span class="text-gray-500" x-text="JSON.stringify(diff.before)"></span>
+                                            <span class="mx-1 text-gray-400">→</span>
+                                            <span x-text="JSON.stringify(diff.after)"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+            </template>
+
+            <div x-show="loading" class="rounded-2xl bg-gray-100 px-3 py-2 text-sm text-gray-500">
+                {{ _('assistant.thinking') }}
+            </div>
+        </div>
+
+        <div class="border-t px-4 py-3 space-y-2">
+            <template x-if="intentMode === 'action'">
+                <textarea
+                    x-model="draftActionText"
+                    rows="3"
+                    class="w-full rounded-xl border border-gray-200 px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none"
+                    :placeholder="i18n('assistant.action_json_placeholder')"
+                ></textarea>
+            </template>
+            <textarea
+                x-model="messageInput"
+                rows="2"
+                class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                :placeholder="i18n('assistant.input_placeholder')"
+                @keydown.meta.enter.prevent="sendPrompt()"
+                @keydown.ctrl.enter.prevent="sendPrompt()"
+            ></textarea>
+            <div class="flex items-center justify-between gap-2">
+                <div class="text-[11px] text-gray-500">{{ _('assistant.safe_boundary') }}</div>
+                <div class="flex items-center gap-2">
+                    <a href="/manual" target="_blank" class="text-xs text-blue-600 hover:text-blue-700">{{ _('assistant.open_manual') }}</a>
+                    <button
+                        @click="sendPrompt()"
+                        :disabled="loading"
+                        class="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >{{ _('assistant.send') }}</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+<script>
+window._translations = {{ _translations() | tojson }};
+window._locale = '{{ current_locale() }}';
+window.__csrfToken = {{ (csrf_token or '') | tojson }};
+window.i18n = function(key, params, fallback) {
+    let current = window._translations;
+    for (const part of key.split('.')) {
+        if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
+        current = current[part];
+    }
+    if (typeof current !== 'string') return fallback != null ? fallback : key;
+    if (params) {
+        for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
+    }
+    return current;
+};
+
+window.translateEnum = function(namespace, value, fallback) {
+    if (value == null || value === '') return fallback || '';
+    return window.i18n(namespace + '.' + value, null, fallback != null ? fallback : value);
+};
+
+function langSwitcher() {
+    return {
+        currentLang: window._locale,
+        setLang(lang) {
+            if (lang === this.currentLang) return;
+            document.cookie = `lang=${lang};path=/;max-age=${365*24*3600}`;
+            localStorage.setItem('lang', lang);
+            window.location.reload();
+        }
+    }
+}
+
+function showToast(msg, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const colors = { success: 'bg-green-600', error: 'bg-red-600', warning: 'bg-yellow-600', info: 'bg-gray-700' };
+    const el = document.createElement('div');
+    el.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-lg shadow-lg fade-in`;
+    el.textContent = msg;
+    container.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+}
+
+async function fetchJson(url, options = {}) {
+    const method = (options.method || 'GET').toUpperCase();
+    const headers = new Headers(options.headers || {});
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+    let body = options.body;
+
+    if (body != null && !isFormData && !headers.has('Content-Type')) {
+        if (typeof body === 'string') {
+            const trimmed = body.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                headers.set('Content-Type', 'application/json');
+            }
+        } else if (typeof body === 'object') {
+            headers.set('Content-Type', 'application/json');
+            body = JSON.stringify(body);
+        }
+    }
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && window.__csrfToken) {
+        headers.set('X-CSRF-Token', window.__csrfToken);
+    }
+    const response = await fetch(url, { ...options, method, headers, body });
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (_) {
+        data = {};
+    }
+    if (typeof data.csrf_token === 'string' && data.csrf_token) {
+        window.__csrfToken = data.csrf_token;
+    }
+    if (!response.ok) {
+        const error = new Error(data.detail || data.message || response.statusText || 'Request failed');
+        error.status = response.status;
+        error.payload = data;
+        throw error;
+    }
+    return data;
+}
+
+async function logoutConsole() {
+    try {
+        await fetchJson('/api/auth/logout', { method: 'POST' });
+        window.location.href = '/login';
+    } catch (error) {
+        showToast(error.message || i18n('assistant.request_failed'), 'error');
+    }
+}
+
+function assistantWidget({ enabled, backendReady }) {
+    return {
+        open: false,
+        ready: false,
+        loading: false,
+        enabled,
+        backendReady,
+        messageInput: '',
+        draftActionText: '',
+        intentMode: 'answer',
+        // 默认 quick prompts；init() 会根据当前页面路径替换为更相关的
+        quickPrompts: [
+            i18n('assistant.quick_login'),
+            i18n('assistant.quick_provider'),
+            i18n('assistant.quick_preview'),
+            i18n('assistant.quick_scope'),
+        ],
+        // 路径感知的 quick prompts —— 进入对应页面时自动替换浮窗按钮
+        // 这些 prompt 命中 docs/architecture/provider-config-flow.md 中的内容
+        pageAwarePrompts: {
+            '/config': [
+                'L1 .env / L2 provider profile / L3 任务级 三层优先级是什么？',
+                'efuncard_token 在 .env 和 /providers 都设了，谁赢？',
+                '改了 /config 没生效，怎么排查？',
+                'WARMUP_ACCOUNT_POOL 怎么填？',
+            ],
+            '/providers': [
+                '我想加一个新的 card provider 档案，该填什么？',
+                'provider profile 的 driver 字段支持哪些值？',
+                '改 provider profile 会立即生效吗？需要重启吗？',
+                'provider 改错了能回滚吗？',
+            ],
+            '/mail-accounts': [
+                'mail_accounts 和 WARMUP_ACCOUNT_POOL 有什么区别？',
+                '凭据账号的 role 字段什么意思？',
+                '如何为任务绑定特定的邮箱账号？',
+                'credentialed 模式邮箱账号怎么配？',
+            ],
+            '/tasks': [
+                '创建任务时 card_provider / mail_provider 下拉是哪里来的？',
+                '任务级 provider 选择会覆盖全局配置吗？',
+                'mail_account_id 是必填吗？',
+                '任务跑起来用的是 .env 还是 provider profile？',
+            ],
+        },
+        messages: [
+            { role: 'assistant', content: i18n('assistant.welcome'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' }
+        ],
+
+        async init() {
+            if (!this.enabled) return;
+            // 路径感知 quick prompts：根据当前 location.pathname 替换默认提示词，
+            // 让用户在 /config /providers /mail-accounts /tasks 页面直接看到相关问题。
+            this._applyPageAwarePrompts();
+            if (!this.backendReady) {
+                this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+                return;
+            }
+            try {
+                const bootstrap = await fetchJson('/api/assistant/bootstrap');
+                this.ready = true;
+                this.messages.push({
+                    role: 'assistant',
+                    content: i18n('assistant.bootstrap_ready', { version: bootstrap.index_version || '-' }),
+                    manual_citations: [],
+                    repo_citations: [],
+                    required_fields: [],
+                    preview: null,
+                    can_commit: false,
+                    preview_id: '',
+                });
+                // 在欢迎语后加一条页面感知的 hint，告诉用户可以问什么
+                this._maybePushPageHint();
+            } catch (error) {
+                this.ready = false;
+                this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+            }
+        },
+
+        _matchPagePrefix() {
+            // 找最长前缀匹配，避免 /tasks 被 /tasks/create 之类长路径吃掉
+            const path = (typeof location !== 'undefined' ? location.pathname : '') || '';
+            const keys = Object.keys(this.pageAwarePrompts || {});
+            let best = '';
+            for (const k of keys) {
+                if (path === k || path.startsWith(k + '/') || path === k + '/') {
+                    if (k.length > best.length) best = k;
+                }
+            }
+            return best;
+        },
+
+        _applyPageAwarePrompts() {
+            const matched = this._matchPagePrefix();
+            if (matched && Array.isArray(this.pageAwarePrompts[matched])) {
+                this.quickPrompts = this.pageAwarePrompts[matched];
+            }
+        },
+
+        _maybePushPageHint() {
+            const matched = this._matchPagePrefix();
+            if (!matched) return;
+            const hintMap = {
+                '/config': '我熟悉 docs/architecture/provider-config-flow.md，可以帮你判断 .env / provider profile / 任务级 三层配置该改哪里。',
+                '/providers': '我熟悉 provider 档案的字段含义和优先级，可以帮你判断改这里会不会被 .env 或任务级覆盖。',
+                '/mail-accounts': '我可以解释 mail_accounts 和 WARMUP_ACCOUNT_POOL 的区别，以及 role 字段（regular / pro_warmup）的语义。',
+                '/tasks': '我可以解释任务级 provider 下拉是怎么工作的，以及 mail_account_id 在 credentialed 模式下的语义。',
+            };
+            const hint = hintMap[matched];
+            if (!hint) return;
+            this.messages.push({
+                role: 'assistant',
+                content: hint,
+                manual_citations: [],
+                repo_citations: [],
+                required_fields: [],
+                preview: null,
+                can_commit: false,
+                preview_id: '',
+            });
+        },
+
+        buildActionPayload() {
+            if (!this.draftActionText.trim()) return null;
+            return JSON.parse(this.draftActionText);
+        },
+
+        async sendPrompt(prompt = null) {
+            const message = (prompt != null ? prompt : this.messageInput).trim();
+            let draftAction = null;
+            try {
+                draftAction = this.buildActionPayload();
+            } catch (error) {
+                showToast(i18n('assistant.invalid_action_json'), 'error');
+                return;
+            }
+            if (!message && !draftAction) {
+                showToast(i18n('assistant.empty_message'), 'warning');
+                return;
+            }
+
+            this.loading = true;
+            if (message) {
+                this.messages.push({ role: 'user', content: message, manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+            }
+
+            try {
+                const response = await fetchJson('/api/assistant/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message,
+                        intent_mode: this.intentMode,
+                        page_context: { path: window.location.pathname, title: document.title },
+                        draft_action: draftAction,
+                    }),
+                });
+                this.messages.push({
+                    role: 'assistant',
+                    content: response.answer || i18n('assistant.no_answer'),
+                    manual_citations: response.manual_citations || [],
+                    repo_citations: response.repo_citations || [],
+                    required_fields: response.required_fields || [],
+                    preview: response.preview || null,
+                    can_commit: Boolean(response.can_commit),
+                    preview_id: response.preview_id || '',
+                });
+                this.messageInput = '';
+                if (response.mode !== 'needs_info') this.draftActionText = '';
+            } catch (error) {
+                if (error.status === 401) {
+                    window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                    return;
+                }
+                this.messages.push({ role: 'assistant', content: error.message || i18n('assistant.request_failed'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async commitPreview(previewId) {
+            if (!previewId) return;
+            this.loading = true;
+            try {
+                const response = await fetchJson('/api/assistant/commit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preview_id: previewId }),
+                });
+                this.messages.push({
+                    role: 'assistant',
+                    content: i18n('assistant.commit_success'),
+                    manual_citations: [],
+                    repo_citations: [],
+                    required_fields: [],
+                    preview: null,
+                    can_commit: false,
+                    preview_id: '',
+                });
+                showToast(i18n('assistant.commit_success'), 'success');
+            } catch (error) {
+                this.messages.push({ role: 'assistant', content: error.message || i18n('assistant.commit_failed'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+                showToast(error.message || i18n('assistant.commit_failed'), 'error');
+            } finally {
+                this.loading = false;
+            }
+        },
+    }
+}
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
