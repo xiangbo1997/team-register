@@ -142,6 +142,18 @@ class AppConfig:
     triage_timeout_ms: int = 15000
     triage_confidence_threshold: float = 0.6
 
+    # Sentinel PoW 配置（详见 src/automation/sentinel.py）
+    # sentinel_strategy: noop / pure_python
+    #   - noop: 默认，不注入 openai-sentinel-token header（零行为变更）
+    #   - pure_python: 本地 FNV-1a brute-force PoW + curl_cffi 拿挑战
+    # sentinel_sdk_version: 写进 token payload 的 OpenAI SDK 版本号 marker
+    # sentinel_impersonate: curl_cffi 浏览器伪装版本，需与 payment_link / promo_eligibility 保持一致
+    # sentinel_timeout_ms: 单次 token 生成的超时墙；超时即视为失败、返回空 token（调用方继续裸跑）
+    sentinel_strategy: str = "noop"
+    sentinel_sdk_version: str = "20260124ceb8"
+    sentinel_impersonate: str = "chrome120"
+    sentinel_timeout_ms: int = 10000
+
     # 上场前体检（Preflight）配置
     preflight_mode: str = "warn"           # off / warn / block
     fingerprint_min_score: int = 80
@@ -391,6 +403,10 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         max_manual_handoffs=_read_int("MAX_MANUAL_HANDOFFS", 2),
         max_workers=_read_int_in_range("MAX_WORKERS", 2, min_value=1, max_value=32),
         humanize_enabled=_read_bool("HUMANIZE_ENABLED", True),
+        sentinel_strategy=os.getenv("SENTINEL_STRATEGY", "noop").strip().lower() or "noop",
+        sentinel_sdk_version=os.getenv("SENTINEL_SDK_VERSION", "20260124ceb8").strip() or "20260124ceb8",
+        sentinel_impersonate=os.getenv("SENTINEL_IMPERSONATE", "chrome120").strip() or "chrome120",
+        sentinel_timeout_ms=_read_int("SENTINEL_TIMEOUT_MS", 10000),
     )
 
     logger.debug("配置加载完成: ads_api=%s, sms_country=%s", config.ads_api, config.sms_country)

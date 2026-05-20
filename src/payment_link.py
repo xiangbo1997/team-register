@@ -20,7 +20,14 @@ from typing import Optional, Tuple
 
 from curl_cffi import requests
 
+from src.automation.sentinel import SentinelProvider, try_get_sentinel_token
+
 logger = logging.getLogger(__name__)
+
+_PAYMENT_LINK_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+)
 
 
 class PaymentLinkGenerator:
@@ -57,6 +64,7 @@ class PaymentLinkGenerator:
         cancel_url: str = _HOME_URL,
         aimizy_country: str = _AIMIZY_COUNTRY,
         aimizy_currency: str = _AIMIZY_CURRENCY,
+        sentinel_provider: Optional[SentinelProvider] = None,
     ) -> Tuple[bool, str]:
         """
         生成 checkout 链接。
@@ -93,14 +101,21 @@ class PaymentLinkGenerator:
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _PAYMENT_LINK_UA,
             "Accept": "application/json",
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
         }
+        # P0-Sentinel: 旁路 API 调用注入 openai-sentinel-token header（OpenAI 2025+ 风控扩面保险）
+        # provider=None 或失败时返回空串，调用方继续裸跑（向后兼容现状）
+        sentinel_token = try_get_sentinel_token(
+            sentinel_provider,
+            flow="authorize_continue",
+            user_agent=_PAYMENT_LINK_UA,
+            proxy=proxy,
+        )
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
         payload = cls._build_payload(
             normalized_plan,
             return_mode=return_mode,
@@ -156,6 +171,7 @@ class PaymentLinkGenerator:
         proxy: Optional[str] = None,
         aimizy_country: str = _AIMIZY_COUNTRY,
         aimizy_currency: str = _AIMIZY_CURRENCY,
+        sentinel_provider: Optional[SentinelProvider] = None,
     ) -> Tuple[bool, str]:
         """
         生成主流程可直接打开的站内 checkout 链接。
@@ -170,6 +186,7 @@ class PaymentLinkGenerator:
             return_mode="app",
             aimizy_country=aimizy_country,
             aimizy_currency=aimizy_currency,
+            sentinel_provider=sentinel_provider,
         )
 
     @classmethod
