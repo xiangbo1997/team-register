@@ -65,6 +65,8 @@ class PaymentLinkGenerator:
         aimizy_country: str = _AIMIZY_COUNTRY,
         aimizy_currency: str = _AIMIZY_CURRENCY,
         sentinel_provider: Optional[SentinelProvider] = None,
+        borrow_headers: Optional[dict[str, str]] = None,
+        borrow_cookies: Optional[dict[str, str]] = None,
     ) -> Tuple[bool, str]:
         """
         生成 checkout 链接。
@@ -79,6 +81,9 @@ class PaymentLinkGenerator:
             price_interval: Team 周期，默认 month
             success_url: Hosted checkout 成功回跳地址
             cancel_url: Hosted checkout 取消回跳地址
+            borrow_headers: 从 AdsPower 浏览器借来的反爬 header（x-oai-is / oai-device-id /
+                            sec-ch-ua-* / user-agent 等）。详见 src/automation/browser_borrow.py
+            borrow_cookies: 从 AdsPower 浏览器借来的 cookies（cf_clearance / session-token 等）
         """
         normalized_plan = cls._normalize_plan_type(plan_type)
         if not normalized_plan:
@@ -106,15 +111,21 @@ class PaymentLinkGenerator:
             "Origin": "https://chatgpt.com",
             "Referer": "https://chatgpt.com/",
         }
-        # P0-Sentinel: 旁路 API 调用注入 openai-sentinel-token header（OpenAI 2025+ 风控扩面保险）
-        # provider=None 或失败时返回空串，调用方继续裸跑（向后兼容现状）
+        # P0-借用：从 AdsPower 浏览器借来的反爬 header（x-oai-is / oai-device-id / sec-ch-ua-*）
+        # 优先级：borrow_headers > 默认 headers，让 UA / sec-ch-ua 用浏览器真实值
+        if borrow_headers:
+            for k, v in borrow_headers.items():
+                if v:
+                    headers[k] = v
+        # 兼容旧的 sentinel_provider 路径（noop 时返回空，pure_python 时试图注入 PoW）
+        # 注：实测 OpenAI 2026 用 x-oai-is（来自 borrow_headers），openai-sentinel-token 仅为实验保留
         sentinel_token = try_get_sentinel_token(
             sentinel_provider,
             flow="authorize_continue",
             user_agent=_PAYMENT_LINK_UA,
             proxy=proxy,
         )
-        if sentinel_token:
+        if sentinel_token and "x-oai-is" not in {k.lower() for k in headers}:
             headers["openai-sentinel-token"] = sentinel_token
         payload = cls._build_payload(
             normalized_plan,
@@ -126,6 +137,8 @@ class PaymentLinkGenerator:
             cancel_url=cancel_url,
         )
         proxies = {"http": proxy, "https": proxy} if proxy else None
+        # P0-借用：把浏览器借来的 cookie 喂给 curl_cffi（含 cf_clearance / session-token 等）
+        cookies_to_send = dict(borrow_cookies) if borrow_cookies else None
 
         last_error = ""
         for attempt in range(1, cls._MAX_RETRIES + 1):
@@ -135,6 +148,7 @@ class PaymentLinkGenerator:
                     cls._CHECKOUT_URL,
                     headers=headers,
                     json=payload,
+                    cookies=cookies_to_send,
                     proxies=proxies,
                     impersonate="chrome120",
                     timeout=20,
@@ -172,6 +186,8 @@ class PaymentLinkGenerator:
         aimizy_country: str = _AIMIZY_COUNTRY,
         aimizy_currency: str = _AIMIZY_CURRENCY,
         sentinel_provider: Optional[SentinelProvider] = None,
+        borrow_headers: Optional[dict[str, str]] = None,
+        borrow_cookies: Optional[dict[str, str]] = None,
     ) -> Tuple[bool, str]:
         """
         生成主流程可直接打开的站内 checkout 链接。
@@ -187,6 +203,8 @@ class PaymentLinkGenerator:
             aimizy_country=aimizy_country,
             aimizy_currency=aimizy_currency,
             sentinel_provider=sentinel_provider,
+            borrow_headers=borrow_headers,
+            borrow_cookies=borrow_cookies,
         )
 
     @classmethod
