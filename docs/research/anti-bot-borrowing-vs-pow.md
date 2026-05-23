@@ -248,6 +248,21 @@ pbpaste | python scripts/diagnose_borrow.py --curl -
 罕见情况下（OpenAI 临时降难度），可以 `SENTINEL_STRATEGY=pure_python` 启用 PoW 路径
 作 fallback。但**不建议生产长期开启**（已实测在 2026 主流场景无效）。
 
+### Step 5：检查是否是注册主链路盲区（2026-05-22 补充）
+
+如果 diagnose 显示裸跑成功 + borrow 成功（即旁路 API 没问题），但**注册主链路**成功率
+仍在下跌，可能是 OpenAI 2026-05-21 后新增的 `/verify-your-identity` 和 `/add-phone`
+拦截页 —— 这两个页面在浏览器主流程里，**不是旁路问题**。
+
+排查方法：
+```bash
+# 看 RunEvent 里有没有这两个 URL
+sqlite3 data/runs.db "SELECT run_id, payload FROM runevent WHERE payload LIKE '%verify-your-identity%' OR payload LIKE '%add-phone%' LIMIT 20;"
+```
+
+如果出现 → 需要新开 `feat/verify-identity-handling` 分支改 `AutomationState` 枚举和
+`infer_state()` 推断规则。详见 `docs/research/openai-risk-control-timeline-2026-05.md §4.5`。
+
 ---
 
 ## 6. 配置速查
@@ -335,6 +350,7 @@ b324dec  chore: 添加 diagnose_borrow.py 脚本验证裸跑 vs borrow 对比
 
 - **本仓库已有的风控文档**：
   - `docs/research/risk-control-insights.md`（probe 层 vs ban 层分层模型）
+  - `docs/research/openai-risk-control-timeline-2026-05.md`（**2026-05 月度切片，含外部 chatgpt2api-docs 2026-05-21 实测报告消化 + 注册主链路盲区分析**）
   - `docs/research/chatgpt2api-vs-team-register.md`
   - `docs/research/2026-04-25-card-preheat-stripe-radar.md`
 
