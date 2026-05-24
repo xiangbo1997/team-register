@@ -78,6 +78,17 @@ def _run_schema_migrations(engine: Engine) -> None:
         "next_action_at": "ALTER TABLE runs ADD COLUMN next_action_at DATETIME NULL",
         "warmup_pro_attempts": "ALTER TABLE runs ADD COLUMN warmup_pro_attempts INTEGER NOT NULL DEFAULT 0",
         "warmup_blocked_count": "ALTER TABLE runs ADD COLUMN warmup_blocked_count INTEGER NOT NULL DEFAULT 0",
+        # H2 BIN 健康度跟踪：跨 Run 聚合统计同 BIN 失败率
+        "card_bin": "ALTER TABLE runs ADD COLUMN card_bin VARCHAR(8) NOT NULL DEFAULT ''",
+        # 普号池：注册成功但未绑卡 / 绑成功的 Plus/Team / 已放弃，与 status 正交
+        "account_tier": "ALTER TABLE runs ADD COLUMN account_tier VARCHAR(20) NOT NULL DEFAULT 'registered'",
+        # 本 Run 内 Stripe decline 重试计数（decline_retry_service 写入）
+        "decline_attempts": "ALTER TABLE runs ADD COLUMN decline_attempts INTEGER NOT NULL DEFAULT 0",
+        # OpenAI session tokens（号池 cpa 格式导出用；worker 在 token 提取后写入）
+        "openai_tokens": "ALTER TABLE runs ADD COLUMN openai_tokens TEXT NOT NULL DEFAULT '{}'",
+        # 注册时浏览器实际走的代理出口 IP + 国家（ipinfo.io 抓取，账号池列表展示）
+        "ip_address": "ALTER TABLE runs ADD COLUMN ip_address VARCHAR(45) NOT NULL DEFAULT ''",
+        "ip_country": "ALTER TABLE runs ADD COLUMN ip_country VARCHAR(8) NOT NULL DEFAULT ''",
     }
     # mail_accounts.role 列（消除 Ambiguity #2）+ pro_warmup 号池调度字段
     mail_columns = _table_columns(engine, "mail_accounts")
@@ -88,6 +99,24 @@ def _run_schema_migrations(engine: Engine) -> None:
         "cooldown_until": "ALTER TABLE mail_accounts ADD COLUMN cooldown_until DATETIME NULL",
         "consecutive_failures": "ALTER TABLE mail_accounts ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
         "last_failure_reason": "ALTER TABLE mail_accounts ADD COLUMN last_failure_reason VARCHAR(200) NULL",
+    }
+    # 卡池：手动入池 + 手动触发预热的元信息
+    card_columns = _table_columns(engine, "card_activations")
+    card_specs = {
+        "target_warmup_count": "ALTER TABLE card_activations ADD COLUMN target_warmup_count INTEGER NOT NULL DEFAULT 0",
+        "warmup_count": "ALTER TABLE card_activations ADD COLUMN warmup_count INTEGER NOT NULL DEFAULT 0",
+        "warmed_at": "ALTER TABLE card_activations ADD COLUMN warmed_at DATETIME NULL",
+        "last_warmup_status": "ALTER TABLE card_activations ADD COLUMN last_warmup_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+        "last_warmup_reason": "ALTER TABLE card_activations ADD COLUMN last_warmup_reason VARCHAR(200) NULL",
+    }
+    # 链接模板：关联代理 id（代理池功能新增）+ promo eligibility 验证状态
+    link_template_columns = _table_columns(engine, "link_templates")
+    link_template_specs = {
+        "proxy_id": "ALTER TABLE link_templates ADD COLUMN proxy_id INTEGER NULL",
+        # promo_eligibility 模块写入：last_eligibility_* 三字段
+        "last_eligibility_status": "ALTER TABLE link_templates ADD COLUMN last_eligibility_status VARCHAR(20) NOT NULL DEFAULT ''",
+        "last_eligibility_check_at": "ALTER TABLE link_templates ADD COLUMN last_eligibility_check_at DATETIME NULL",
+        "last_eligibility_metadata": "ALTER TABLE link_templates ADD COLUMN last_eligibility_metadata JSON NULL",
     }
 
     with engine.begin() as conn:
@@ -103,6 +132,18 @@ def _run_schema_migrations(engine: Engine) -> None:
                     continue
                 conn.execute(text(ddl))
                 logger.info("已为 mail_accounts 表补齐字段: %s", column_name)
+        if card_columns:
+            for column_name, ddl in card_specs.items():
+                if column_name in card_columns:
+                    continue
+                conn.execute(text(ddl))
+                logger.info("已为 card_activations 表补齐字段: %s", column_name)
+        if link_template_columns:
+            for column_name, ddl in link_template_specs.items():
+                if column_name in link_template_columns:
+                    continue
+                conn.execute(text(ddl))
+                logger.info("已为 link_templates 表补齐字段: %s", column_name)
     # app_setting_revisions 表由 SQLModel.metadata.create_all() 自动建（init_db 调用），
     # 这里无需手工 CREATE TABLE。
 
@@ -122,6 +163,51 @@ def _seed_runtime_defaults(engine: Engine) -> None:
     from src.db.models import AppSetting, MailAccount, ProviderConfig
 
     config = load_config()
+
+    # mail provider 实例列表 — 保留 mail-default 向后兼容，
+    # 按 OUTLOOK_ENABLED / CFWORKER_ENABLED 开关追加 mail-cfworker-default / mail-outlook-default
+    # （feat/mail-provider-classes 2026-05-24 引入；与 src/providers/mail_cfworker.py + mail_outlook.py 的子类对齐）
+    mail_defaults = [
+        (
+            "mail",
+            str(config.default_mail_provider or "mail-default").strip() or "mail-default",
+            {
+                "provider_name": config.email_provider_name,
+                "session_mode": "credentialed" if config.email_provider_name == "applemail" else "managed",
+                "mailbox": "INBOX",
+            },
+        ),
+    ]
+    if getattr(config, "cfworker_enabled", False):
+        mail_defaults.append((
+            "mail",
+            "mail-cfworker-default",
+            {
+                "provider_name": "cfworker",
+                "session_mode": "managed",
+                "config_name": str(getattr(config, "cfworker_config_name", "") or "mydomain-cfworker").strip()
+                               or "mydomain-cfworker",
+                "supported_domains": ["zhangxb.xyz", "cloudsentryai.com"],
+                "mailbox": "INBOX",
+            },
+        ))
+    if getattr(config, "outlook_enabled", False):
+        mail_defaults.append((
+            "mail",
+            "mail-outlook-default",
+            {
+                "provider_name": "outlook_email_plus",
+                "session_mode": "managed",
+                "config_name": str(getattr(config, "outlook_config_name", "") or "outlook-pool-default").strip()
+                               or "outlook-pool-default",
+                "supported_domains": [
+                    "outlook.com", "hotmail.com", "live.com", "msn.com",
+                    "outlook.jp", "hotmail.co.uk",
+                ],
+                "mailbox": "INBOX",
+            },
+        ))
+
     default_providers = [
         (
             "browser",
@@ -146,15 +232,7 @@ def _seed_runtime_defaults(engine: Engine) -> None:
                 "x988card_request_timeout": config.x988card_request_timeout,
             },
         ),
-        (
-            "mail",
-            str(config.default_mail_provider or "mail-default").strip() or "mail-default",
-            {
-                "provider_name": config.email_provider_name,
-                "session_mode": "credentialed" if config.email_provider_name == "applemail" else "managed",
-                "mailbox": "INBOX",
-            },
-        ),
+        *mail_defaults,
     ]
 
     with Session(engine) as session:
