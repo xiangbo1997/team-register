@@ -9,13 +9,17 @@ Provider 抽象层
 from src.providers.browser import BrowserConnection, BrowserProvider
 from src.providers.card import CardProvider
 from src.providers.mail import MailProvider, MailSession
+from src.providers.mail_cfworker import CFWorkerMailProvider
+from src.providers.mail_outlook import OutlookMailProvider
 from src.providers.registry import ProviderRegistry
 
 __all__ = [
     "BrowserConnection",
     "BrowserProvider",
     "CardProvider",
+    "CFWorkerMailProvider",
     "MailProvider",
     "MailSession",
+    "OutlookMailProvider",
     "ProviderRegistry",
 ]

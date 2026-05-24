@@ -105,6 +105,13 @@ class AppConfig:
     # 留空=服务端从 request 的 extra 取参；填了=服务端从 DB 注入加密 extra（cfworker_api_url、admin_token 等）
     mail_config_name: str = ""
     known_mail_accounts_json: str = ""
+    # 邮件 provider 子类开关（feat/mail-provider-classes 2026-05-24 引入）
+    # 启用任一 → MailManager 按邮箱域名自动路由到对应子类，不再依赖 email_provider_name 字符串
+    # 两个都启用时：按 can_handle() 域名匹配选；都不命中 → fallback 到 email_provider_name 旧路径
+    outlook_enabled: bool = False
+    outlook_config_name: str = "outlook-pool-default"
+    cfworker_enabled: bool = False
+    cfworker_config_name: str = "mydomain-cfworker"
     # 以下为历史兼容字段，本地 provider 模式已废弃
     mail_domain: str = ""
     mail_refresh_token: str = ""
@@ -141,6 +148,18 @@ class AppConfig:
     triage_model: str = ""
     triage_timeout_ms: int = 15000
     triage_confidence_threshold: float = 0.6
+
+    # Captcha solver 配置（自愈框架，详见 src/automation/captcha_solver.py）
+    # captcha_solver_kind: noop / manual / nocaptcha
+    #   - noop: 默认，不做任何事（零行为变更）
+    #   - manual: 强制走人工接管，但事件日志能区分"故意降级"
+    #   - nocaptcha: 调 nocaptcha.io 的 universal Turnstile 端点
+    # captcha_solver_budget_cap_usd: 每日预算硬上限。超出后自动降级 manual，避免 VLM 服务费失控。
+    # captcha_solver_timeout_ms: 单次求解的超时墙；超时即视为失败、回到 BLOCKED。
+    captcha_solver_kind: str = "noop"
+    nocaptcha_user_token: str = ""
+    captcha_solver_budget_cap_usd: float = 5.0
+    captcha_solver_timeout_ms: int = 30000
 
     # Sentinel PoW 配置（详见 src/automation/sentinel.py）
     # sentinel_strategy: noop / pure_python
@@ -205,6 +224,14 @@ class AppConfig:
     # 排障时可设为 false 退回 Playwright 原生 click/fill 以加快响应。
     humanize_enabled: bool = True
 
+    # 批量注册场景下，由 worker 从 Run.config_snapshot.identity 注入的真实身份字段。
+    # main.py:fill_about_you 优先用这些（防风控聚类），缺省时 fallback 到原 lowercase 随机生成。
+    # 这些字段不会出现在 .env，只在 worker._resolve_runtime_config 里动态注入。
+    identity_first_name: str = ""
+    identity_last_name: str = ""
+    identity_email_local: str = ""
+    identity_birthdate: str = ""
+
     def validate(self, required_modules: Optional[list[str]] = None) -> list[str]:
         """
         校验配置完整性，返回缺失字段列表。
@@ -242,6 +269,9 @@ class AppConfig:
                 ("triage_api_key", "TRIAGE_API_KEY"),
                 ("triage_model", "TRIAGE_MODEL"),
             ],
+            "captcha": [
+                ("nocaptcha_user_token", "NOCAPTCHA_USER_TOKEN"),
+            ],
         }
 
         modules_to_check = required_modules or []
@@ -249,6 +279,9 @@ class AppConfig:
             if module_name == "llm" and not self.llm_enabled:
                 continue
             if module_name == "triage" and not self.triage_enabled:
+                continue
+            # captcha 模块只在使用第三方 solver 时才校验 token
+            if module_name == "captcha" and self.captcha_solver_kind != "nocaptcha":
                 continue
             checks = module_checks.get(module_name, [])
             for attr_name, env_name in checks:
@@ -343,6 +376,10 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         email_provider_name=os.getenv("EMAIL_PROVIDER_NAME", "applemail").strip().lower() or "applemail",
         mail_config_name=os.getenv("MAIL_CONFIG_NAME", "").strip(),
         known_mail_accounts_json=os.getenv("KNOWN_MAIL_ACCOUNTS_JSON", ""),
+        outlook_enabled=(os.getenv("OUTLOOK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}),
+        outlook_config_name=os.getenv("OUTLOOK_CONFIG_NAME", "outlook-pool-default").strip() or "outlook-pool-default",
+        cfworker_enabled=(os.getenv("CFWORKER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}),
+        cfworker_config_name=os.getenv("CFWORKER_CONFIG_NAME", "mydomain-cfworker").strip() or "mydomain-cfworker",
         mail_domain=os.getenv("MAIL_DOMAIN", ""),
         mail_refresh_token=os.getenv("MAIL_REFRESH_TOKEN", ""),
         mail_client_id=os.getenv("MAIL_CLIENT_ID", ""),
@@ -403,6 +440,10 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         max_manual_handoffs=_read_int("MAX_MANUAL_HANDOFFS", 2),
         max_workers=_read_int_in_range("MAX_WORKERS", 2, min_value=1, max_value=32),
         humanize_enabled=_read_bool("HUMANIZE_ENABLED", True),
+        captcha_solver_kind=os.getenv("CAPTCHA_SOLVER_KIND", "noop").strip().lower() or "noop",
+        nocaptcha_user_token=os.getenv("NOCAPTCHA_USER_TOKEN", "").strip(),
+        captcha_solver_budget_cap_usd=_read_float("CAPTCHA_SOLVER_BUDGET_CAP_USD", 5.0),
+        captcha_solver_timeout_ms=_read_int("CAPTCHA_SOLVER_TIMEOUT_MS", 30000),
         sentinel_strategy=os.getenv("SENTINEL_STRATEGY", "noop").strip().lower() or "noop",
         sentinel_sdk_version=os.getenv("SENTINEL_SDK_VERSION", "20260124ceb8").strip() or "20260124ceb8",
         sentinel_impersonate=os.getenv("SENTINEL_IMPERSONATE", "chrome120").strip() or "chrome120",
@@ -420,7 +461,7 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
     return config
 
 
-_MAIL_PROVIDERS_REQUIRING_CONFIG_NAME = frozenset({"cfworker", "skymail"})
+_MAIL_PROVIDERS_REQUIRING_CONFIG_NAME = frozenset({"cfworker", "skymail", "outlook_email_plus"})
 
 
 def _warn_if_mail_config_incomplete(config: AppConfig) -> None:

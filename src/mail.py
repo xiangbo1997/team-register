@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from src.providers.mail import HttpMailProvider, MailSession
+from src.providers.mail import HttpMailProvider, MailProvider, MailSession
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ _APPLEMAIL_PLACEHOLDER_PASSWORD = "unused"
 # 模式下必须有 config_name，否则服务端 cfworker / skymail 实现拿不到加密 DB
 # 注入的 cfworker_api_url / admin_token，会抛 PROVIDER_NOT_CONFIGURED。
 # 与 src/api/routes/config.py:_MAIL_MANAGED_REQUIRED_FIELDS 保持同步。
-_PROVIDERS_REQUIRING_CONFIG_NAME = frozenset({"cfworker", "skymail"})
+_PROVIDERS_REQUIRING_CONFIG_NAME = frozenset({"cfworker", "skymail", "outlook_email_plus"})
 
 
 def _mask_email(email: str) -> str:
@@ -73,6 +73,11 @@ class MailManager:
         proxy: str = "",
         preferred_session_mode: str = "",
         config_name: str = "",
+        # 邮件 provider 子类实例列表（feat/mail-provider-classes 2026-05-24 引入）
+        # 当传入时，MailManager 优先按 can_handle(email) 路由到对应子类；
+        # 都不命中 → fallback 到 self._provider（旧路径 + provider_name 字符串）
+        # 留 None / 空列表 → 完全走旧路径（100% 向后兼容）
+        providers: Optional[list[MailProvider]] = None,
     ) -> None:
         self._provider = HttpMailProvider(base_url=base_url, api_key=api_key)
         self._provider_name = str(provider_name or _APPLEMAIL_PROVIDER).strip().lower() or _APPLEMAIL_PROVIDER
@@ -85,6 +90,43 @@ class MailManager:
         # 保留旧参数引用以兼容日志，但不再用于业务逻辑
         self._refresh_token = refresh_token
         self._client_id = client_id
+        # provider 子类列表（按域名路由）。None / 空 → 关闭新路径，全走旧 provider_name 字符串路径
+        self._providers: list[MailProvider] = list(providers or [])
+
+    def _select_provider_for_email(self, email: str) -> Optional[MailProvider]:
+        """按邮箱域名挑 provider 子类。
+
+        遍历 self._providers，调每个 provider 的 ``can_handle(email)``，
+        第一个命中的实例返回。都不命中 → 返回 None，调用方走旧路径。
+
+        优先级顺序：
+        1. 列表前置项优先（构造时顺序决定）
+        2. 子类必须实现 ``can_handle()`` 类方法（OutlookMailProvider /
+           CFWorkerMailProvider 都已实现）
+        3. 没有 ``can_handle`` 方法的 provider 实例视为通用 fallback（跳过）
+        """
+        if not email or "@" not in email or not self._providers:
+            return None
+        for prov in self._providers:
+            can_handle = getattr(type(prov), "can_handle", None)
+            if not callable(can_handle):
+                continue
+            try:
+                if can_handle(email):
+                    logger.debug(
+                        "MailManager: %s 命中 provider 子类 %s",
+                        _mask_email(email),
+                        type(prov).__name__,
+                    )
+                    return prov
+            except Exception as exc:
+                logger.warning(
+                    "MailManager: provider %s.can_handle(%s) 抛异常，跳过: %s",
+                    type(prov).__name__,
+                    _mask_email(email),
+                    exc,
+                )
+        return None
 
     def get_latest_mail(self, email: str, mailbox: str = "INBOX") -> None:
         """向后兼容占位，已废弃"""
@@ -426,3 +468,53 @@ class MailManager:
         """清空邮箱（HTTP API 模式下由服务端管理，此处为兼容占位）"""
         logger.info("clear_mailbox() 在 HTTP API 模式下无需主动调用")
         return True
+
+
+# ──────────────────────────────────────────────────────────────
+# Provider 实例工厂（feat/mail-provider-classes 2026-05-24 引入）
+# ──────────────────────────────────────────────────────────────
+
+def build_mail_providers(config: Any) -> list[MailProvider]:
+    """根据 AppConfig 构造启用的 mail provider 实例列表。
+
+    返回的列表按优先级排序 — MailManager 调 can_handle() 时按列表顺序命中谁谁负责。
+
+    用法（调用方）：
+        from src.config import load_config
+        from src.mail import MailManager, build_mail_providers
+
+        config = load_config()
+        mail = MailManager(
+            base_url=config.email_provider_base_url,
+            api_key=config.email_provider_api_key,
+            provider_name=config.email_provider_name,  # 旧参数保留作 fallback
+            providers=build_mail_providers(config),
+            # ... 其他参数不变
+        )
+
+    向后兼容：
+    - config 没有 outlook_enabled / cfworker_enabled 字段时返回空列表（旧版 AppConfig）
+    - 任一字段未启用 → 该 provider 不进列表
+    """
+    providers: list[MailProvider] = []
+
+    base_url = str(getattr(config, "email_provider_base_url", "") or "")
+    api_key = str(getattr(config, "email_provider_api_key", "") or "")
+
+    if getattr(config, "outlook_enabled", False):
+        from src.providers.mail_outlook import OutlookMailProvider
+        providers.append(OutlookMailProvider(
+            base_url=base_url,
+            api_key=api_key,
+            config_name=str(getattr(config, "outlook_config_name", "") or ""),
+        ))
+
+    if getattr(config, "cfworker_enabled", False):
+        from src.providers.mail_cfworker import CFWorkerMailProvider
+        providers.append(CFWorkerMailProvider(
+            base_url=base_url,
+            api_key=api_key,
+            config_name=str(getattr(config, "cfworker_config_name", "") or ""),
+        ))
+
+    return providers

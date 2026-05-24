@@ -59,6 +59,9 @@ _MAIL_MANAGED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     # 让服务端从加密 DB 注入 cfworker_api_url / admin_token 等
     "cfworker": frozenset({"config_name"}),
     "skymail": frozenset({"config_name"}),
+    # outlook_email_plus 自托管账号池 — 必须有 config_name 指向 outlook-pool-default
+    # 让服务端从加密 DB 注入 outlook_email_plus_api_url + api_key
+    "outlook_email_plus": frozenset({"config_name"}),
     # freemail / tempmail_lol 等 auto-allocate 类不需要 config_name；不在白名单的
     # provider 默认不强制校验，避免锁死扩展
 }
