@@ -28,12 +28,50 @@
                                class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                :placeholder="i18n('tasks.create.placeholders.profile_id')">
                     </div>
+                    <!-- 任务模式选择 -->
                     <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('tasks.create.card_key')"></label>
-                        <input type="text" x-model="form.card_key"
-                               class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                               :placeholder="i18n('tasks.create.placeholders.card_key')">
-                        <p class="text-xs text-gray-400 mt-1" x-text="i18n('tasks.create.card_key_hint')"></p>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">任务模式 *</label>
+                        <select x-model="form.mode" class="w-full text-sm border rounded-md px-3 py-2">
+                            <option value="full">完整流程（注册 + 提取 token + 绑卡支付）</option>
+                            <option value="register_only">仅注册（注册成功后进普号池，绑卡稍后手动）</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">
+                            <span x-show="form.mode === 'register_only'">注册成功后号自动进 <a href="/accounts" class="text-blue-600 underline">/accounts</a> 普号池，无需 card_key</span>
+                            <span x-show="form.mode === 'full'">完整流程必须提供 card_key（手填或从卡池选）</span>
+                        </p>
+                    </div>
+
+                    <!-- card_key tab 切换 -->
+                    <div x-show="form.mode === 'full'">
+                        <label class="block text-xs font-medium text-gray-600 mb-1">卡密来源 *</label>
+                        <div class="flex gap-1 mb-2 border-b">
+                            <button type="button" @click="cardSource='pool'; form.card_key=''"
+                                    :class="cardSource === 'pool' ? 'border-blue-600 text-blue-600 font-medium' : 'border-transparent text-gray-500'"
+                                    class="px-3 py-1 text-xs border-b-2 -mb-px">从卡池选（推荐）</button>
+                            <button type="button" @click="cardSource='manual'; form.card_key=''"
+                                    :class="cardSource === 'manual' ? 'border-blue-600 text-blue-600 font-medium' : 'border-transparent text-gray-500'"
+                                    class="px-3 py-1 text-xs border-b-2 -mb-px">手填 CDK（高级）</button>
+                        </div>
+                        <!-- Tab 1: 从卡池选 -->
+                        <div x-show="cardSource === 'pool'">
+                            <select x-model="form.card_key" class="w-full text-sm border rounded-md px-3 py-2">
+                                <option value="">-- 请选择成熟卡 --</option>
+                                <template x-for="c in readyCards" :key="c.card_key">
+                                    <option :value="c.card_key"
+                                            x-text="`****${c.last4} ${c.bin_country || ''} ${c.card_provider} (${c.warmup_count}/${c.target_warmup_count})`"></option>
+                                </template>
+                            </select>
+                            <p x-show="readyCards.length === 0" class="text-xs text-red-500 mt-1">
+                                没有成熟卡，先到 <a href="/cards" class="underline">/cards</a> 入池 + 热卡
+                            </p>
+                        </div>
+                        <!-- Tab 2: 手填 -->
+                        <div x-show="cardSource === 'manual'">
+                            <input type="text" x-model="form.card_key"
+                                   class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                   :placeholder="i18n('tasks.create.placeholders.card_key')">
+                            <p class="text-xs text-gray-400 mt-1" x-text="i18n('tasks.create.card_key_hint')"></p>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-gray-600 mb-1">浏览器 Provider *</label>
@@ -94,6 +132,114 @@
                         x-text="i18n('tasks.create.batch_btn')"></button>
             </div>
         </div>
+
+        <!-- 🚀 全自动批量注册（防风控） -->
+        <div class="bg-gradient-to-br from-blue-50 to-purple-50 rounded-lg shadow-sm border-2 border-blue-200 p-6 mt-6">
+            <h3 class="text-sm font-semibold text-blue-900 mb-1">🚀 全自动批量注册（多 profile 并发 + 防风控）</h3>
+            <p class="text-xs text-gray-600 mb-4">
+                自动用<strong>真实英文名 + 出生年</strong>生成邮箱（如 william.harrison82@xxx）。
+                填多个 AdsPower Profile ID 即可<strong>并发跑</strong>（每行一个，N 行 = N 并发），
+                每个 profile 内部按抖动间隔串行。注册成功后号自动入普号池，待手动绑卡。
+            </p>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">数量 (1-100) *</label>
+                    <input type="number" x-model.number="autoBatch.count" min="1" max="100"
+                           class="w-full text-sm border rounded-md px-3 py-2">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">性别（防止全男/全女聚类）</label>
+                    <select x-model="autoBatch.gender" class="w-full text-sm border rounded-md px-3 py-2">
+                        <option value="">混合（推荐）</option>
+                        <option value="m">仅男性</option>
+                        <option value="f">仅女性</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">间隔下限（秒）*</label>
+                    <input type="number" x-model.number="autoBatch.interval_min_sec" min="0" step="5"
+                           class="w-full text-sm border rounded-md px-3 py-2">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">间隔上限（秒）*</label>
+                    <input type="number" x-model.number="autoBatch.interval_max_sec" min="0" step="5"
+                           class="w-full text-sm border rounded-md px-3 py-2">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-600 mb-1">
+                        AdsPower Profile IDs *
+                        <span class="text-gray-400 font-normal">（每行一个；并发数 = 行数）</span>
+                    </label>
+                    <textarea x-model="autoBatch.profile_ids_text" rows="4"
+                              class="w-full text-sm border rounded-md px-3 py-2 font-mono"
+                              placeholder="每行一个 AdsPower Profile ID，例如：&#10;k1b9945d&#10;k1b9946e&#10;k1b9947f"></textarea>
+                    <p class="text-xs text-gray-500 mt-1">
+                        <span x-show="profileIdsParsed.length === 0" class="text-red-500">⚠️ 请至少填一个 profile</span>
+                        <span x-show="profileIdsParsed.length > 0">
+                            ✓ 并发数 <span class="font-mono font-semibold" x-text="profileIdsParsed.length"></span>
+                            ·
+                            每 profile 分到约 <span class="font-mono" x-text="Math.ceil(autoBatch.count / Math.max(profileIdsParsed.length, 1))"></span> 个号
+                            <span x-show="profileIdsParsed.length > autoBatch.count" class="text-amber-600">
+                                · ⚠ profile 比号多 <span class="font-mono" x-text="profileIdsParsed.length - autoBatch.count"></span> 个会闲置
+                            </span>
+                        </span>
+                    </p>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-600 mb-1">共用密码 *</label>
+                    <input type="text" x-model="autoBatch.password"
+                           class="w-full text-sm border rounded-md px-3 py-2"
+                           placeholder="所有号都用这个密码">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">任务模式</label>
+                    <select x-model="autoBatch.mode" class="w-full text-sm border rounded-md px-3 py-2">
+                        <option value="register_only">仅注册（推荐：进普号池待手动绑卡）</option>
+                        <option value="full">完整流程（注册 + 绑卡，需要 card_key 池里有熟卡）</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">邮箱供应商</label>
+                    <select x-model="autoBatch.mail_provider" class="w-full text-sm border rounded-md px-3 py-2">
+                        <option value="">默认（沿用 .env / 单任务表单设置）</option>
+                        <template x-for="mp in mailProviders" :key="mp.id || mp.provider_name">
+                            <option :value="mp.provider_name" x-text="mp.provider_name + (mp.session_mode ? ` · ${mp.session_mode}` : '')"></option>
+                        </template>
+                    </select>
+                    <p class="text-[10px] text-gray-400 mt-1">managed 模式自动从邮箱池随机分配；如要切自建域名 / Outlook 池在此选择</p>
+                </div>
+            </div>
+            <div class="flex items-center justify-between mt-4 pt-4 border-t border-blue-200">
+                <div class="text-xs text-gray-500">
+                    预估总耗时：<span x-text="estimatedDuration"></span>
+                </div>
+                <button @click="autoBatchSubmit()" :disabled="autoBatch.submitting"
+                        class="px-6 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50">
+                    <span x-text="autoBatch.submitting ? '启动中...' : '🚀 启动批量任务'"></span>
+                </button>
+            </div>
+
+            <!-- 实时进度 -->
+            <div x-show="autoBatch.activeBatchId" x-cloak class="mt-4 p-3 bg-white rounded border">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs font-medium">
+                        Batch <span class="font-mono text-blue-600" x-text="autoBatch.activeBatchId"></span>
+                    </div>
+                    <button @click="cancelAutoBatch()" x-show="autoBatch.batchStatus.status === 'running'"
+                            class="text-xs px-2 py-1 text-red-600 border border-red-300 rounded hover:bg-red-50">取消</button>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="bg-blue-600 h-2 rounded-full transition-all"
+                         :style="`width: ${autoBatch.batchStatus.progress_pct || 0}%`"></div>
+                </div>
+                <div class="text-xs text-gray-600 mt-2 grid grid-cols-4 gap-2">
+                    <div>已提交：<span class="font-mono" x-text="autoBatch.batchStatus.submitted"></span> / <span x-text="autoBatch.batchStatus.total"></span></div>
+                    <div>失败：<span class="font-mono text-red-600" x-text="autoBatch.batchStatus.failed"></span></div>
+                    <div>并发：<span class="font-mono text-blue-600" x-text="autoBatch.batchStatus.concurrency || 1"></span></div>
+                    <div>状态：<span class="font-mono" x-text="autoBatch.batchStatus.status"></span></div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -109,6 +255,7 @@ function createTaskData() {
             card_provider: '',
             mail_provider: '',
             mail_account_id: '',
+            mode: 'full',
         },
         batchText: '',
         submitting: false,
@@ -116,29 +263,82 @@ function createTaskData() {
         cardProviders: [],
         mailProviders: [],
         mailAccounts: [],
+        readyCards: [],
+        cardSource: 'pool',  // 'pool' | 'manual'
         defaults: {},
+
+        // 全自动批量注册
+        autoBatch: {
+            count: 5,
+            gender: '',
+            interval_min_sec: 30,
+            interval_max_sec: 90,
+            profile_ids_text: '',  // textarea 原始文本（每行一个 profile_id）
+            password: '',
+            mode: 'register_only',
+            mail_provider: '',  // 批量任务独立的邮箱供应商；空 = 沿用单任务表单或 .env 默认
+            submitting: false,
+            activeBatchId: '',
+            batchStatus: { progress_pct: 0, submitted: 0, failed: 0, total: 0, status: '' },
+            _pollTimer: null,
+        },
+
+        // textarea 解析：按行/逗号切分，去空 + 去重（保序）
+        get profileIdsParsed() {
+            const raw = this.autoBatch.profile_ids_text || '';
+            const items = raw.split(/[\n,]+/).map(s => s.trim()).filter(s => s.length > 0);
+            // 保序去重
+            const seen = new Set();
+            const unique = [];
+            for (const item of items) {
+                if (!seen.has(item)) {
+                    seen.add(item);
+                    unique.push(item);
+                }
+            }
+            return unique;
+        },
+
+        get estimatedDuration() {
+            const c = Math.max(1, this.autoBatch.count);
+            const concurrency = Math.max(1, this.profileIdsParsed.length);
+            const avg = (this.autoBatch.interval_min_sec + this.autoBatch.interval_max_sec) / 2;
+            // 每个 profile 分到的号数 ≈ ceil(c / concurrency)，profile 内部 (n-1) 次间隔
+            const perProfile = Math.ceil(c / concurrency);
+            const totalSec = Math.max(0, perProfile - 1) * avg;
+            const m = Math.floor(totalSec / 60);
+            const s = Math.floor(totalSec % 60);
+            const base = m > 0 ? `约 ${m}m ${s}s` : `约 ${s}s`;
+            return concurrency > 1
+                ? `${base}（${concurrency} profile 并发；仅 submit 间隔）`
+                : `${base}（仅 submit 间隔）`;
+        },
 
         async init() {
             await this.fetchSelections();
         },
 
         async fetchSelections() {
-            const [config, browserProviders, cardProviders, mailProviders, mailAccounts] = await Promise.all([
+            const [config, browserProviders, cardProviders, mailProviders, mailAccounts, readyCards] = await Promise.all([
                 fetchJson('/api/config'),
                 fetchJson('/api/providers?provider_type=browser&active_only=true'),
                 fetchJson('/api/providers?provider_type=card&active_only=true'),
                 fetchJson('/api/providers?provider_type=mail&active_only=true'),
                 fetchJson('/api/mail-accounts?active_only=true'),
+                fetchJson('/api/cards/ready').catch(() => []),
             ]);
             this.defaults = config || {};
             this.browserProviders = browserProviders || [];
             this.cardProviders = cardProviders || [];
             this.mailProviders = mailProviders || [];
             this.mailAccounts = mailAccounts || [];
+            this.readyCards = readyCards || [];
             this.form.browser_provider = this.defaults.default_browser_provider || this.browserProviders[0]?.provider_name || '';
             this.form.card_provider = this.defaults.default_card_provider || this.cardProviders[0]?.provider_name || '';
             this.form.mail_provider = this.defaults.default_mail_provider || this.mailProviders[0]?.provider_name || '';
             this.form.mail_account_id = this.defaults.default_mail_account_id || '';
+            // 没有成熟卡时默认切到手填模式
+            if (this.readyCards.length === 0) this.cardSource = 'manual';
         },
 
         selectedMailProviderConfig() {
@@ -173,6 +373,80 @@ function createTaskData() {
             } catch (error) {
                 showToast(error.message || i18n('tasks.create.create_failed'), 'error');
             } finally { this.submitting = false; }
+        },
+
+        async autoBatchSubmit() {
+            const profileIds = this.profileIdsParsed;
+            if (profileIds.length === 0 || !this.autoBatch.password.trim()) {
+                showToast('请至少填一个 profile_id 和 password', 'error');
+                return;
+            }
+            if (this.autoBatch.interval_max_sec < this.autoBatch.interval_min_sec) {
+                showToast('间隔上限必须 >= 下限', 'error');
+                return;
+            }
+            this.autoBatch.submitting = true;
+            try {
+                const result = await fetchJson('/api/tasks/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        count: this.autoBatch.count,
+                        profile_ids: profileIds,
+                        password: this.autoBatch.password,
+                        interval_min_sec: this.autoBatch.interval_min_sec,
+                        interval_max_sec: this.autoBatch.interval_max_sec,
+                        mode: this.autoBatch.mode,
+                        gender: this.autoBatch.gender || null,
+                        browser_provider: this.form.browser_provider || '',
+                        card_provider: this.form.card_provider || '',
+                        // mail_provider 优先用批量面板自己的下拉；为空时 fallback 单任务表单的选择
+                        mail_provider: this.autoBatch.mail_provider || this.form.mail_provider || '',
+                        // mail_account_id 批量场景不暴露，留空走 managed 池随机分配
+                        mail_account_id: '',
+                    }),
+                });
+                this.autoBatch.activeBatchId = result.batch_id;
+                const concurrency = result.concurrency || profileIds.length;
+                showToast(
+                    `批量任务已启动：${result.total} 个号 × ${concurrency} profile 并发`,
+                    'success'
+                );
+                this.startBatchPolling();
+            } catch (exc) {
+                // showToast 由 fetchJson 已经 fire
+            } finally {
+                this.autoBatch.submitting = false;
+            }
+        },
+
+        startBatchPolling() {
+            if (this.autoBatch._pollTimer) clearInterval(this.autoBatch._pollTimer);
+            const poll = async () => {
+                if (!this.autoBatch.activeBatchId) return;
+                try {
+                    const st = await fetchJson(`/api/tasks/batch/${encodeURIComponent(this.autoBatch.activeBatchId)}`);
+                    this.autoBatch.batchStatus = st;
+                    if (st.status !== 'running') {
+                        clearInterval(this.autoBatch._pollTimer);
+                        this.autoBatch._pollTimer = null;
+                        showToast(`批量任务${st.status === 'completed' ? '已完成' : '已结束'}：成功 ${st.submitted} / 失败 ${st.failed}`,
+                                  st.status === 'completed' ? 'success' : 'info');
+                    }
+                } catch (_) {}
+            };
+            poll();
+            this.autoBatch._pollTimer = setInterval(poll, 3000);
+        },
+
+        async cancelAutoBatch() {
+            if (!confirm('取消批量任务？已 submit 的不会撤回，仅停止后续 submit')) return;
+            await fetchJson(`/api/tasks/batch/${encodeURIComponent(this.autoBatch.activeBatchId)}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            showToast('已请求取消', 'info');
         },
 
         async batchSubmit() {
