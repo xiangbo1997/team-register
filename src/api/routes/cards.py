@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-虚拟卡缓存管理 API
+虚拟卡缓存管理 API + 卡池管理
 
 GET    /api/cards                     — 列表（默认隐藏 invalidated；?include_invalidated=true 全量）
 GET    /api/cards/{card_key}          — 详情
 POST   /api/cards/{card_key}/invalidate — 手动作废
+POST   /api/cards                     — 入池（卡池新增功能）
+POST   /api/cards/{card_key}/warmup   — 触发一轮热卡（异步）
+GET    /api/cards/{card_key}/warmup-status — 查热卡状态
+GET    /api/cards/ready               — 列出成熟卡（任务页下拉用）
 
 所有响应严格脱敏：
   - card_number 只返回 last4 + bin（前 6 位）
@@ -13,13 +17,16 @@ POST   /api/cards/{card_key}/invalidate — 手动作废
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from src.api.security import require_csrf, require_role
+from src.config import load_config
 from src.db.models import CardActivation, User
 from src.services.card_activation_service import (
     WARMUP_CARD_CACHE_MAX_AGE_DAYS,
@@ -29,12 +36,98 @@ from src.services.card_activation_service import (
     invalidate as svc_invalidate,
     list_activations,
 )
+from src.services.card_pool_service import (
+    _AlreadyRunningError,
+    add_card,
+    get_warmup_status,
+    list_pool,
+    trigger_warmup,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
 
 
 class InvalidateRequest(BaseModel):
     reason: str = "manual"
+
+
+class AddCardRequest(BaseModel):
+    card_key: str = Field(..., min_length=1, max_length=64)
+    card_provider: str = Field(..., description="efuncard / nodecard / x988card")
+    target_warmup_count: int = Field(default=0, ge=0, le=20)
+
+
+def _build_card_api(card_provider: str):
+    """根据 card_provider 名构造对应卡商客户端实例。
+
+    用 lazy import 避免顶层循环依赖（card_pool_service → cards.py → card_pool_service）。
+    """
+    config = load_config()
+    provider = (card_provider or "").strip().lower()
+    if provider == "efuncard":
+        from src.efuncard import EfunCard
+        return EfunCard(token=config.efuncard_token)
+    if provider == "nodecard":
+        from src.nodecard import NodeCard
+        return NodeCard(
+            base_url=config.nodecard_api_url,
+            merchant_dict_id=config.nodecard_merchant_id or None,
+            platform_id=config.nodecard_platform_id or None,
+        )
+    if provider == "x988card":
+        from src.x988card import X988Card
+        return X988Card(
+            base_url=config.x988card_api_base,
+            request_timeout=config.x988card_request_timeout,
+        )
+    raise HTTPException(status_code=400, detail=f"未知 card_provider: {card_provider}")
+
+
+_LONG_DIGIT_RE = re.compile(r"\b\d{12,19}\b")
+_SENSITIVE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_SENSITIVE_WORD_RE = re.compile(r"\b(token|proxy|sms_api|cvv|authorization|bearer)\b", re.IGNORECASE)
+
+
+def _safe_error_detail(detail: object, fallback: str) -> str:
+    """对外错误信息只保留业务可读文本，避免泄漏卡号/CVV/sms_api/token/proxy。"""
+    text = str(detail or "").strip()
+    if not text:
+        return fallback
+    text = _LONG_DIGIT_RE.sub("[REDACTED_CARD]", text)
+    text = _SENSITIVE_URL_RE.sub("[REDACTED_URL]", text)
+    if _SENSITIVE_WORD_RE.search(text) or "Traceback" in text or len(text) > 180:
+        return fallback
+    return text
+
+
+def _redact_pool(rec: CardActivation) -> dict[str, Any]:
+    """卡池视角的脱敏序列化（含 warmup 进度字段）。"""
+    raw = rec.card_number or ""
+    last4 = raw[-4:] if len(raw) >= 4 else ""
+    bin_prefix = raw[:6] if len(raw) >= 6 else ""
+    activated_aware = _ensure_aware(rec.activated_at) if rec.activated_at else None
+    warmed_aware = _ensure_aware(rec.warmed_at) if rec.warmed_at else None
+    return {
+        "card_key": rec.card_key,
+        "card_provider": rec.card_provider,
+        "last4": last4,
+        "bin_prefix": bin_prefix,
+        "bin_country": rec.bin_country,
+        "expiry_month": rec.expiry_month,
+        "expiry_year": rec.expiry_year,
+        "name_on_card": rec.name_on_card,
+        "use_count": int(rec.use_count or 0),
+        "is_invalidated": bool(rec.is_invalidated),
+        "warmup_count": int(rec.warmup_count or 0),
+        "target_warmup_count": int(rec.target_warmup_count or 0),
+        "is_ready": int(rec.warmup_count or 0) >= int(rec.target_warmup_count or 0),
+        "last_warmup_status": rec.last_warmup_status or "pending",
+        "last_warmup_reason": rec.last_warmup_reason or "",
+        "warmed_at": warmed_aware.isoformat() if warmed_aware else "",
+        "activated_at": activated_aware.isoformat() if activated_aware else "",
+    }
 
 
 def _redact(rec: CardActivation) -> dict[str, Any]:
@@ -92,6 +185,93 @@ def list_cards(
     return [_redact(r) for r in records]
 
 
+# ── 卡池管理端点 ────────────────────────────────────────────
+
+
+@router.get("/ready")
+def list_ready_cards(
+    user: User = Depends(require_role("admin")),
+):
+    """列出可用于任务的成熟卡（warmup_count >= target_warmup_count）。
+
+    任务创建页"从卡池选"下拉用此端点。
+    """
+    rows = list_pool(only_ready=True)
+    return [_redact_pool(r) for r in rows]
+
+
+@router.get("/pool")
+def list_pool_cards(
+    include_invalidated: bool = Query(False),
+    only_ready: bool = Query(False),
+    card_provider: Optional[str] = Query(None),
+    user: User = Depends(require_role("admin")),
+):
+    """卡池视角列表（含 warmup 进度字段）。"""
+    rows = list_pool(
+        include_invalidated=include_invalidated,
+        only_ready=only_ready,
+        card_provider=card_provider,
+    )
+    return [_redact_pool(r) for r in rows]
+
+
+class SyntheticVisaRequest(BaseModel):
+    """合成 Visa 卡生成请求（PayPal 友好 BIN，绕过 RESTRICTED_USER）。"""
+    bin_prefix: Optional[str] = Field(
+        default=None,
+        description="可选指定 BIN：'4147'（Chase）或 '4100'（Wells Fargo / Apple Card）；空则随机",
+    )
+    seed: Optional[str] = Field(
+        default=None,
+        description="可选确定性 seed：同 seed 永远生成同一张卡（用于审计追踪 / 同账号重试）",
+    )
+
+
+@router.post("/synthetic-visa")
+def generate_synthetic_visa_card(
+    body: SyntheticVisaRequest,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """生成 PayPal 友好的合成卡完整套件（卡 + 地址 + 姓名 + 电话）。
+
+    用于 PayPal guest checkout 绑卡场景（一次返回所有 PayPal 表单需要的字段）：
+      - 卡：4147/4100 BIN + Luhn 合法，通过 PayPal 预校验
+      - 持卡人姓名：跟主注册流姓名池一致（First name + Last name + Full name）
+      - 账单地址：精选 24 个美国中产社区真实地址（ZIP+state+city 通过 USPS）
+      - 电话：区号跟 state 一致，避坑 555 测试号
+
+    所有字段保证内部一致：
+      - 卡持卡人姓名 = 账单姓名
+      - 电话区号 = 账单地址 state 区号
+      - ZIP + state + city 三向通过 PayPal AVS
+
+    ⚠️ 注意：合成卡**不能真实扣款**，仅用于绑定 0 元试用场景。
+    """
+    from src.fintech.synthetic_visa import generate_synthetic_visa_kit
+
+    bin_tuple = None
+    if body.bin_prefix:
+        clean = body.bin_prefix.strip()
+        if clean not in ("4147", "4100"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"bin_prefix 必须是 '4147' 或 '4100'，得到 {clean!r}",
+            )
+        bin_tuple = tuple(int(c) for c in clean)
+
+    kit = generate_synthetic_visa_kit(bin_prefix=bin_tuple, seed=body.seed)
+    payload = kit.to_form_payload()
+    logger.info(
+        "synthetic_visa_kit 已生成: bin=%s last4=%s name=%s state=%s requester=%s",
+        kit.card.bin_prefix, kit.card.last_four, kit.full_name,
+        kit.address_state, user.username,
+    )
+    payload["note"] = "合成卡仅过 PayPal 预校验，不能真实扣款；用于 0 元试用场景"
+    return payload
+
+
 @router.get("/{card_key}")
 def get_card_detail(
     card_key: str,
@@ -118,3 +298,90 @@ def invalidate_card(
         raise HTTPException(status_code=404, detail="卡密不存在")
     rec = get_activation(card_key)
     return _redact(rec) if rec else {"ok": True}
+
+
+@router.post("")
+def add_card_to_pool(
+    body: AddCardRequest,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """手动入池：调卡商 API 拉卡 + 创建 CardActivation 记录。"""
+    try:
+        card_api = _build_card_api(body.card_provider)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("入池构造卡商客户端失败")
+        raise HTTPException(status_code=503, detail="卡商客户端初始化失败，请检查服务端配置") from exc
+
+    rec, meta = add_card(
+        card_key=body.card_key,
+        card_provider=body.card_provider,
+        target_warmup_count=body.target_warmup_count,
+        card_api=card_api,
+    )
+    if rec is None:
+        reason = meta.get("reason", "unknown")
+        detail = meta.get("detail", "")
+        if reason in ("duplicate", "duplicate_race"):
+            raise HTTPException(status_code=409, detail=_safe_error_detail(detail, "卡密已在池中"))
+        if reason in ("invalid_provider", "invalid_target", "empty_card_key"):
+            raise HTTPException(status_code=422, detail=_safe_error_detail(detail, reason))
+        if reason == "card_api_error":
+            raise HTTPException(status_code=502, detail=_safe_error_detail(detail, "卡商接口错误"))
+        if reason == "card_not_found":
+            raise HTTPException(status_code=404, detail=_safe_error_detail(detail, "卡密无效或已被占用"))
+        raise HTTPException(status_code=500, detail="入池失败，请查看服务端日志")
+    return _redact_pool(rec)
+
+
+@router.post("/{card_key}/warmup")
+def trigger_card_warmup(
+    card_key: str,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """触发一轮热卡（异步起后台线程，立即返回 running 状态）。"""
+    # 先看卡是不是在池里（也校验下权限边界）
+    rec = get_activation(card_key)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="卡密不存在")
+
+    # 构造 execute_card_warmup 需要的依赖
+    config = load_config()
+    try:
+        card_api = _build_card_api(rec.card_provider)
+    except Exception as exc:
+        logger.exception("热卡构造卡商客户端失败")
+        raise HTTPException(status_code=503, detail="卡商客户端初始化失败，请检查服务端配置") from exc
+
+    # 用 ConfigService 提供 select_warmup_account / record_warmup_outcome（execute_card_warmup 需要）
+    from src.services.config_service import ConfigService
+    svc = ConfigService()
+
+    try:
+        result = trigger_warmup(
+            card_key,
+            config=config,
+            card_api=card_api,
+            svc_for_warmup_pool=svc,
+            proxy_url=config.proxy or "",
+        )
+    except _AlreadyRunningError:
+        raise HTTPException(status_code=409, detail="该卡已有热卡线程在跑")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
+@router.get("/{card_key}/warmup-status")
+def get_card_warmup_status(
+    card_key: str,
+    user: User = Depends(require_role("admin")),
+):
+    """查指定卡的热卡进度（前端轮询用）。"""
+    st = get_warmup_status(card_key)
+    if st is None:
+        raise HTTPException(status_code=404, detail="卡密不在池中")
+    return st

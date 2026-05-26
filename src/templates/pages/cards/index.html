@@ -4,11 +4,10 @@
 {% block page_title %}虚拟卡缓存{% endblock %}
 
 {% block content %}
-<div x-data="cardsData()" x-init="fetchCards()">
+<div x-data="cardsData()" x-init="fetchCards(); startPolling()">
     <div class="flex items-center justify-between mb-4">
         <div class="text-sm text-gray-500">
-            虚拟卡使用记录。X988 卡密走"miss 才回源"缓存（解决一次性 verify 问题）；
-            efuncard / nodecard 仅审计写入，每次仍调真实 API 拿最新状态。
+            虚拟卡缓存 + <strong>卡池预热</strong>：手动入池 → 手动点"热这张卡" → 达到目标次数即可在任务页"从卡池选"使用。
         </div>
         <div class="flex items-center gap-3">
             <label class="flex items-center gap-1 text-xs text-gray-600">
@@ -16,6 +15,101 @@
                 显示已作废
             </label>
             <button @click="fetchCards()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50">刷新</button>
+        </div>
+    </div>
+
+    <!-- 入池表单 -->
+    <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+        <div class="text-sm font-medium text-blue-900 mb-2">📥 添加卡到池中</div>
+        <div class="flex flex-wrap gap-2 items-center">
+            <input type="text" x-model="newCard.card_key" placeholder="粘贴 CDK / 卡密..."
+                   class="flex-1 min-w-[260px] px-3 py-1.5 border rounded text-sm font-mono">
+            <select x-model="newCard.card_provider" class="px-3 py-1.5 border rounded text-sm">
+                <option value="efuncard">EfunCard</option>
+                <option value="nodecard">NodeCard</option>
+                <option value="x988card">X988Card</option>
+            </select>
+            <input type="number" x-model.number="newCard.target_warmup_count" min="0" max="20"
+                   class="w-20 px-3 py-1.5 border rounded text-sm" title="目标热卡次数">
+            <span class="text-xs text-gray-500">次</span>
+            <button @click="addCard()" :disabled="addingCard"
+                    class="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300">
+                <span x-text="addingCard ? '入池中...' : '添加'"></span>
+            </button>
+        </div>
+        <div class="text-xs text-gray-500 mt-1">
+            "目标热卡次数"建议 3-5 次。0 = 不预热直接可用（不推荐）。入池时会调卡商 API 拿卡，可能耗时数秒。
+        </div>
+    </div>
+
+    <!-- PayPal 友好合成卡生成器（2026-05-26 P0 移植自 d4cc975 工程） -->
+    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+        <div class="text-sm font-medium text-amber-900 mb-2">
+            🃏 PayPal 友好合成卡（用于 PayPal guest checkout 绑卡）
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+            <select x-model="synthBinPrefix" class="px-3 py-1.5 border rounded text-sm">
+                <option value="">随机 BIN（4147 或 4100）</option>
+                <option value="4147">4147（Chase / Capital One）</option>
+                <option value="4100">4100（Wells Fargo / Apple Card）</option>
+            </select>
+            <button @click="generateSyntheticVisa()" :disabled="generatingSynth"
+                    class="px-4 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 disabled:bg-gray-300">
+                <span x-text="generatingSynth ? '生成中...' : '🃏 生成一张'"></span>
+            </button>
+            <button @click="generateSyntheticVisa(true)" :disabled="generatingSynth"
+                    class="px-4 py-1.5 bg-amber-100 text-amber-800 border border-amber-300 rounded text-sm hover:bg-amber-200"
+                    title="批量生成 5 张可同时复制">
+                <span>🎲 一次 5 张</span>
+            </button>
+        </div>
+        <div class="text-xs text-amber-700 mt-1">
+            ⚠️ 合成卡仅通过 PayPal <strong>Luhn + BIN 预校验</strong>，<strong>不能真实扣款</strong>。
+            用于绑 0 元试用（首月不扣钱，月底自动取消订阅）。EFunCard 等真实虚拟卡被 PayPal RESTRICTED_USER 秒封时切换到这个。
+        </div>
+        <!-- 生成结果展示区（完整套件：卡 + 姓名 + 地址 + 电话）-->
+        <div x-show="synthCards.length > 0" x-cloak class="mt-3 space-y-2">
+            <template x-for="(c, i) in synthCards" :key="c.card_number">
+                <div class="p-3 bg-white border border-amber-200 rounded text-sm">
+                    <!-- 顶部：序号 + 复制按钮组 -->
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-xs font-bold text-amber-700">#<span x-text="i + 1"></span></span>
+                        <span class="text-xs text-gray-500" x-text="`${c.full_name} · ${c.address_city}, ${c.address_state}`"></span>
+                        <div class="ml-auto flex gap-1">
+                            <button @click="copySynthCard(c, 'card')"
+                                    class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 border border-blue-300 rounded hover:bg-blue-200"
+                                    title="卡号 + 过期 + CVV，Tab 分隔">📋 卡</button>
+                            <button @click="copySynthCard(c, 'name')"
+                                    class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 border border-purple-300 rounded hover:bg-purple-200"
+                                    title="First name + Last name，Tab 分隔">📋 姓名</button>
+                            <button @click="copySynthCard(c, 'address')"
+                                    class="px-2 py-0.5 text-xs bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200"
+                                    title="街道 + 城市 + 州 + 邮编，多行">📋 地址</button>
+                            <button @click="copySynthCard(c, 'phone')"
+                                    class="px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 border border-yellow-300 rounded hover:bg-yellow-200">
+                                📋 电话</button>
+                            <button @click="copySynthCard(c, 'all')"
+                                    class="px-2 py-0.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
+                                    title="所有字段 Tab 分隔，按顺序粘贴">📋 全套</button>
+                        </div>
+                    </div>
+                    <!-- 字段网格 -->
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
+                        <div><span class="text-gray-500">卡号：</span><span x-text="c.card_number" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">姓名：</span><span x-text="c.full_name" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">过期：</span><span x-text="c.expiry_display" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">街道：</span><span x-text="c.address_line1" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">CVV：</span><span x-text="c.cvv" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">城市：</span><span x-text="c.address_city + ', ' + c.address_state + ' ' + c.address_zip" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">BIN：</span><span x-text="c.bin_prefix" class="font-medium"></span></div>
+                        <div><span class="text-gray-500">电话：</span><span x-text="c.phone" class="font-medium"></span></div>
+                    </div>
+                </div>
+            </template>
+            <button x-show="synthCards.length > 0" @click="synthCards = []"
+                    class="text-xs text-gray-500 hover:text-gray-700">
+                清空结果
+            </button>
         </div>
     </div>
 
@@ -42,18 +136,17 @@
                     <th class="px-4 py-3 text-left">卡密 (cdk)</th>
                     <th class="px-4 py-3 text-left">卡商</th>
                     <th class="px-4 py-3 text-left">卡号</th>
-                    <th class="px-4 py-3 text-left">BIN 国家</th>
-                    <th class="px-4 py-3 text-left">卡有效期</th>
-                    <th class="px-4 py-3 text-left">激活时间</th>
-                    <th class="px-4 py-3 text-left">上次使用</th>
-                    <th class="px-4 py-3 text-left">使用次数</th>
-                    <th class="px-4 py-3 text-left">状态</th>
+                    <th class="px-4 py-3 text-left">BIN</th>
+                    <th class="px-4 py-3 text-left">有效期</th>
+                    <th class="px-4 py-3 text-left">使用</th>
+                    <th class="px-4 py-3 text-left">热卡进度</th>
+                    <th class="px-4 py-3 text-left">热卡状态</th>
                     <th class="px-4 py-3 text-left">操作</th>
                 </tr>
             </thead>
             <tbody class="divide-y">
                 <template x-for="card in cards" :key="card.card_key">
-                    <tr :class="card.status === 'invalidated' || card.status === 'expired' ? 'bg-red-50' : (card.days_until_max_age !== null && card.days_until_max_age <= 1 ? 'bg-yellow-50' : 'hover:bg-gray-50')">
+                    <tr :class="card.is_invalidated ? 'bg-red-50' : (card.is_ready ? 'bg-green-50' : 'hover:bg-gray-50')">
                         <td class="px-4 py-3 font-mono text-xs" x-text="card.card_key.substring(0, 12) + '...'"></td>
                         <td class="px-4 py-3 text-xs" x-text="card.card_provider"></td>
                         <td class="px-4 py-3 font-mono text-xs">
@@ -61,25 +154,38 @@
                         </td>
                         <td class="px-4 py-3 text-xs" x-text="card.bin_country || '-'"></td>
                         <td class="px-4 py-3 font-mono text-xs" x-text="card.expiry_month + '/' + card.expiry_year"></td>
-                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="card.activated_at ? new Date(card.activated_at).toLocaleString(window._locale) : '-'"></td>
-                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="card.last_used_at ? new Date(card.last_used_at).toLocaleString(window._locale) : '从未使用'"></td>
-                        <td class="px-4 py-3 text-xs" x-text="card.use_count"></td>
+                        <td class="px-4 py-3 text-xs" x-text="card.use_count + '次'"></td>
+                        <td class="px-4 py-3 text-xs">
+                            <span class="font-mono" x-text="card.warmup_count + '/' + card.target_warmup_count"></span>
+                            <template x-if="card.is_ready && !card.is_invalidated">
+                                <span class="ml-1 text-[10px] text-green-700">✓ ready</span>
+                            </template>
+                        </td>
                         <td class="px-4 py-3 text-xs">
                             <span class="px-2 py-0.5 rounded-full text-[11px]"
                                   :class="{
-                                      'bg-green-100 text-green-700': card.status === 'active',
-                                      'bg-gray-200 text-gray-600': card.status === 'expired',
-                                      'bg-red-100 text-red-700': card.status === 'invalidated',
+                                      'bg-gray-100 text-gray-600': card.last_warmup_status === 'pending',
+                                      'bg-blue-100 text-blue-700 animate-pulse': card.last_warmup_status === 'running',
+                                      'bg-green-100 text-green-700': card.last_warmup_status === 'success',
+                                      'bg-red-100 text-red-700': card.last_warmup_status === 'failed',
                                   }"
-                                  x-text="card.status"></span>
-                            <template x-if="card.status === 'active' && card.days_until_max_age !== null && card.days_until_max_age <= 1">
-                                <span class="ml-1 text-[10px] text-yellow-700" x-text="'(剩 ' + card.days_until_max_age + ' 天)'"></span>
+                                  x-text="card.last_warmup_status"
+                                  :title="card.last_warmup_reason || ''"></span>
+                            <template x-if="card.last_warmup_status === 'failed' && card.last_warmup_reason">
+                                <div class="text-[10px] text-red-600 mt-1 max-w-[180px] truncate"
+                                     :title="card.last_warmup_reason"
+                                     x-text="card.last_warmup_reason"></div>
                             </template>
-                            <template x-if="card.invalidate_reason">
-                                <div class="text-[10px] text-gray-400 mt-1" x-text="'原因: ' + card.invalidate_reason"></div>
+                            <template x-if="card.is_invalidated">
+                                <div class="text-[10px] text-red-600 mt-1">已作废</div>
                             </template>
                         </td>
-                        <td class="px-4 py-3">
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            <button x-show="!card.is_invalidated && card.last_warmup_status !== 'running'"
+                                    @click="warmupCard(card)"
+                                    class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded">
+                                热这张卡
+                            </button>
                             <button x-show="!card.is_invalidated"
                                     @click="invalidateCard(card)"
                                     class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded">作废</button>
@@ -87,16 +193,16 @@
                     </tr>
                 </template>
                 <tr x-show="cards.length === 0">
-                    <td colspan="10" class="px-4 py-8 text-center text-gray-400">暂无卡密缓存</td>
+                    <td colspan="9" class="px-4 py-8 text-center text-gray-400">卡池为空，请用上面的表单添加卡</td>
                 </tr>
             </tbody>
         </table>
     </div>
 
     <div class="mt-4 text-xs text-gray-400 space-y-1">
-        <div>· <span class="font-medium">active</span> = 缓存命中可用；<span class="font-medium">expired</span> = 卡本身或 max_age 到期；<span class="font-medium">invalidated</span> = 手动作废</div>
-        <div>· X988 卡密一旦 verify 即消耗，作废后**无法**重新激活，需要重新购买新卡密</div>
-        <div>· 黄色行表示 max_age 即将到期（≤1 天）</div>
+        <div>· <span class="font-medium">绿色行</span> = warmup_count ≥ target，已是成熟卡，可在任务页"从卡池选"</div>
+        <div>· <span class="font-medium">red 行</span> = 已作废；X988 卡密作废后**无法**重新激活</div>
+        <div>· 热卡是异步任务（点按钮 → running 状态 → 5s 后看结果）。每次成功 warmup_count +1，达到 target 就 ready</div>
     </div>
 </div>
 
@@ -106,33 +212,152 @@ function cardsData() {
         cards: [],
         includeInvalidated: false,
         providerFilter: 'all',
-        providerCounts: {},  // {x988card: 3, efuncard: 1, nodecard: 0}
+        providerCounts: {},
         providerTabs: [
             { value: 'all', label: '全部' },
             { value: 'x988card', label: 'X988' },
             { value: 'efuncard', label: 'Efuncard' },
             { value: 'nodecard', label: 'NodeCard' },
         ],
+        addingCard: false,
+        newCard: { card_key: '', card_provider: 'efuncard', target_warmup_count: 5 },
+        _pollTimer: null,
+        // 合成卡生成器（P0 移植自 d4cc975 工程）
+        synthBinPrefix: '',           // '' = 随机 / '4147' / '4100'
+        generatingSynth: false,
+        synthCards: [],               // 已生成卡列表（含 card_number/expiry_display/cvv 等）
 
         async fetchCards() {
-            // 拉当前 tab 的数据
             const params = new URLSearchParams();
             if (this.includeInvalidated) params.append('include_invalidated', 'true');
             if (this.providerFilter !== 'all') params.append('card_provider', this.providerFilter);
             const qs = params.toString();
-            this.cards = await fetchJson(`/api/cards${qs ? '?' + qs : ''}`);
+            // 用 /api/cards/pool 端点（带 warmup_count / is_ready / last_warmup_status 字段）
+            this.cards = await fetchJson(`/api/cards/pool${qs ? '?' + qs : ''}`);
 
-            // 顺便拉一次全量算每个 provider 的数量给 tab 显示
+            // 算 provider 数量（不传 filter 拿全量）
             try {
-                const all = await fetchJson(this.includeInvalidated ? '/api/cards?include_invalidated=true' : '/api/cards');
+                const all = await fetchJson(this.includeInvalidated ? '/api/cards/pool?include_invalidated=true' : '/api/cards/pool');
                 const counts = {};
                 all.forEach(c => { counts[c.card_provider] = (counts[c.card_provider] || 0) + 1; });
                 this.providerCounts = counts;
             } catch (_) {}
         },
 
+        // 5s 自动轮询 running 状态的卡
+        startPolling() {
+            this._pollTimer = setInterval(() => {
+                const hasRunning = this.cards.some(c => c.last_warmup_status === 'running');
+                if (hasRunning) this.fetchCards();
+            }, 5000);
+        },
+
+        async addCard() {
+            if (!this.newCard.card_key.trim()) {
+                showToast('请填卡密', 'error');
+                return;
+            }
+            this.addingCard = true;
+            try {
+                const result = await fetchJson('/api/cards', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.newCard),
+                });
+                showToast(`已入池：${result.bin_prefix}****${result.last4}（${result.card_provider}）`, 'success');
+                this.newCard.card_key = '';
+                await this.fetchCards();
+            } catch (exc) {
+                showToast(exc.message || '添加卡失败', 'error');
+            } finally {
+                this.addingCard = false;
+            }
+        },
+
+        // P0 合成卡：调 POST /api/cards/synthetic-visa 生成 PayPal 友好 Luhn 卡
+        async generateSyntheticVisa(batch5 = false) {
+            this.generatingSynth = true;
+            try {
+                const count = batch5 ? 5 : 1;
+                const newCards = [];
+                for (let i = 0; i < count; i++) {
+                    const result = await fetchJson('/api/cards/synthetic-visa', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            bin_prefix: this.synthBinPrefix || null,
+                            seed: null,  // 真随机；运营要确定性卡可用 API 直接传 seed
+                        }),
+                    });
+                    newCards.push(result);
+                }
+                // 新卡插在结果列表前面（最近生成的在上）
+                this.synthCards = [...newCards, ...this.synthCards].slice(0, 20);
+                showToast(`已生成 ${count} 张合成卡`, 'success');
+            } catch (exc) {
+                showToast(exc.message || '合成卡生成失败', 'error');
+            } finally {
+                this.generatingSynth = false;
+            }
+        },
+
+        // 按字段类型复制套件：card/name/address/phone/all（Tab 分隔，PayPal 表单 Tab 跳字段）
+        async copySynthCard(c, kind = 'all') {
+            let text = '';
+            let label = '';
+            if (kind === 'card') {
+                text = `${c.card_number}\t${c.expiry_display}\t${c.cvv}`;
+                label = '卡号+过期+CVV';
+            } else if (kind === 'name') {
+                text = `${c.first_name}\t${c.last_name}`;
+                label = '姓 + 名';
+            } else if (kind === 'address') {
+                // PayPal 表单：街道 / 城市 / 州 / 邮编 通常分 4 个字段
+                text = `${c.address_line1}\t${c.address_city}\t${c.address_state}\t${c.address_zip}`;
+                label = '街道+城市+州+邮编';
+            } else if (kind === 'phone') {
+                text = c.phone;
+                label = '电话';
+            } else {
+                // 全套：按 PayPal 表单字段顺序（卡号 → 过期 → CVV → 姓 → 名 → 街道 → 城市 → 州 → 邮编 → 电话）
+                text = [
+                    c.card_number, c.expiry_display, c.cvv,
+                    c.first_name, c.last_name,
+                    c.address_line1, c.address_city, c.address_state, c.address_zip,
+                    c.phone,
+                ].join('\t');
+                label = '整套（按 PayPal 表单顺序）';
+            }
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast(`已复制 ${label}`, 'success');
+            } catch (_) {
+                // 降级：浏览器不支持 clipboard API
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast(`已复制 ${label}（降级模式）`, 'success');
+            }
+        },
+
+        async warmupCard(card) {
+            if (!confirm(`确认对卡 ****${card.last4} 触发一轮预热？\n当前 warmup_count = ${card.warmup_count}/${card.target_warmup_count}`)) return;
+            try {
+                await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/warmup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                showToast('热卡已开始（后台跑，5s 后自动刷新状态）', 'info');
+                await this.fetchCards();
+            } catch (_) {}
+        },
+
         async invalidateCard(card) {
-            if (!confirm(`确认作废卡密 ${card.card_key.substring(0, 12)}... (last4=${card.last4}) 吗？\n\n注意：X988 卡密作废后无法恢复。`)) return;
+            if (!confirm(`确认作废卡 ****${card.last4} 吗？\n\n注意：X988 卡密作废后无法恢复。`)) return;
             const reason = prompt('作废原因（可选）:', 'manual');
             await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
                 method: 'POST',
