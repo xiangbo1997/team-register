@@ -203,6 +203,13 @@ class AppConfig:
     payment_link_return_mode: str = "long"
     aimizy_country: str = "SG"
     aimizy_currency: str = "SGD"
+    # checkout payload schema 版本（P4 模板化 2026-05-25）
+    # 模板里填 schema_version 字段会单点覆盖；不填走这里的全局默认
+    # OpenAI API 变动时切版本：加 src/payment_link/schemas/<plan>_v<n>.py + 改 .env
+    plus_schema_version: str = "v2"
+    team_schema_version: str = "v1"
+    pro_schema_version: str = "v1"
+    pro_lite_schema_version: str = "v1"
     billing_country: str = "US"
     billing_line1: str = "350 5th Ave"
     billing_line2: str = ""
@@ -425,6 +432,11 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         payment_link_return_mode=os.getenv("PAYMENT_LINK_RETURN_MODE", "long").strip().lower() or "long",
         aimizy_country=os.getenv("AIMIZY_COUNTRY", "SG").strip().upper() or "SG",
         aimizy_currency=os.getenv("AIMIZY_CURRENCY", "SGD").strip().upper() or "SGD",
+        # checkout schema 版本（P4 模板化）
+        plus_schema_version=os.getenv("PLUS_SCHEMA_VERSION", "v2").strip().lower() or "v2",
+        team_schema_version=os.getenv("TEAM_SCHEMA_VERSION", "v1").strip().lower() or "v1",
+        pro_schema_version=os.getenv("PRO_SCHEMA_VERSION", "v1").strip().lower() or "v1",
+        pro_lite_schema_version=os.getenv("PRO_LITE_SCHEMA_VERSION", "v1").strip().lower() or "v1",
         billing_country=os.getenv("BILLING_COUNTRY", "US").strip().upper() or "US",
         billing_line1=os.getenv("BILLING_LINE1", "350 5th Ave").strip(),
         billing_line2=os.getenv("BILLING_LINE2", "").strip(),

@@ -117,6 +117,14 @@ def _run_schema_migrations(engine: Engine) -> None:
         "last_eligibility_status": "ALTER TABLE link_templates ADD COLUMN last_eligibility_status VARCHAR(20) NOT NULL DEFAULT ''",
         "last_eligibility_check_at": "ALTER TABLE link_templates ADD COLUMN last_eligibility_check_at DATETIME NULL",
         "last_eligibility_metadata": "ALTER TABLE link_templates ADD COLUMN last_eligibility_metadata JSON NULL",
+        # P4 模板化扩展字段（2026-05-25）
+        "schema_version": "ALTER TABLE link_templates ADD COLUMN schema_version VARCHAR(20) NULL",
+        "url_locale": "ALTER TABLE link_templates ADD COLUMN url_locale VARCHAR(10) NULL",
+        "extra_payload_json": "ALTER TABLE link_templates ADD COLUMN extra_payload_json JSON NULL",
+        "is_preset": "ALTER TABLE link_templates ADD COLUMN is_preset BOOLEAN NOT NULL DEFAULT 0",
+        "sort_order": "ALTER TABLE link_templates ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        # P6 暴露 checkout_ui_mode（2026-05-25）
+        "checkout_ui_mode": "ALTER TABLE link_templates ADD COLUMN checkout_ui_mode VARCHAR(10) NULL",
     }
 
     with engine.begin() as conn:
@@ -296,4 +304,73 @@ def _seed_runtime_defaults(engine: Engine) -> None:
                     )
                 )
 
+        session.commit()
+
+    # P2 seed：把弹窗里硬编码的 4 个快捷预设迁到 DB（is_preset=true）
+    # 运营加新预设零代码，刷新 UI 立即生效
+    _seed_link_template_presets(engine)
+
+
+def _seed_link_template_presets(engine: Engine) -> None:
+    """初始化 4 个内置预设 LinkTemplate（美/澳/日 Plus + Team 试用）。
+
+    幂等：按 name 查重，已存在的预设不覆盖（运营改过的设置保留）。
+    新增其他预设：运营在 UI「存为模板」→ 勾选「设为预设」，无需改本函数。
+    """
+    from sqlmodel import Session, select
+
+    from src.db.models import LinkTemplate
+
+    presets = [
+        {
+            "name": "🇺🇸 美 Plus 试用",
+            "plan": "plus",
+            "aimizy_country": "US",
+            "aimizy_currency": "USD",
+            "seat_quantity": 1,
+            "return_mode": "long",
+            "is_preset": True,
+            "sort_order": 10,
+        },
+        {
+            "name": "🇦🇺 澳 Plus 试用",
+            "plan": "plus",
+            "aimizy_country": "AU",
+            "aimizy_currency": "AUD",
+            "seat_quantity": 1,
+            "return_mode": "long",
+            "is_preset": True,
+            "sort_order": 20,
+        },
+        {
+            "name": "🇯🇵 日 Plus 试用",
+            "plan": "plus",
+            "aimizy_country": "JP",
+            "aimizy_currency": "JPY",
+            "seat_quantity": 1,
+            "return_mode": "long",
+            "is_preset": True,
+            "sort_order": 30,
+        },
+        {
+            "name": "🎯 Team 试用",
+            "plan": "team",
+            "aimizy_country": "SG",
+            "aimizy_currency": "SGD",
+            "seat_quantity": 5,
+            "workspace_name": "MyTeam",
+            "return_mode": "long",
+            "is_preset": True,
+            "sort_order": 40,
+        },
+    ]
+
+    with Session(engine) as session:
+        for preset in presets:
+            existing = session.exec(
+                select(LinkTemplate).where(LinkTemplate.name == preset["name"])
+            ).first()
+            if existing is not None:
+                continue  # 已存在不覆盖，让运营改过的设置保留
+            session.add(LinkTemplate(**preset))
         session.commit()
