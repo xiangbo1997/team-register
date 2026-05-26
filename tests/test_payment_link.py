@@ -25,15 +25,64 @@ class TestPaymentLinkGenerator(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(link, "https://checkout.stripe.com/c/pay/cs_live_test_123")
+        # feat: 2026-05-25 Plus 真实 schema v2 — 双 ground truth (payurl server.py + 用户 JS):
+        # - plan_name=chatgptplusplan
+        # - cancel_url 带 #pricing 锚点
+        # - success_url=https://chatgpt.com/（用户 JS 同款，server.py 不带但加上对 Stripe 更完整）
+        # - is_coupon_from_query_param 顶层 = False（用户 JS 同款，避免 OpenAI 反作弊触发）
+        # - promo_campaign 内只留 promo_campaign_id
+        # v2.2: 对齐 PayPal Auto Filler 工作脚本（带 cancel_url + 不带 success_url）
         self.assertEqual(
             mock_post.call_args.kwargs["json"],
             {
-                "plan_type": "plus",
+                "entry_point": "all_plans_pricing_modal",
+                "plan_name": "chatgptplusplan",
+                "billing_details": {"country": "SG", "currency": "SGD"},
+                "cancel_url": "https://chatgpt.com/#pricing",
+                "promo_campaign": {
+                    "promo_campaign_id": "plus-1-month-free",
+                    "is_coupon_from_query_param": False,
+                },
                 "checkout_ui_mode": "hosted",
-                "cancel_url": "https://chatgpt.com/",
-                "success_url": "https://chatgpt.com/?subscribed=true",
             },
         )
+
+    @patch("src.payment_link.requests.post")
+    def test_generate_checkout_link_plus_with_promo_code_still_uses_trial(self, mock_post: MagicMock):
+        """回归护栏：Plus + promo_code(datroaiuk) 时仍带 plus-1-month-free 试用 campaign，
+        不带 promo_code 字段（promo_code 是 Team 折扣码语义，对 Plus 无效）。
+        防止 2026-05-25 $20 付费链 bug 复发。
+        """
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "url": "https://pay.openai.com/c/pay/cs_live_trial_xyz",
+        }
+
+        success, link = PaymentLinkGenerator.generate_checkout_link(
+            "access_123",
+            plan_type="plus",
+            return_mode="long",
+            promo_code="datroaiuk",  # 用户填了 URL 优惠码
+            aimizy_country="US",
+            aimizy_currency="USD",
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(link, "https://pay.openai.com/c/pay/cs_live_trial_xyz")
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["plan_name"], "chatgptplusplan")
+        self.assertNotIn("plan_type", payload)
+        self.assertNotIn("promo_code", payload)
+        # v2.2: 不发 success_url；带 cancel_url（参考工作脚本）
+        self.assertNotIn("success_url", payload)
+        self.assertEqual(payload["cancel_url"], "https://chatgpt.com/#pricing")
+        # is_coupon_from_query_param 在 promo_campaign 内（不在顶层）
+        self.assertNotIn("is_coupon_from_query_param", payload)
+        self.assertEqual(payload["promo_campaign"], {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        })
+        self.assertEqual(payload["billing_details"], {"country": "US", "currency": "USD"})
 
     @patch("src.payment_link.requests.post")
     def test_generate_short_link_plus_converts_to_app_link(self, mock_post: MagicMock):
@@ -65,6 +114,7 @@ class TestPaymentLinkGenerator(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(link, "https://chatgpt.com/checkout/openai_llc/cs_test_team_123")
+        # Team payload 自带 cancel_url + billing_details（_build_payload 行 377-380）
         self.assertEqual(
             mock_post.call_args.kwargs["json"],
             {
@@ -79,6 +129,8 @@ class TestPaymentLinkGenerator(unittest.TestCase):
                     "is_coupon_from_query_param": True,
                 },
                 "checkout_ui_mode": "custom",
+                "cancel_url": "https://chatgpt.com/",
+                "billing_details": {"country": "SG", "currency": "SGD"},
             },
         )
 
