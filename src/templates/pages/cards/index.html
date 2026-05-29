@@ -309,13 +309,15 @@
                                 <div class="flex items-center justify-end gap-1">
                                     <button x-show="!card.is_invalidated && card.last_warmup_status !== 'running'"
                                             @click="warmupCard(card)"
-                                            class="p-1.5 text-primary hover:bg-primary/10 rounded transition-colors" title="热这张卡">
-                                        <span class="material-symbols-outlined text-base">local_fire_department</span>
+                                            :disabled="busyCardKeys.includes(card.card_key)"
+                                            class="p-1.5 text-primary hover:bg-primary/10 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="热这张卡">
+                                        <span class="material-symbols-outlined text-base" :class="busyCardKeys.includes(card.card_key) ? 'animate-spin' : ''" x-text="busyCardKeys.includes(card.card_key) ? 'progress_activity' : 'local_fire_department'"></span>
                                     </button>
                                     <button x-show="!card.is_invalidated"
                                             @click="invalidateCard(card)"
-                                            class="p-1.5 text-danger hover:bg-danger/10 rounded transition-colors" title="作废">
-                                        <span class="material-symbols-outlined text-base">block</span>
+                                            :disabled="busyCardKeys.includes(card.card_key)"
+                                            class="p-1.5 text-danger hover:bg-danger/10 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="作废">
+                                        <span class="material-symbols-outlined text-base" :class="busyCardKeys.includes(card.card_key) ? 'animate-spin' : ''" x-text="busyCardKeys.includes(card.card_key) ? 'progress_activity' : 'block'"></span>
                                     </button>
                                 </div>
                             </td>
@@ -414,6 +416,7 @@ function cardsData() {
         synthLastName: '',            // A3: 持卡人 Last name 注入
         generatingSynth: false,
         synthCards: [],               // 已生成卡列表（含 card_number/expiry_display/cvv 等）
+        busyCardKeys: [],             // 行内操作进行中的卡 key（per-row loading，防重复点击）
 
         warmupBadgeClass(card) {
             if (card.is_invalidated) return 'bg-danger/10 text-danger border-danger/20';
@@ -599,27 +602,42 @@ function cardsData() {
 
         async warmupCard(card) {
             if (!(await confirmDialog({ title: '触发预热', message: `确认对卡 ****${card.last4} 触发一轮预热？\n当前 warmup_count = ${card.warmup_count}/${card.target_warmup_count}` }))) return;
+            if (this.busyCardKeys.includes(card.card_key)) return;   // 防重复点击
+            this.busyCardKeys.push(card.card_key);
+            const t = showToast(`****${card.last4} 预热请求提交中…`, 'loading');
             try {
                 await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/warmup`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({}),
                 });
-                showToast('热卡已开始（后台跑，5s 后自动刷新状态）', 'info');
+                t.update({ type: 'success', msg: '热卡已开始（后台跑，5s 后自动刷新状态）', duration: 4000 });
                 await this.fetchCards();
-            } catch (_) {}
+            } catch (exc) {
+                t.update({ type: 'error', msg: exc.message || '热卡失败', duration: 6000 });
+            } finally {
+                this.busyCardKeys = this.busyCardKeys.filter(k => k !== card.card_key);
+            }
         },
 
         async invalidateCard(card) {
             if (!(await confirmDialog({ title: '作废卡密', message: `确认作废卡 ****${card.last4} 吗？\n\n注意：X988 卡密作废后无法恢复。`, danger: true, confirmText: '作废' }))) return;
             const reason = (await promptDialog({ title: '作废原因', label: '作废原因（可选）', default: 'manual', optional: true })) ?? 'manual';
-            await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ reason: reason || 'manual' }),
-            });
-            showToast('卡密已作废', 'success');
-            await this.fetchCards();
+            if (this.busyCardKeys.includes(card.card_key)) return;
+            this.busyCardKeys.push(card.card_key);
+            try {
+                await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: reason || 'manual' }),
+                });
+                showToast('卡密已作废', 'success');
+                await this.fetchCards();
+            } catch (exc) {
+                showToast(exc.message || '作废失败', 'error');
+            } finally {
+                this.busyCardKeys = this.busyCardKeys.filter(k => k !== card.card_key);
+            }
         },
     }
 }

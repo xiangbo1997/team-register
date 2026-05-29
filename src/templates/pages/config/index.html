@@ -95,15 +95,15 @@
                     <span x-text="i18n('config.reset')"></span>
                 </button>
                 <div class="flex gap-2">
-                    <button @click="reloadBase()"
-                            class="flex items-center gap-1.5 text-sm px-4 py-2 border border-border text-body rounded-lg hover:bg-subtle transition-colors">
-                        <span class="material-symbols-outlined text-base">refresh</span>
-                        <span x-text="i18n('config.reload_env')"></span>
+                    <button @click="reloadBase()" :disabled="reloading"
+                            class="flex items-center gap-1.5 text-sm px-4 py-2 border border-border text-body rounded-lg hover:bg-subtle transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" :class="reloading ? 'animate-spin' : ''" x-text="reloading ? 'progress_activity' : 'refresh'"></span>
+                        <span x-text="reloading ? i18n('common.processing') : i18n('config.reload_env')"></span>
                     </button>
-                    <button @click="saveConfig()" :disabled="!dirty"
+                    <button @click="saveConfig()" :disabled="!dirty || saving"
                             class="flex items-center gap-1.5 px-5 py-2 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-primary-hover transition-colors shadow-token-sm disabled:opacity-50 disabled:cursor-not-allowed">
-                        <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;">save</span>
-                        <span x-text="i18n('config.save_changes')"></span>
+                        <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;" :class="saving ? 'animate-spin' : ''" x-text="saving ? 'progress_activity' : 'save'"></span>
+                        <span x-text="saving ? i18n('common.processing') : i18n('config.save_changes')"></span>
                     </button>
                 </div>
             </div>
@@ -121,6 +121,8 @@ function configData() {
         effective: {},
         dirty: false,
         changes: {},
+        saving: false,        // 保存配置请求中
+        reloading: false,     // 重载 env 请求中
         activeTab: 'basic',
         tabs: [
             { key: 'basic', fields: [
@@ -187,6 +189,8 @@ function configData() {
         },
 
         async saveConfig() {
+            if (this.saving) return;
+            this.saving = true;
             try {
                 await fetchJson('/api/config', {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -197,16 +201,22 @@ function configData() {
                 this.changes = {};
             } catch (_) {
                 showToast(i18n('config.save_failed'), 'error');
+            } finally {
+                this.saving = false;
             }
         },
 
         async reloadBase() {
+            if (this.reloading) return;
+            this.reloading = true;
             try {
                 await fetchJson('/api/config/reload', { method: 'POST' });
                 await this.fetchConfig();
                 showToast(i18n('config.reloaded'), 'success');
             } catch (error) {
                 showToast(error.message || i18n('config.save_failed'), 'error');
+            } finally {
+                this.reloading = false;
             }
         }
     }

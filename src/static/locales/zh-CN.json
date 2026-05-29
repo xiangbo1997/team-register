@@ -329,6 +329,8 @@
     "no_providers": "暂无 Provider 配置",
     "saved": "Provider 已保存",
     "save_failed": "保存失败",
+    "deleted": "Provider 已删除",
+    "delete_failed": "删除失败",
     "invalid_json": "JSON 格式无效",
     "test_complete": "测试完成",
     "confirm_delete": "确认删除 {provider_type}/{provider_name} 吗？",

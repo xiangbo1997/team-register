@@ -451,6 +451,7 @@
                 if (!(await confirmDialog({ title: '删除供应商', message: `确定删除供应商"${p.label}"？`, danger: true }))) return;
                 try {
                     await fetchJson(`/api/proxy-providers/${p.id}`, { method: 'DELETE' });
+                    showToast('已删除', 'success');
                     await this.refresh();
                 } catch (e) {
                     showToast(e.message || '删除失败', 'error');

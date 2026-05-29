@@ -329,6 +329,8 @@
     "no_providers": "No providers configured",
     "saved": "Provider saved",
     "save_failed": "Save failed",
+    "deleted": "Provider deleted",
+    "delete_failed": "Delete failed",
     "invalid_json": "Invalid JSON",
     "test_complete": "Test complete",
     "confirm_delete": "Delete {provider_type}/{provider_name}?",

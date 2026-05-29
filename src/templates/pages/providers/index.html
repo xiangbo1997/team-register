@@ -377,8 +377,13 @@ function providerData() {
 
         async deleteProvider(p) {
             if (!(await confirmDialog({ message: i18n('providers.confirm_delete', { provider_type: p.provider_type, provider_name: p.provider_name }), danger: true }))) return;
-            await fetchJson(`/api/providers/${p.provider_type}/${p.provider_name}`, { method: 'DELETE' });
-            await this.fetchProviders();
+            try {
+                await fetchJson(`/api/providers/${p.provider_type}/${p.provider_name}`, { method: 'DELETE' });
+                showToast(i18n('providers.deleted', null, '已删除'), 'success');
+                await this.fetchProviders();
+            } catch (e) {
+                showToast(e.message || i18n('providers.delete_failed', null, '删除失败'), 'error');
+            }
         },
 
         async testProvider() {
