@@ -535,7 +535,7 @@ function cardsData() {
             }
             let declineCode = '';
             if (status === 'declined') {
-                declineCode = window.prompt('（可选）拒绝码，如 do_not_honor / card_declined / fraudulent，直接回车跳过：') || '';
+                declineCode = (await promptDialog({ title: '拒绝码（可选）', label: '拒绝码，如 do_not_honor / card_declined / fraudulent，留空跳过', optional: true })) || '';
             }
             try {
                 await fetchJson(`/api/cards/synthetic-visa/${card.audit_id}/feedback`, {
@@ -612,7 +612,7 @@ function cardsData() {
 
         async invalidateCard(card) {
             if (!(await confirmDialog({ title: '作废卡密', message: `确认作废卡 ****${card.last4} 吗？\n\n注意：X988 卡密作废后无法恢复。`, danger: true, confirmText: '作废' }))) return;
-            const reason = prompt('作废原因（可选）:', 'manual');
+            const reason = (await promptDialog({ title: '作废原因', label: '作废原因（可选）', default: 'manual', optional: true })) ?? 'manual';
             await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

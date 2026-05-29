@@ -1346,17 +1346,17 @@ function accountsData() {
         },
 
         async saveCurrentAsTemplate() {
-            const name = prompt('模板名（用来下次识别，例如 "UK promo datroaiuk"）:');
+            const name = await promptDialog({ title: '保存模板', label: '模板名（用来下次识别）', placeholder: '例如 UK promo datroaiuk' });
             if (!name) return;
             // P3 模板化：交互式询问扩展字段（保留 native prompt 避免引入 modal）
             const isPreset = await confirmDialog({ title: '保存模板', message: '设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅保存到模板下拉' });
             let sortOrder = 0;
             if (isPreset) {
-                const sortStr = prompt('预设按钮排序（小→大；默认 100）:', '100');
+                const sortStr = await promptDialog({ title: '预设排序', label: '预设按钮排序（小→大；默认 100）', default: '100', optional: true });
                 sortOrder = parseInt(sortStr || '100', 10) || 100;
             }
-            const locale = prompt('URL locale（如 en/ja/zh-CN；留空不注入）:', '') || '';
-            const extraJsonStr = prompt('额外 payload JSON（合并到 OpenAI payload；留空跳过）:', '') || '';
+            const locale = (await promptDialog({ title: 'URL locale', label: 'URL locale（如 en/ja/zh-CN；留空不注入）', optional: true })) || '';
+            const extraJsonStr = (await promptDialog({ title: '额外 payload JSON', label: '额外 payload JSON（合并到 OpenAI payload；留空跳过）', optional: true, multiline: true })) || '';
             let extraJson = null;
             if (extraJsonStr.trim()) {
                 try {
@@ -1558,7 +1558,7 @@ function accountsData() {
         },
 
         async markAbandon(acc) {
-            const reason = prompt(`放弃账号 ${acc.email} 的原因：`, 'manual');
+            const reason = await promptDialog({ title: '放弃账号', label: `放弃账号 ${acc.email} 的原因`, default: 'manual', optional: true });
             if (reason === null) return;
             await fetchJson(`/api/accounts/${encodeURIComponent(acc.run_id)}/abandon`, {
                 method: 'POST',

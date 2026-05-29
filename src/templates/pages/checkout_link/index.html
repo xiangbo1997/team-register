@@ -641,12 +641,12 @@ function checkoutLinkPage() {
         },
 
         async saveCurrentAsTemplate() {
-            const name = prompt('模板名（如 "UK promo datroaiuk"）:');
+            const name = await promptDialog({ title: '保存模板', label: '模板名', placeholder: '例如 UK promo datroaiuk' });
             if (!name) return;
             const isPreset = await confirmDialog({ title: '保存模板', message: '设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅存到下拉' });
             let sortOrder = 0;
             if (isPreset) {
-                const sortStr = prompt('预设按钮排序（小→大；默认 100）:', '100');
+                const sortStr = await promptDialog({ title: '预设排序', label: '预设按钮排序（小→大；默认 100）', default: '100', optional: true });
                 sortOrder = parseInt(sortStr || '100', 10) || 100;
             }
             try {
