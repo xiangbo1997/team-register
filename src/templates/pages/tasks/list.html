@@ -453,7 +453,7 @@ function taskListData() {
             if (action === 'delete') {
                 const msg = i18n('tasks.list.batch.delete_confirm')
                     .replace('{count}', this.selectedIds.length);
-                if (!confirm(msg)) return;
+                if (!(await confirmDialog({ message: msg, danger: action === 'delete' }))) return;
             }
             this.actionBusy = true;
             const taskIds = [...this.selectedIds];
@@ -508,7 +508,7 @@ function taskListData() {
         },
 
         async deleteTask(id) {
-            if (!confirm(i18n('tasks.list.delete_confirm'))) return;
+            if (!(await confirmDialog({ message: i18n('tasks.list.delete_confirm'), danger: true }))) return;
             this.actionBusy = true;
             try {
                 await fetchJson(`/api/tasks/${id}`, { method: 'DELETE' });

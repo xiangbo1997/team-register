@@ -643,7 +643,7 @@ function checkoutLinkPage() {
         async saveCurrentAsTemplate() {
             const name = prompt('模板名（如 "UK promo datroaiuk"）:');
             if (!name) return;
-            const isPreset = confirm('设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅存到下拉');
+            const isPreset = await confirmDialog({ title: '保存模板', message: '设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅存到下拉' });
             let sortOrder = 0;
             if (isPreset) {
                 const sortStr = prompt('预设按钮排序（小→大；默认 100）:', '100');

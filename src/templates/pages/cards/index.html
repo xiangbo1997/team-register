@@ -598,7 +598,7 @@ function cardsData() {
         },
 
         async warmupCard(card) {
-            if (!confirm(`确认对卡 ****${card.last4} 触发一轮预热？\n当前 warmup_count = ${card.warmup_count}/${card.target_warmup_count}`)) return;
+            if (!(await confirmDialog({ title: '触发预热', message: `确认对卡 ****${card.last4} 触发一轮预热？\n当前 warmup_count = ${card.warmup_count}/${card.target_warmup_count}` }))) return;
             try {
                 await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/warmup`, {
                     method: 'POST',
@@ -611,7 +611,7 @@ function cardsData() {
         },
 
         async invalidateCard(card) {
-            if (!confirm(`确认作废卡 ****${card.last4} 吗？\n\n注意：X988 卡密作废后无法恢复。`)) return;
+            if (!(await confirmDialog({ title: '作废卡密', message: `确认作废卡 ****${card.last4} 吗？\n\n注意：X988 卡密作废后无法恢复。`, danger: true, confirmText: '作废' }))) return;
             const reason = prompt('作废原因（可选）:', 'manual');
             await fetchJson(`/api/cards/${encodeURIComponent(card.card_key)}/invalidate`, {
                 method: 'POST',

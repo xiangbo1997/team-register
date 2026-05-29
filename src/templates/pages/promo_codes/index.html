@@ -55,10 +55,18 @@
                 <span x-show="!bulkVerifying">批量验证全部</span>
                 <span x-show="bulkVerifying">验证中 <span x-text="bulkProgress"></span>...</span>
             </button>
-            <button @click="importFromScanner()" :disabled="importing"
+            <button @click="downloadImportTemplate()"
+                    class="flex items-center gap-1.5 px-4 py-2 text-muted border border-border hover:bg-subtle rounded-lg transition-all text-sm font-medium">
+                <span class="material-symbols-outlined text-base">download</span>
+                下载模板
+            </button>
+            <input type="file" accept=".json,application/json" class="hidden"
+                   x-ref="importFileInput"
+                   @change="uploadImportFile($event)">
+            <button @click="$refs.importFileInput.click()" :disabled="importing"
                     class="flex items-center gap-1.5 px-4 py-2 text-success border border-success hover:bg-success/5 rounded-lg transition-all text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
-                <span class="material-symbols-outlined text-base">file_download</span>
-                <span x-show="!importing">从扫描器导入</span>
+                <span class="material-symbols-outlined text-base">upload_file</span>
+                <span x-show="!importing">上传文件导入</span>
                 <span x-show="importing">导入中...</span>
             </button>
             <button @click="openDiscoverDialog()" :disabled="discovering"
@@ -316,6 +324,64 @@
                     <p class="text-[10px] text-slate-500 mt-1">会做 normalize（小写+去标点+首字母缩写）后参与候选生成</p>
                 </div>
 
+                {# ── 代理源（P7：探索走哪类代理出口）── #}
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">代理源</label>
+                    <div class="grid grid-cols-3 gap-2 mb-2">
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'dynamic_provider' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="dynamic_provider" class="hidden">
+                            <span class="material-symbols-outlined text-sm">sync</span>
+                            动态供应商
+                        </label>
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'static_proxy' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="static_proxy" class="hidden">
+                            <span class="material-symbols-outlined text-sm">dns</span>
+                            静态代理池
+                        </label>
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'direct' ? 'bg-danger/5 border-danger text-danger' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="direct" class="hidden">
+                            <span class="material-symbols-outlined text-sm">warning</span>
+                            直连
+                        </label>
+                    </div>
+
+                    {# 动态供应商下拉 #}
+                    <div x-show="discoverForm.proxySource === 'dynamic_provider'">
+                        <select x-model="discoverForm.proxyProviderId"
+                                class="w-full px-3 py-2 border rounded-md text-sm">
+                            <option value="">— 选择动态供应商 —</option>
+                            <template x-for="p in proxyProviders" :key="p.id">
+                                <option :value="p.id" x-text="`${p.label}（${p.kind === '1024proxy' ? '1024' : '通用'} · ${p.default_country || 'Rand'}）`"></option>
+                            </template>
+                        </select>
+                        <p class="text-[10px] text-slate-500 mt-1" x-show="proxyProviders.length === 0">
+                            还没有动态供应商，去 <a href="/proxy-providers" class="text-primary hover:underline">/proxy-providers</a> 新建
+                        </p>
+                        <p class="text-[10px] text-success mt-1" x-show="proxyProviders.length > 0">推荐：每 N 条自动换 IP，CF 风控规避最强</p>
+                    </div>
+
+                    {# 静态代理池下拉 #}
+                    <div x-show="discoverForm.proxySource === 'static_proxy'">
+                        <select x-model="discoverForm.staticProxyId"
+                                class="w-full px-3 py-2 border rounded-md text-sm">
+                            <option value="">— 按国家自动选 —</option>
+                            <template x-for="p in staticProxies" :key="p.id">
+                                <option :value="p.id" x-text="`${p.label}（${p.country || '?'}）`"></option>
+                            </template>
+                        </select>
+                        <p class="text-[10px] text-slate-500 mt-1">整轮固定 IP；留空则按探索国家自动匹配</p>
+                    </div>
+
+                    {# 直连警告 #}
+                    <div x-show="discoverForm.proxySource === 'direct'"
+                         class="bg-danger/5 border border-danger/20 rounded px-3 py-2 text-[11px] text-danger">
+                        直连模式下 ChatGPT API 会很快 403，整任务可能扫不到一条就停。仅用于本地排查。
+                    </div>
+                </div>
+
                 <div class="text-[11px] text-slate-500 bg-slate-50 px-3 py-2 rounded space-y-0.5">
                     <div>调用间隔：1.0s/条；遇 401/403 自动停止</div>
                     <div>ELIGIBLE 立即建模板（命名 <code class="text-primary-700">promo-{country}-{code}</code>），重名跳过</div>
@@ -450,7 +516,9 @@ function promoCodesData() {
         discovering: false,
         cancelling: false,
         supportedCountries: [],
-        discoverForm: { mode: 'seeds', country: '', extraWordsText: '' },
+        proxyProviders: [],
+        staticProxies: [],
+        discoverForm: { mode: 'seeds', country: '', extraWordsText: '', proxySource: 'dynamic_provider', proxyProviderId: '', staticProxyId: '' },
         discoverState: { processed: 0, total: 0, eligible_found: 0, exists_found: 0, error_count: 0, country: '', mode: '', finished_at: null, error_message: '' },
         discoverTaskId: '',
         discoverEventSource: null,
@@ -496,7 +564,49 @@ function promoCodesData() {
                     return;
                 }
             }
+            await this.fetchProxySources();
+            // 打开弹窗前先查后端有没有在跑的任务（页面刷新后也能恢复进度面板）
+            await this._reattachRunningTask();
             this.showDiscoverDialog = true;
+        },
+
+        async _reattachRunningTask() {
+            // 查最近任务，若有 running 的就重连进度 + SSE（避免重复启动、再点即查进度）
+            try {
+                const res = await fetchJson('/api/promo-discovery/recent?limit=1');
+                const latest = (res.items || [])[0];
+                if (latest && latest.final_status === 'running') {
+                    this.discoverTaskId = latest.task_id;
+                    this.discoverStartTs = Date.now();
+                    this.discoverState = {
+                        processed: latest.processed || 0,
+                        total: latest.total || 0,
+                        eligible_found: latest.eligible_found || 0,
+                        exists_found: latest.exists_found || 0,
+                        error_count: latest.error_count || 0,
+                        country: latest.country || '',
+                        mode: latest.mode || '',
+                        finished_at: null,
+                        error_message: latest.error_message || '',
+                    };
+                    this.discovering = true;
+                    this._subscribeDiscoverEvents(latest.task_id);
+                }
+            } catch (_) { /* 查不到就当没有在跑的任务 */ }
+        },
+
+        async fetchProxySources() {
+            // 拉动态供应商 + 静态代理池，填探索弹窗「代理源」下拉
+            try {
+                this.proxyProviders = (await fetchJson('/api/proxy-providers')).filter(p => p.is_active);
+            } catch (_) { this.proxyProviders = []; }
+            try {
+                this.staticProxies = (await fetchJson('/api/proxies')).filter(p => p.is_active);
+            } catch (_) { this.staticProxies = []; }
+            // 有动态供应商时默认选第一个
+            if (this.proxyProviders.length && !this.discoverForm.proxyProviderId) {
+                this.discoverForm.proxyProviderId = String(this.proxyProviders[0].id);
+            }
         },
 
         closeDiscoverDialog() {
@@ -513,13 +623,25 @@ function promoCodesData() {
         },
 
         async startDiscover() {
+            // 防重：已有任务在跑时不重复启动（再点按钮走 openDiscoverDialog 看进度）
+            if (this.discovering) {
+                showToast('已有探索任务在运行，请等待完成或先取消', 'warning');
+                return;
+            }
             const extras = (this.discoverForm.extraWordsText || '')
                 .split('\n').map(x => x.trim()).filter(Boolean);
             const payload = {
                 country: this.discoverForm.country,
                 mode: this.discoverForm.mode,
                 extra_words: extras,
+                proxy_source: this.discoverForm.proxySource,
+                proxy_provider_id: this.discoverForm.proxyProviderId ? Number(this.discoverForm.proxyProviderId) : null,
+                static_proxy_id: this.discoverForm.staticProxyId ? Number(this.discoverForm.staticProxyId) : null,
             };
+            if (payload.proxy_source === 'dynamic_provider' && !payload.proxy_provider_id) {
+                showToast('请先选择一个动态供应商', 'error');
+                return;
+            }
             try {
                 const res = await fetchJson('/api/promo-discovery/start', {
                     method: 'POST',
@@ -536,6 +658,12 @@ function promoCodesData() {
                 this._subscribeDiscoverEvents(res.task_id);
                 showToast(`已启动探索：${res.country} 共 ${res.total} 候选`, 'info');
             } catch (exc) {
+                // 后端 BusyError → 409：已有任务在跑，自动重连进度而非报错
+                if (exc && exc.status === 409) {
+                    showToast('已有探索任务在运行，已切换到进度视图', 'info');
+                    await this._reattachRunningTask();
+                    return;
+                }
                 const msg = (exc && exc.payload && exc.payload.detail) || String(exc.message || exc);
                 showToast(msg, 'error');
             }
@@ -737,7 +865,7 @@ function promoCodesData() {
         },
 
         async deleteRow(t) {
-            if (!confirm(`确定删除模板「${t.name}」？此操作不可撤销。`)) return;
+            if (!(await confirmDialog({ title: '删除模板', message: `确定删除模板「${t.name}」？此操作不可撤销。`, danger: true }))) return;
             this.deleting[t.id] = true;
             try {
                 await fetchJson(`/api/link-templates/${t.id}`, { method: 'DELETE' });
@@ -790,7 +918,7 @@ function promoCodesData() {
                 .map(r => r.name)
                 .join('、');
             const preview = n > 5 ? `${names} 等 ${n} 项` : names;
-            if (!confirm(`确定删除 ${n} 个促销码？\n${preview}\n\n此操作不可撤销。`)) return;
+            if (!(await confirmDialog({ title: '批量删除促销码', message: `确定删除 ${n} 个促销码？\n${preview}\n\n此操作不可撤销。`, danger: true, confirmText: `删除 ${n} 项` }))) return;
 
             this.bulkDeleting = true;
             // 逐条 DELETE（后端没批量接口；并发不超过 5 防止 CSRF 冲突）
@@ -856,14 +984,36 @@ function promoCodesData() {
             }
         },
 
-        async importFromScanner() {
-            if (!confirm('确认从 gpt-promo-scanner/known_codes.json 导入促销码？\n（已存在的会自动跳过，幂等安全）')) return;
+        downloadImportTemplate() {
+            // 直接用 <a> 触发下载（带 cookie 鉴权，端点 admin only）
+            const a = document.createElement('a');
+            a.href = '/api/link-templates/import-template';
+            a.download = 'promo_import_template.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        },
+
+        async uploadImportFile(event) {
+            const input = event.target;
+            const file = input.files && input.files[0];
+            if (!file) return;
+            // 前端文件类型校验（友好拦截；后端仍有真正防线）
+            if (!file.name.toLowerCase().endsWith('.json')) {
+                showToast('只支持 .json 文件，请先下载模板填写', 'error');
+                input.value = '';
+                return;
+            }
             this.importing = true;
             try {
-                const res = await fetchJson('/api/link-templates/import-from-scanner', {
+                // FormData 上传：fetchJson 检测到 FormData 不设 Content-Type，
+                // 浏览器自动带 multipart boundary；CSRF header 仍自动注入
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('dry_run', 'false');
+                const res = await fetchJson('/api/link-templates/import-upload', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ dry_run: false }),
+                    body: fd,
                 });
                 const msg = `导入完成：新建 ${res.created} 条，跳过已存在 ${res.skipped_existing} 条` +
                             (res.failed.length ? `，失败 ${res.failed.length} 条` : '');
@@ -876,11 +1026,12 @@ function promoCodesData() {
                 showToast(msg, 'error');
             } finally {
                 this.importing = false;
+                input.value = '';  // 清空，允许重复上传同一文件
             }
         },
 
         async bulkVerify() {
-            if (!confirm(`确认批量验证全部 ${this.rows.length} 个促销码？\n（每条间隔 0.5s，预计耗时约 ${Math.ceil(this.rows.length * 0.5)} 秒，会借最近完成账号的 token）`)) return;
+            if (!(await confirmDialog({ title: '批量验证', message: `确认批量验证全部 ${this.rows.length} 个促销码？\n（每条间隔 0.5s，预计耗时约 ${Math.ceil(this.rows.length * 0.5)} 秒，会借最近完成账号的 token）` }))) return;
             this.bulkVerifying = true;
             this.bulkProgress = `0/${this.rows.length}`;
             try {

@@ -362,7 +362,7 @@
                 try {
                     const r = await fetch('https://ipapi.co/ip/');
                     this.form.cred_whitelisted_ip = (await r.text()).trim();
-                } catch (e) { alert('获取本机 IP 失败，请手动填写'); }
+                } catch (e) { notify({ type: 'error', message: '获取本机 IP 失败，请手动填写' }); }
             },
 
             openCreate() {
@@ -448,7 +448,7 @@
             closeDialog() { this.dialog.open = false; },
 
             async confirmDelete(p) {
-                if (!confirm(`确定删除供应商"${p.label}"？`)) return;
+                if (!(await confirmDialog({ title: '删除供应商', message: `确定删除供应商"${p.label}"？`, danger: true }))) return;
                 try {
                     await fetchJson(`/api/proxy-providers/${p.id}`, { method: 'DELETE' });
                     await this.refresh();
@@ -482,7 +482,7 @@
             async testFromForm() {
                 // 表单里测试需要先保存（test 端点按 id 调）；提示用户
                 if (!this.dialog.editing) {
-                    alert('请先保存供应商，再用列表里的「测试」按钮验证连通性');
+                    notify({ type: 'warning', message: '请先保存供应商，再用列表里的「测试」按钮验证连通性' });
                     return;
                 }
                 this.testing = true;

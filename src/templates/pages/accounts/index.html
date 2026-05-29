@@ -1349,7 +1349,7 @@ function accountsData() {
             const name = prompt('模板名（用来下次识别，例如 "UK promo datroaiuk"）:');
             if (!name) return;
             // P3 模板化：交互式询问扩展字段（保留 native prompt 避免引入 modal）
-            const isPreset = confirm('设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅保存到模板下拉');
+            const isPreset = await confirmDialog({ title: '保存模板', message: '设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅保存到模板下拉' });
             let sortOrder = 0;
             if (isPreset) {
                 const sortStr = prompt('预设按钮排序（小→大；默认 100）:', '100');
@@ -1502,7 +1502,7 @@ function accountsData() {
         },
 
         async markPromote(acc, tier) {
-            if (!confirm(`确认把 ${acc.email} 晋级为 ${tier.toUpperCase()}？\n这会把账号从普号池移到 ${tier.toUpperCase()} 号池`)) return;
+            if (!(await confirmDialog({ title: '账号晋级', message: `确认把 ${acc.email} 晋级为 ${tier.toUpperCase()}？\n这会把账号从普号池移到 ${tier.toUpperCase()} 号池` }))) return;
             await fetchJson(`/api/accounts/${encodeURIComponent(acc.run_id)}/promote`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

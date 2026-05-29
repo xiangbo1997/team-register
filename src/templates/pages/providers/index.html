@@ -376,7 +376,7 @@ function providerData() {
         },
 
         async deleteProvider(p) {
-            if (!confirm(i18n('providers.confirm_delete', { provider_type: p.provider_type, provider_name: p.provider_name }))) return;
+            if (!(await confirmDialog({ message: i18n('providers.confirm_delete', { provider_type: p.provider_type, provider_name: p.provider_name }), danger: true }))) return;
             await fetchJson(`/api/providers/${p.provider_type}/${p.provider_name}`, { method: 'DELETE' });
             await this.fetchProviders();
         },

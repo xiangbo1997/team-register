@@ -332,7 +332,7 @@ function proxiesData() {
         },
 
         async deleteProxy(p) {
-            if (!confirm(`确认删除代理「${p.label}」？此操作不可恢复。`)) return;
+            if (!(await confirmDialog({ title: '删除代理', message: `确认删除代理「${p.label}」？此操作不可恢复。`, danger: true }))) return;
             try {
                 await fetchJson(`/api/proxies/${p.id}`, { method: 'DELETE' });
                 showToast('已删除', 'success');

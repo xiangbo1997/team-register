@@ -941,7 +941,7 @@ function createTaskData() {
         },
 
         async cancelAutoBatch() {
-            if (!confirm('取消批量任务？已 submit 的不会撤回，仅停止后续 submit')) return;
+            if (!(await confirmDialog({ title: '取消批量任务', message: '取消批量任务？已 submit 的不会撤回，仅停止后续 submit', danger: true }))) return;
             await fetchJson(`/api/tasks/batch/${encodeURIComponent(this.autoBatch.activeBatchId)}/cancel`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

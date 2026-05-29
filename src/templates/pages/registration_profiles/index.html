@@ -435,7 +435,7 @@ function profileData() {
 
         async deleteProfile(p) {
             if (p.is_default) return;
-            if (!confirm(`确认删除组合 ${p.name}？`)) return;
+            if (!(await confirmDialog({ title: '删除组合', message: `确认删除组合 ${p.name}？`, danger: true }))) return;
             try {
                 await fetchJson(`/api/registration-profiles/${encodeURIComponent(p.name)}`, {
                     method: 'DELETE',

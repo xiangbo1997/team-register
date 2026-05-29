@@ -423,7 +423,7 @@ function mailAccountsData() {
         },
 
         async deleteAccount(account) {
-            if (!confirm(`确认删除邮箱账号 ${account.label || account.email} 吗？`)) return;
+            if (!(await confirmDialog({ title: '删除邮箱账号', message: `确认删除邮箱账号 ${account.label || account.email} 吗？`, danger: true }))) return;
             await fetchJson(`/api/mail-accounts/${account.id}`, { method: 'DELETE' });
             showToast('邮箱账号已删除', 'success');
             await this.fetchAccounts();
