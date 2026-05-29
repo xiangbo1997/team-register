@@ -2,7 +2,7 @@
 <script>
 function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
-    const colors = { info: 'bg-blue-500', success: 'bg-green-500', error: 'bg-red-500', warning: 'bg-yellow-500 text-gray-900' };
+    const colors = { info: 'bg-primary-500', success: 'bg-success-500', error: 'bg-danger-500', warning: 'bg-warning-500 text-slate-900' };
     const el = document.createElement('div');
     el.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-lg shadow-lg fade-in`;
     el.textContent = message;

@@ -22,6 +22,11 @@ team_register.db
 team_register.db-journal
 team_register.db-shm
 team_register.db-wal
+# data/ 子目录里的 SQLite 文件同样排除（含 team-register.db 连字符变体）
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 # 一次性生成的 HTML / 调试文件
 *.html
 !docs/**/*.html

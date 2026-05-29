@@ -1,29 +1,34 @@
 <!-- State machine progress bar component -->
 <!-- Usage: {% include "components/state_progress.html" with context %} -->
-<!-- Expects: current_state (string) -->
-{% set states = ["ENTRY", "AUTH", "VERIFY_EMAIL", "ABOUT_YOU", "HOME", "PHONE", "PAYMENT"] %}
+<!-- Expects: current_state (string); optional: is_phone_mode (bool, default False) -->
+{% set all_states = ["PREFLIGHT_MAIL", "PREFLIGHT_PHONE", "PREFLIGHT_BROWSER", "PREFLIGHT_IP", "ENTRY", "AUTH", "VERIFY_EMAIL", "ABOUT_YOU", "HOME", "PHONE", "PAYMENT"] %}
+{% if is_phone_mode is defined and is_phone_mode %}
+{% set states = all_states %}
+{% else %}
+{% set states = all_states | reject("equalto", "PREFLIGHT_PHONE") | list %}
+{% endif %}
 {% set state_idx = states.index(current_state) if current_state in states else -1 %}
 
 <div class="flex items-center gap-1 text-xs">
     {% for s in states %}
     {% if state_idx >= 0 and loop.index0 < state_idx %}
     <div class="flex items-center gap-1">
-        <span class="w-6 h-6 rounded-full bg-green-500 text-white flex items-center justify-center text-[10px]">&#10003;</span>
-        <span class="text-green-700 font-medium hidden sm:inline">{{ _('states.' + s) }}</span>
+        <span class="w-6 h-6 rounded-full bg-success-500 text-white flex items-center justify-center text-[10px]">&#10003;</span>
+        <span class="text-success-700 font-medium hidden sm:inline">{{ _('states.' + s) }}</span>
     </div>
     {% elif loop.index0 == state_idx %}
     <div class="flex items-center gap-1">
-        <span class="w-6 h-6 rounded-full bg-blue-500 text-white flex items-center justify-center pulse-dot text-[10px]">&#9679;</span>
-        <span class="text-blue-700 font-semibold hidden sm:inline">{{ _('states.' + s) }}</span>
+        <span class="w-6 h-6 rounded-full bg-primary-500 text-white flex items-center justify-center pulse-dot text-[10px]">&#9679;</span>
+        <span class="text-primary-700 font-semibold hidden sm:inline">{{ _('states.' + s) }}</span>
     </div>
     {% else %}
     <div class="flex items-center gap-1">
-        <span class="w-6 h-6 rounded-full bg-gray-200 text-gray-400 flex items-center justify-center text-[10px]">&#9675;</span>
-        <span class="text-gray-400 hidden sm:inline">{{ _('states.' + s) }}</span>
+        <span class="w-6 h-6 rounded-full bg-slate-200 text-slate-400 flex items-center justify-center text-[10px]">&#9675;</span>
+        <span class="text-slate-400 hidden sm:inline">{{ _('states.' + s) }}</span>
     </div>
     {% endif %}
     {% if not loop.last %}
-    <div class="w-4 h-px {{ 'bg-green-400' if state_idx >= 0 and loop.index0 < state_idx else 'bg-gray-200' }}"></div>
+    <div class="w-4 h-px {{ 'bg-success-500' if state_idx >= 0 and loop.index0 < state_idx else 'bg-slate-200' }}"></div>
     {% endif %}
     {% endfor %}
 </div>

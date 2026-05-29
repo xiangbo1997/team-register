@@ -1,0 +1,748 @@
+{% extends "base.html" %}
+{% block title %}生成 Checkout 链接 - Team Register{% endblock %}
+{% block nav_checkout_link %}sidebar-active{% endblock %}
+{% block page_title %}生成 Checkout 链接{% endblock %}
+
+{#
+  独立 Checkout 链接生成器
+  设计稿对齐：stitch projects/18307941136624781783/screens/96810771cb174046af598cb784e54f34（"布局优化版"）
+
+  设计立场：
+    - 后端复用 POST /api/accounts/checkout-link（generate_link_standalone）—— 与账号池弹窗共享同一份 PaymentLinkGenerator
+    - access_token 仅存于 Alpine 内存（不进 localStorage / sessionStorage），刷新即清
+    - 12 列网格 2x2 四卡布局（max-w-1200）：
+        左列 (7/12)：① 凭据   ② 业务配置（计划/Seats/Workspace/Promo + 快捷模板）
+        右列 (5/12)：③ 环境与支付（支付页/代理/国家/货币）   ④ 执行生成（结果 + 按钮纵排）
+    - 执行生成卡有特殊 primary/10 边框 + LIVE OUTPUT 角标，与配置卡区分
+#}
+
+{% block content %}
+
+{# 国家/货币静态数据脚本（含 60 国 + flag generator + countryToCurrency 映射）#}
+<script src="/static/js/checkout-link-data.js"></script>
+
+{# 把当前 locale 的翻译表内联到 window，供 Alpine combobox 访问国家/货币本地化 #}
+<script>
+  window.I18N = {{ _translations()|tojson }};
+  window.CURRENT_LOCALE = "{{ current_locale() }}";
+</script>
+
+<div x-data="checkoutLinkPage()" x-init="init()" class="max-w-[1200px] mx-auto">
+  {#
+    布局策略（与账号池弹窗 V3 同款"左滚右固"）：
+      - 容器锁定 max-h: calc(100vh - 顶栏 60px - 上下 padding 64px) ≈ 100vh - 124px
+      - lg+ 横排 flex：左列 overflow-y-auto 独立滚动 / 右列 lg:sticky 吸顶
+      - <lg 自动回退成纵向流式（手机/平板友好）
+      - min-h-0 是 flex 滚动的关键 hack —— 不加的话子元素会被内容撑大跳出父级
+  #}
+  <div class="flex flex-col lg:flex-row gap-6 lg:max-h-[calc(100vh-124px)]">
+
+    {# ───── 左列：凭据 + 业务配置（独立滚动） ──────────────────── #}
+    <div class="lg:flex-[7] min-h-0 lg:overflow-y-auto lg:custom-scrollbar lg:pr-2 flex flex-col gap-6">
+
+      {# ── Card 1：凭据 ────────────────────────────── #}
+      <section class="bg-white rounded-lg shadow-token-sm border border-border p-6 flex flex-col gap-5">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined">key</span>
+          </div>
+          <div>
+            <h2 class="text-base font-semibold text-body">凭据</h2>
+            <p class="text-xs text-muted font-medium">ChatGPT Access Token</p>
+          </div>
+        </div>
+
+        <div class="relative">
+          <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">
+            Access Token
+          </label>
+          <div class="relative">
+            <textarea
+                x-model="accessToken"
+                :type="tokenVisible ? 'text' : 'password'"
+                rows="3"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="eyJhbGciOiJIUzI1NiIs..."
+                :class="tokenVisible ? '' : 'text-security-disc'"
+                class="w-full font-mono text-sm p-4 pr-32 bg-subtle border border-border rounded-lg focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all resize-none"></textarea>
+
+            <div class="absolute right-3 bottom-3 flex gap-2">
+              <button type="button"
+                      @click="tokenVisible = !tokenVisible"
+                      :title="tokenVisible ? '隐藏 token' : '显示 token'"
+                      class="p-2 text-muted hover:text-primary transition-colors bg-white border border-border rounded-md shadow-token-sm">
+                <span class="material-symbols-outlined text-lg" x-text="tokenVisible ? 'visibility' : 'visibility_off'"></span>
+              </button>
+              <button type="button"
+                      @click="pasteFromClipboard()"
+                      class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/10 transition-colors bg-white border border-border rounded-md shadow-token-sm">
+                <span class="material-symbols-outlined text-base">content_paste</span>
+                <span>粘贴</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-warning/5 border-l-2 border-warning p-4 flex gap-3 rounded-r-lg">
+          <span class="material-symbols-outlined text-warning text-xl flex-shrink-0">warning</span>
+          <p class="text-xs font-medium text-warning leading-relaxed">
+            Token 不会被服务端缓存；关闭页面即清空。
+          </p>
+        </div>
+      </section>
+
+      {# ── Card 2：业务配置 ────────────────────────── #}
+      <section class="bg-white rounded-lg shadow-token-sm border border-border p-6 flex flex-col gap-6">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined">tune</span>
+          </div>
+          <h2 class="text-base font-semibold text-body">业务配置</h2>
+        </div>
+
+        {# 快捷模板 + 存为模板 #}
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-semibold text-muted uppercase tracking-wider font-label">快捷模板</label>
+            <button @click="saveCurrentAsTemplate()"
+                    class="text-[11px] font-bold text-primary hover:underline flex items-center gap-1">
+              <span class="material-symbols-outlined text-sm">save</span>
+              存为模板
+            </button>
+          </div>
+
+          {# 模板下拉 #}
+          <select x-model="form.selectedTemplateId"
+                  @change="applyTemplate($event.target.value)"
+                  class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+            <option value="">-- 不使用模板 --</option>
+            <template x-for="t in linkTemplates" :key="t.id">
+              <option :value="t.id" x-text="`${t.name} (${t.plan})`"></option>
+            </template>
+          </select>
+
+          {# 快捷预设按钮组 #}
+          <div x-show="presets.length > 0" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <template x-for="preset in presets" :key="preset.id">
+              <button @click="applyPresetTemplate(preset)"
+                      :class="form.lastAppliedPresetId === preset.id ? 'border-primary/20 bg-primary/5 text-primary ring-2 ring-primary/10' : 'border-border text-body hover:bg-subtle'"
+                      class="flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border transition-all"
+                      :title="`${preset.name} — plan=${preset.plan} country=${preset.aimizy_country || '默认'}`"
+                      x-text="preset.name"></button>
+            </template>
+          </div>
+        </div>
+
+        {# Plan + Seats #}
+        <div class="grid grid-cols-12 gap-4">
+          <div class="col-span-12 sm:col-span-8">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">计划 (Plan)</label>
+            <select x-model="form.plan"
+                    class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+              <option value="team">Team（默认，免费试用）</option>
+              <option value="plus">Plus</option>
+              <option value="pro">⚠️ Pro（实验性）</option>
+              <option value="pro_lite">⚠️ Pro Lite（实验性）</option>
+            </select>
+            <p x-show="form.plan === 'pro' || form.plan === 'pro_lite'"
+               class="mt-1 text-[11px] text-warning">
+              Pro 系列 payload 字段名待真实接口验证
+            </p>
+          </div>
+          <div class="col-span-12 sm:col-span-4" x-show="form.plan === 'team'">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">Seats</label>
+            <input type="number" x-model.number="form.seat_quantity" min="1" max="200"
+                   class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+          </div>
+        </div>
+
+        {# Workspace 名称（仅 Team） #}
+        <div x-show="form.plan === 'team'">
+          <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">Workspace 名称</label>
+          <input type="text" x-model="form.workspace_name" placeholder="MyTeam"
+                 class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+        </div>
+
+        {# Promo 区域 —— 与上方 divider 分隔 #}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-border">
+          <div>
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">URL 优惠码 (Team)</label>
+            <input type="text" x-model="form.promo_code" placeholder="datroaiuk"
+                   class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+            <p class="mt-1 text-[10px] text-muted">
+              <span x-show="form.plan === 'team'">Team 折扣码，进 payload promo_code 字段</span>
+              <span x-show="form.plan === 'plus'" class="text-warning">Plus 自动用 plus-1-month-free，此处填的会被忽略</span>
+              <span x-show="form.plan !== 'team' && form.plan !== 'plus'">非 Team / Plus 时忽略</span>
+            </p>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">Payload Campaign</label>
+            <input type="text" x-model="form.promo_campaign_id"
+                   list="checkout-link-promo-suggestions"
+                   :placeholder="form.plan === 'plus' ? 'plus-1-month-free' : 'team-1-month-free'"
+                   class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+            <datalist id="checkout-link-promo-suggestions">
+              <option value="plus-1-month-free">Plus 0 元试用 1 个月</option>
+              <option value="plus-1-month-50-pct-off">Plus 半价 1 个月</option>
+              <option value="team-1-month-free">Team 0 元试用 1 个月</option>
+            </datalist>
+            <p class="mt-1 text-[10px] text-muted">留空走默认</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    {# ───── 右列：环境与支付 + 执行生成（lg+ 吸顶不滚） ─────────────── #}
+    <div class="lg:flex-[5] flex-shrink-0 flex flex-col gap-6 lg:self-start lg:sticky lg:top-0">
+
+      {# ── Card 3：环境与支付 ──────────────────────── #}
+      <section class="bg-white rounded-lg shadow-token-sm border border-border p-6 flex flex-col gap-6">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
+            <span class="material-symbols-outlined">public</span>
+          </div>
+          <h2 class="text-base font-semibold text-body">环境与支付</h2>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="col-span-2">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">支付页模式</label>
+            <select x-model="form.checkout_ui_mode"
+                    class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+              <option value="hosted">hosted（pay.openai.com 长链）</option>
+              <option value="custom">custom（chatgpt.com 站内）</option>
+            </select>
+          </div>
+          <div class="col-span-2">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">代理服务器</label>
+            <select x-model="form.proxy_id"
+                    class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+              <option value="">-- 用 .env 默认代理 --</option>
+              <template x-for="p in proxyOptions" :key="p.id">
+                <option :value="p.id"
+                        :disabled="!p.is_active"
+                        x-text="`${p.country || '?'} · ${p.label}${p.is_active ? '' : ' (停用)'}`"></option>
+              </template>
+            </select>
+            <p class="mt-1 text-[10px] text-muted">
+              管理代理：<a href="/proxies" target="_blank" class="text-primary underline">/proxies</a>
+            </p>
+          </div>
+          {# ──────────────────────────────────────────────────────
+             国家 combobox（可搜索 + 国旗 + 中英文双语）
+
+             架构注意：故意用 inline x-data 而不是 x-data="countryCombobox()"。
+             原因：Alpine 里子组件无法直接访问父组件方法，$root 也只指向当前组件。
+             用 inline x-data 让 combobox 直接共享父级 checkoutLinkPage() 作用域，
+             可直接调 i18n() / flag() / form / applyCountryToCurrency 而无需任何前缀。
+             ────────────────────────────────────────────────────── #}
+          <div class="relative"
+               x-data="{ open: false, query: '',
+                         get countryList() {
+                           const list = (window.CheckoutLinkData && window.CheckoutLinkData.countries) || [];
+                           const q = this.query.trim().toLowerCase();
+                           if (!q) return list;
+                           return list.filter(c => {
+                             const code = c.code.toLowerCase();
+                             const name = (i18n('countries.' + c.code) || '').toLowerCase();
+                             return code.includes(q) || name.includes(q);
+                           });
+                         },
+                         get countryButtonLabel() {
+                           const code = form.aimizy_country;
+                           if (!code) return i18n('checkout_link.country_auto') || '-- 自动 --';
+                           const name = i18n('countries.' + code) || code;
+                           return name + ' (' + code + ')';
+                         },
+                         toggleCountry() {
+                           this.open = !this.open;
+                           if (this.open) {
+                             this.query = '';
+                             this.$nextTick(() => { try { this.$refs.countrySearchInput.focus(); } catch(_) {} });
+                           }
+                         },
+                         selectCountry(code) {
+                           form.aimizy_country = code;
+                           if (code) applyCountryToCurrency(code);
+                           else currencyAutoFilled = false;
+                           this.open = false;
+                           this.query = '';
+                         } }"
+               @click.outside="open = false">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label"
+                   x-text="i18n('checkout_link.country_label') || '国家'"></label>
+            <button type="button" @click="toggleCountry()"
+                    class="w-full flex items-center justify-between text-sm border border-border rounded-lg px-3 py-2 bg-white hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+              <span class="flex items-center gap-2 text-left truncate"
+                    :class="!form.aimizy_country ? 'text-muted' : 'text-body'">
+                <span x-show="form.aimizy_country" x-text="flag(form.aimizy_country)"></span>
+                <span x-text="countryButtonLabel"></span>
+              </span>
+              <span class="material-symbols-outlined text-base text-muted" x-text="open ? 'expand_less' : 'expand_more'"></span>
+            </button>
+            <div x-show="open" x-cloak x-transition.opacity.duration.150ms
+                 class="absolute z-30 mt-1 w-full bg-white border border-border rounded-lg shadow-token-md max-h-72 overflow-hidden flex flex-col">
+              <input type="text" x-model="query" @click.stop x-ref="countrySearchInput"
+                     :placeholder="i18n('checkout_link.country_search_placeholder') || '搜索...'"
+                     class="px-3 py-2 border-b border-border text-sm focus:outline-none">
+              <div class="overflow-y-auto custom-scrollbar">
+                <button type="button" @click="selectCountry('')"
+                        class="w-full px-3 py-2 text-left text-xs text-muted hover:bg-subtle border-b border-border"
+                        x-text="i18n('checkout_link.country_auto') || '-- 自动 --'"></button>
+                <template x-for="c in countryList" :key="c.code">
+                  <button type="button" @click="selectCountry(c.code)"
+                          class="w-full px-3 py-2 text-left text-sm hover:bg-subtle flex items-center gap-2 transition-colors"
+                          :class="form.aimizy_country === c.code ? 'bg-primary/10 text-primary font-semibold' : 'text-body'">
+                    <span class="text-base" x-text="flag(c.code)"></span>
+                    <span class="flex-1 truncate" x-text="i18n('countries.' + c.code) || c.code"></span>
+                    <span class="text-[10px] text-muted font-mono" x-text="c.code"></span>
+                  </button>
+                </template>
+                <div x-show="countryList.length === 0" class="px-3 py-4 text-center text-xs text-muted"
+                     x-text="i18n('checkout_link.no_match') || '无匹配项'"></div>
+              </div>
+            </div>
+          </div>
+
+          {# ── 货币 combobox（可搜索 + 联动提示） —— 同样 inline x-data ── #}
+          <div class="relative"
+               x-data="{ open: false, query: '',
+                         get currencyList() {
+                           const list = (window.CheckoutLinkData && window.CheckoutLinkData.currencies) || [];
+                           const q = this.query.trim().toLowerCase();
+                           if (!q) return list;
+                           return list.filter(code => {
+                             const c = code.toLowerCase();
+                             const name = (i18n('currencies.' + code) || '').toLowerCase();
+                             return c.includes(q) || name.includes(q);
+                           });
+                         },
+                         get currencyButtonLabel() {
+                           const code = form.aimizy_currency;
+                           if (!code) return i18n('checkout_link.currency_auto') || '-- 自动 --';
+                           const name = i18n('currencies.' + code) || code;
+                           return name + ' (' + code + ')';
+                         },
+                         toggleCurrency() {
+                           this.open = !this.open;
+                           if (this.open) {
+                             this.query = '';
+                             this.$nextTick(() => { try { this.$refs.currencySearchInput.focus(); } catch(_) {} });
+                           }
+                         },
+                         selectCurrency(code) {
+                           form.aimizy_currency = code;
+                           currencyAutoFilled = false;
+                           this.open = false;
+                           this.query = '';
+                         } }"
+               @click.outside="open = false">
+            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label"
+                   x-text="i18n('checkout_link.currency_label') || '货币'"></label>
+            <button type="button" @click="toggleCurrency()"
+                    class="w-full flex items-center justify-between text-sm border rounded-lg px-3 py-2 bg-white hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all"
+                    :class="currencyAutoFilled ? 'border-success/40' : 'border-border'">
+              <span class="text-left truncate"
+                    :class="!form.aimizy_currency ? 'text-muted' : 'text-body'"
+                    x-text="currencyButtonLabel"></span>
+              <span class="material-symbols-outlined text-base text-muted" x-text="open ? 'expand_less' : 'expand_more'"></span>
+            </button>
+            <div x-show="open" x-cloak x-transition.opacity.duration.150ms
+                 class="absolute z-30 mt-1 w-full bg-white border border-border rounded-lg shadow-token-md max-h-72 overflow-hidden flex flex-col">
+              <input type="text" x-model="query" @click.stop x-ref="currencySearchInput"
+                     :placeholder="i18n('checkout_link.currency_search_placeholder') || '搜索...'"
+                     class="px-3 py-2 border-b border-border text-sm focus:outline-none">
+              <div class="overflow-y-auto custom-scrollbar">
+                <button type="button" @click="selectCurrency('')"
+                        class="w-full px-3 py-2 text-left text-xs text-muted hover:bg-subtle border-b border-border"
+                        x-text="i18n('checkout_link.currency_auto') || '-- 自动 --'"></button>
+                <template x-for="code in currencyList" :key="code">
+                  <button type="button" @click="selectCurrency(code)"
+                          class="w-full px-3 py-2 text-left text-sm hover:bg-subtle flex items-center gap-2 transition-colors"
+                          :class="form.aimizy_currency === code ? 'bg-primary/10 text-primary font-semibold' : 'text-body'">
+                    <span class="flex-1 truncate" x-text="i18n('currencies.' + code) || code"></span>
+                    <span class="text-[10px] text-muted font-mono" x-text="code"></span>
+                  </button>
+                </template>
+                <div x-show="currencyList.length === 0" class="px-3 py-4 text-center text-xs text-muted"
+                     x-text="i18n('checkout_link.no_match') || '无匹配项'"></div>
+              </div>
+            </div>
+            <p x-show="currencyAutoFilled" class="mt-1 text-[10px] text-success flex items-center gap-1">
+              <span class="material-symbols-outlined text-xs">auto_fix_high</span>
+              <span x-text="i18n('checkout_link.currency_inferred_from_country') || '已自动按国家匹配，可手动修改'"></span>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {# ── Card 4：执行生成 + 结果 ─────────────────── #}
+      <section class="bg-white rounded-lg shadow-token-sm border border-primary/10 p-6 flex flex-col gap-6 relative overflow-hidden">
+        {# 右上角 LIVE OUTPUT 角标 #}
+        <div class="absolute top-2 right-2">
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-primary/10 text-primary uppercase tracking-tighter font-label">
+            Live Output
+          </span>
+        </div>
+
+        <div class="flex items-center justify-between pr-20">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
+              <span class="material-symbols-outlined">rocket_launch</span>
+            </div>
+            <h2 class="text-base font-semibold text-body">执行生成</h2>
+          </div>
+          <button @click="showHistory = !showHistory"
+                  x-show="history.length > 0"
+                  class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
+            <span class="material-symbols-outlined text-sm">history</span>
+            历史 <span class="text-muted" x-text="`(${history.length})`"></span>
+          </button>
+        </div>
+
+        {# 结果面板 —— 长链 + 短链 #}
+        <div x-show="result.longLink || result.shortLink"
+             class="bg-subtle rounded-xl p-4 space-y-4 border border-border">
+          <div x-show="result.longLink" class="space-y-1.5">
+            <div class="flex justify-between items-center">
+              <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">长链 (Hosted)</span>
+              <button @click="copyText(result.longLink, 'long')"
+                      class="flex items-center gap-1 text-[10px] font-bold transition-colors"
+                      :class="copiedKey === 'long' ? 'text-success' : 'text-primary hover:text-primary-hover'">
+                <span class="material-symbols-outlined text-xs" x-text="copiedKey === 'long' ? 'check' : 'content_copy'"></span>
+                <span x-text="copiedKey === 'long' ? '已复制' : '复制'"></span>
+              </button>
+            </div>
+            <a :href="result.longLink" target="_blank"
+               class="block bg-white border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
+               x-text="result.longLink"></a>
+          </div>
+          <div x-show="result.shortLink" class="space-y-1.5">
+            <div class="flex justify-between items-center">
+              <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">短链 (Redirect)</span>
+              <button @click="copyText(result.shortLink, 'short')"
+                      class="flex items-center gap-1 text-[10px] font-bold transition-colors"
+                      :class="copiedKey === 'short' ? 'text-success' : 'text-primary hover:text-primary-hover'">
+                <span class="material-symbols-outlined text-xs" x-text="copiedKey === 'short' ? 'check' : 'content_copy'"></span>
+                <span x-text="copiedKey === 'short' ? '已复制' : '复制'"></span>
+              </button>
+            </div>
+            <a :href="result.shortLink" target="_blank"
+               class="block bg-white border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
+               x-text="result.shortLink"></a>
+          </div>
+        </div>
+
+        {# 历史面板 #}
+        <div x-show="showHistory && history.length > 0" x-transition
+             class="bg-subtle rounded-xl p-4 space-y-2 border border-border max-h-72 overflow-y-auto custom-scrollbar">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">本次会话历史</span>
+            <button @click="history = []; showHistory = false"
+                    class="text-[10px] text-danger hover:underline">清空</button>
+          </div>
+          <template x-for="(h, idx) in history" :key="idx">
+            <div class="bg-white border border-border rounded-lg p-2.5 flex items-start justify-between gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 mb-1 text-[10px] text-muted">
+                  <span class="font-label uppercase font-bold" x-text="h.plan"></span>
+                  <span>·</span>
+                  <span x-text="h.return_mode"></span>
+                  <span>·</span>
+                  <span x-text="h.timestamp"></span>
+                </div>
+                <a :href="h.link" target="_blank"
+                   class="font-mono text-[11px] text-body hover:text-primary break-all leading-tight"
+                   x-text="h.link"></a>
+              </div>
+              <button @click="copyText(h.link, `history-${idx}`)"
+                      class="flex-shrink-0 text-primary hover:text-primary-hover mt-0.5">
+                <span class="material-symbols-outlined text-sm" x-text="copiedKey === `history-${idx}` ? 'check' : 'content_copy'"></span>
+              </button>
+            </div>
+          </template>
+        </div>
+
+        {# 空态提示 #}
+        <div x-show="!result.longLink && !result.shortLink && !showHistory"
+             class="text-center py-6 text-muted text-xs">
+          <span class="material-symbols-outlined text-4xl text-border block mb-1">link_off</span>
+          <p>填好左侧配置，点下方按钮生成</p>
+        </div>
+
+        {# 按钮 —— 纵排满宽，长链主、短链次 #}
+        <div class="flex flex-col gap-3">
+          <button @click="submitGenerateLink('long')"
+                  :disabled="!canSubmit || submitting.short || submitting.long"
+                  :title="!accessToken.trim() ? '请先填写 access_token' : ''"
+                  class="w-full flex items-center justify-center gap-2 py-3 bg-primary text-white rounded-lg text-sm font-bold shadow-token-md hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
+            <span class="material-symbols-outlined text-xl"
+                  x-text="submitting.long ? 'progress_activity' : 'play_circle'"
+                  :class="submitting.long ? 'animate-spin' : ''"></span>
+            <span x-text="submitting.long ? '生成中...' : '立即生成 Checkout 长链'"></span>
+          </button>
+          <button @click="submitGenerateLink('app')"
+                  :disabled="!canSubmit || submitting.short || submitting.long"
+                  :title="!accessToken.trim() ? '请先填写 access_token' : ''"
+                  class="w-full flex items-center justify-center gap-2 py-3 bg-white border border-border rounded-lg text-sm font-bold text-success hover:bg-success/5 hover:border-success/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
+            <span class="material-symbols-outlined text-xl"
+                  x-text="submitting.short ? 'progress_activity' : 'bolt'"
+                  :class="submitting.short ? 'animate-spin' : ''"></span>
+            <span x-text="submitting.short ? '生成中...' : '生成 Redirect 短链'"></span>
+          </button>
+        </div>
+      </section>
+
+    </div>
+
+  </div>
+</div>
+
+<script>
+function checkoutLinkPage() {
+    return {
+        // Token 仅存于 Alpine 内存
+        accessToken: '',
+        tokenVisible: false,
+
+        // 表单
+        form: {
+            selectedTemplateId: '',
+            lastAppliedPresetId: null,
+            plan: 'team',
+            seat_quantity: 1,
+            workspace_name: '',
+            promo_code: '',
+            promo_campaign_id: '',
+            checkout_ui_mode: 'hosted',
+            proxy_id: '',
+            aimizy_country: '',
+            aimizy_currency: '',
+            // 模板带来的扩展字段（透传给后端，不在 UI 显式编辑）
+            template_schema_version: '',
+            template_url_locale: '',
+            template_extra_payload: null,
+        },
+
+        // 数据源
+        linkTemplates: [],
+        presets: [],
+        proxyOptions: [],
+
+        // 提交状态
+        submitting: { long: false, short: false },
+
+        // 结果与历史
+        result: { longLink: '', shortLink: '' },
+        history: [],
+        showHistory: false,
+        copiedKey: '',
+
+        // 国家→货币联动标记（用户手动改货币后清除）
+        currencyAutoFilled: false,
+
+        get canSubmit() {
+            return !!this.accessToken.trim();
+        },
+
+        /**
+         * 通用 i18n 访问器：按点分路径从 window.I18N 取值，失败返回 null
+         * 让 combobox 在 zh-CN 显示中文名 / en 显示英文名
+         */
+        i18n(key) {
+            const parts = String(key || '').split('.');
+            let v = window.I18N;
+            for (const p of parts) {
+                if (v && typeof v === 'object') v = v[p];
+                else return null;
+            }
+            return typeof v === 'string' ? v : null;
+        },
+
+        /** 国旗 emoji 生成器（委托给 data 脚本，避免逻辑分散） */
+        flag(code) {
+            return (window.CheckoutLinkData && window.CheckoutLinkData.flag(code)) || '🌐';
+        },
+
+        /** 国家 → 默认货币联动（仅在用户主动选国家时触发，不在 applyTemplate 中触发） */
+        applyCountryToCurrency(countryCode) {
+            if (!countryCode || !window.CheckoutLinkData) return;
+            const cur = window.CheckoutLinkData.countryToCurrency[countryCode];
+            if (cur && cur !== this.form.aimizy_currency) {
+                this.form.aimizy_currency = cur;
+                this.currencyAutoFilled = true;
+            }
+        },
+
+        async init() {
+            // 并行拉模板 / 预设 / 代理列表（与账号池弹窗用同一组 API）
+            try {
+                const [templates, presets, proxies] = await Promise.all([
+                    fetchJson('/api/link-templates').catch(() => []),
+                    fetchJson('/api/link-templates/presets').catch(() => []),
+                    fetchJson('/api/proxies').catch(() => []),
+                ]);
+                this.linkTemplates = templates || [];
+                this.presets = presets || [];
+                this.proxyOptions = proxies || [];
+            } catch (_) {
+                // 静默降级 — 模板/预设拉不到不阻塞核心功能
+            }
+        },
+
+        async pasteFromClipboard() {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    this.accessToken = text.trim();
+                    showToast('已粘贴 access_token', 'info');
+                }
+            } catch (err) {
+                showToast('无法读取剪贴板，请手动粘贴', 'warning');
+            }
+        },
+
+        applyTemplate(idStr) {
+            const id = Number(idStr);
+            if (!id) {
+                this.form.lastAppliedPresetId = null;
+                return;
+            }
+            const t = this.linkTemplates.find(x => x.id === id);
+            if (!t) return;
+            this._applyTemplateLike(t);
+            this.form.lastAppliedPresetId = null;
+            showToast(`已应用模板：${t.name}`, 'info');
+        },
+
+        applyPresetTemplate(preset) {
+            if (!preset) return;
+            this._applyTemplateLike(preset);
+            this.form.selectedTemplateId = '';
+            this.form.lastAppliedPresetId = preset.id;
+            showToast(`已应用预设：${preset.name}`, 'info');
+        },
+
+        _applyTemplateLike(t) {
+            this.form.plan = t.plan || 'team';
+            this.form.seat_quantity = t.seat_quantity || 1;
+            this.form.promo_code = t.promo_code || '';
+            this.form.promo_campaign_id = t.promo_campaign_id || '';
+            this.form.aimizy_country = t.aimizy_country || '';
+            this.form.aimizy_currency = t.aimizy_currency || '';
+            this.form.workspace_name = t.workspace_name || '';
+            this.form.proxy_id = t.proxy_id != null ? String(t.proxy_id) : '';
+            this.form.checkout_ui_mode = t.checkout_ui_mode || 'hosted';
+            this.form.template_schema_version = t.schema_version || '';
+            this.form.template_url_locale = t.url_locale || '';
+            this.form.template_extra_payload = t.extra_payload_json || null;
+        },
+
+        async saveCurrentAsTemplate() {
+            const name = prompt('模板名（如 "UK promo datroaiuk"）:');
+            if (!name) return;
+            const isPreset = confirm('设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅存到下拉');
+            let sortOrder = 0;
+            if (isPreset) {
+                const sortStr = prompt('预设按钮排序（小→大；默认 100）:', '100');
+                sortOrder = parseInt(sortStr || '100', 10) || 100;
+            }
+            try {
+                const result = await fetchJson('/api/link-templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: name.trim(),
+                        plan: this.form.plan,
+                        seat_quantity: this.form.seat_quantity || 1,
+                        promo_code: this.form.promo_code,
+                        promo_campaign_id: this.form.promo_campaign_id,
+                        aimizy_country: this.form.aimizy_country,
+                        aimizy_currency: this.form.aimizy_currency,
+                        workspace_name: this.form.workspace_name,
+                        return_mode: 'long',
+                        proxy_id: this.form.proxy_id ? Number(this.form.proxy_id) : null,
+                        is_preset: isPreset,
+                        sort_order: sortOrder,
+                        checkout_ui_mode: this.form.checkout_ui_mode || 'hosted',
+                    }),
+                });
+                this.linkTemplates.unshift(result);
+                if (result.is_preset) {
+                    this.presets.push(result);
+                    this.presets.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+                }
+                this.form.selectedTemplateId = result.id;
+                showToast(`模板「${result.name}」已保存`, 'success');
+            } catch (exc) {
+                showToast('保存模板失败：' + (exc.message || exc), 'error');
+            }
+        },
+
+        async submitGenerateLink(returnMode) {
+            if (!this.canSubmit) {
+                showToast('请先填写 access_token', 'warning');
+                return;
+            }
+            const key = returnMode === 'long' ? 'long' : 'short';
+            this.submitting[key] = true;
+            try {
+                const result = await fetchJson('/api/accounts/checkout-link', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        access_token: this.accessToken.trim(),
+                        plan: this.form.plan,
+                        return_mode: returnMode,
+                        seat_quantity: this.form.seat_quantity || 1,
+                        promo_code: this.form.promo_code || '',
+                        promo_campaign_id: this.form.promo_campaign_id || '',
+                        aimizy_country: this.form.aimizy_country || '',
+                        aimizy_currency: this.form.aimizy_currency || '',
+                        workspace_name: this.form.workspace_name || '',
+                        proxy_id: this.form.proxy_id ? Number(this.form.proxy_id) : null,
+                        schema_version: this.form.template_schema_version || null,
+                        url_locale: this.form.template_url_locale || null,
+                        extra_payload: this.form.template_extra_payload || null,
+                        checkout_ui_mode: this.form.checkout_ui_mode || 'hosted',
+                    }),
+                });
+                if (returnMode === 'long') {
+                    this.result.longLink = result.link;
+                } else {
+                    this.result.shortLink = result.link;
+                }
+                this.history.unshift({
+                    link: result.link,
+                    plan: result.plan,
+                    return_mode: result.return_mode,
+                    timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                });
+                if (this.history.length > 20) this.history.length = 20;
+                showToast(`${returnMode === 'long' ? '长链' : '短链'}已生成`, 'success');
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.submitting[key] = false;
+            }
+        },
+
+        async copyText(text, key) {
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+                this.copiedKey = key;
+                setTimeout(() => { if (this.copiedKey === key) this.copiedKey = ''; }, 2000);
+            } catch (err) {
+                showToast('复制失败：' + err.message, 'error');
+            }
+        },
+    };
+}
+
+/* Combobox 现已 inline 在 HTML 的 x-data 里，直接共享 checkoutLinkPage 作用域，
+   无需独立工厂函数（避免 $root 在父组件方法不可见的问题）。 */
+</script>
+{% endblock %}

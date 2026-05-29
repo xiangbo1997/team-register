@@ -69,6 +69,27 @@ class TestEfunCardRedeem(unittest.TestCase):
         self.assertEqual(result.expiry_display, "04/29")
 
     @patch("src.efuncard.requests.post")
+    def test_redeem_success_keeps_billing_address(self, mock_post: MagicMock):
+        """EfunCard 返回的账单地址必须进入 CardInfo，供卡池热卡填写 Stripe Billing。"""
+        mock_post.return_value.json.return_value = {
+            "success": True,
+            "data": {
+                "cardNumber": "4859540173648659",
+                "expiryMonth": 2,
+                "expiryYear": 2030,
+                "cvv": "546",
+                "nameOnCard": "Amy Allen",
+                "billingAddress": "321 Pine Blvd, Newark, NY, 14513, US",
+            },
+        }
+
+        result = self.client.redeem("CDK-BILLING")
+
+        self.assertIsInstance(result, CardInfo)
+        self.assertEqual(result.name_on_card, "Amy Allen")
+        self.assertEqual(result.billing_address, "321 Pine Blvd, Newark, NY, 14513, US")
+
+    @patch("src.efuncard.requests.post")
     def test_redeem_api_failure(self, mock_post: MagicMock):
         """API 返回 success=False 应返回 None"""
         mock_post.return_value.json.return_value = {

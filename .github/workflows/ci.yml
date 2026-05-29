@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint Python (errors only)
+    runs-on: ubuntu-latest
+    # 2026-04-29 起严格化：6 个遗留 F821 已清，ruff 必须 0 errors 才能合并。
+    # 历史背景：刚加 CI 时有 6 个 NameError 阻塞，曾用 continue-on-error 不阻塞合并；
+    # 现已修复 _fill_about_you_form 的 config 引用 + handlers.py 的 recover_error 名称错误。
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff (real errors only)
+        run: ruff check --select=E9,F63,F7,F82 --no-fix src/ tests/ main.py
+
+      - name: Ruff (warnings, annotations only)
+        run: ruff check --output-format=github src/ tests/ main.py || true
+
+  syntax:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile all Python files
+        run: python -m compileall -q src/ tests/ main.py
+
+  secret-scan:
+    name: Sensitive-string sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for hardcoded credentials in non-env files
+        run: |
+          # 拼接 pattern 避免本文件自匹配
+          PAT="$(printf '%s\n' \
+            "EFUNCARD_TOKEN=[A-Za-z0-9]{8,}" \
+            "NODECARD_TOKEN=[A-Za-z0-9]{8,}" \
+            "X988_TOKEN=[A-Za-z0-9]{8,}" \
+            "SMS_API_KEY=[A-Za-z0-9]{16,}" \
+            "MAIL_REFRESH_TOKEN=M\\.[A-Za-z0-9_-]+" \
+            "LLM_API_KEY=sk-[A-Za-z0-9]{20,}" \
+            "SESSION_SECRET=(?!change_me)[A-Za-z0-9_-]{16,}" | paste -sd '|')"
+          if grep -rEn "$PAT" \
+            --include="*.py" --include="*.html" --include="*.md" --include="*.yml" --include="*.yaml" \
+            --exclude-dir=".git" --exclude-dir="__pycache__" --exclude-dir=".github" \
+            --exclude="*.example" \
+            .; then
+            echo "::error::Found hardcoded credential outside .env files"
+            exit 1
+          fi
+          echo "Credential scan clean."
+
+      - name: Scan for absolute user paths
+        run: |
+          if grep -rEn \
+            "/Users/[a-zA-Z0-9._-]+/(workSpace|Documents|Desktop|Downloads)/" \
+            --include="*.py" --include="*.json" --include="*.md" --include="*.yml" \
+            --exclude-dir=".git" --exclude-dir="__pycache__" \
+            .; then
+            echo "::error::Found hardcoded absolute user path"
+            exit 1
+          fi
+          echo "Path scan clean."

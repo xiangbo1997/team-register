@@ -475,34 +475,57 @@ class MailManager:
 # ──────────────────────────────────────────────────────────────
 
 def build_mail_providers(config: Any) -> list[MailProvider]:
-    """根据 AppConfig 构造启用的 mail provider 实例列表。
+    """根据 AppConfig + DB 构造启用的 mail provider 实例列表。
+
+    **插拔式优先**：先尝试用 ``ProviderRegistry.build_all_active("mail")`` 从 DB
+    构造，这样新增 mail provider（如 freemail / tempmail_lol）只需丢一个文件到
+    ``src/providers/mails/`` + 在 ``/providers`` UI 新建一条 active 配置即可，
+    无需修改本函数。
+
+    **AppConfig 兼容降级**：DB 没配置时回落到 ``outlook_enabled`` / ``cfworker_enabled``
+    env 字段（旧部署兼容），下一个 release 移除。
 
     返回的列表按优先级排序 — MailManager 调 can_handle() 时按列表顺序命中谁谁负责。
-
-    用法（调用方）：
-        from src.config import load_config
-        from src.mail import MailManager, build_mail_providers
-
-        config = load_config()
-        mail = MailManager(
-            base_url=config.email_provider_base_url,
-            api_key=config.email_provider_api_key,
-            provider_name=config.email_provider_name,  # 旧参数保留作 fallback
-            providers=build_mail_providers(config),
-            # ... 其他参数不变
-        )
-
-    向后兼容：
-    - config 没有 outlook_enabled / cfworker_enabled 字段时返回空列表（旧版 AppConfig）
-    - 任一字段未启用 → 该 provider 不进列表
     """
-    providers: list[MailProvider] = []
-
     base_url = str(getattr(config, "email_provider_base_url", "") or "")
     api_key = str(getattr(config, "email_provider_api_key", "") or "")
 
+    # 路径 1：DB 驱动（插拔式）
+    try:
+        from src.providers import get_registry
+        from src.services.config_service import ConfigService
+
+        cs = ConfigService()
+        registry_providers = get_registry().build_all_active(
+            "mail",
+            cs,
+            extras={"base_url": base_url, "api_key": api_key},
+        )
+        if registry_providers:
+            # 去重：同 kind 多个 active 行只保留第一个（DB 数据问题不阻塞运行）
+            seen_kinds: set[str] = set()
+            deduped: list[MailProvider] = []
+            for p in registry_providers:
+                meta = getattr(p, "PROVIDER_META", None)
+                kind = meta.kind if meta else type(p).__name__
+                if kind in seen_kinds:
+                    logger.warning("mail provider 重复: kind=%s 已存在，跳过", kind)
+                    continue
+                seen_kinds.add(kind)
+                deduped.append(p)
+            logger.info(
+                "build_mail_providers: registry 路径生效，加载 %d 个 provider (%s)",
+                len(deduped), [type(p).__name__ for p in deduped],
+            )
+            return deduped
+    except Exception as exc:
+        logger.warning("build_mail_providers: registry 路径失败，回落到 env 字段: %s", exc)
+
+    # 路径 2：AppConfig 兼容（deprecated，下一个 release 移除）
+    providers: list[MailProvider] = []
+
     if getattr(config, "outlook_enabled", False):
-        from src.providers.mail_outlook import OutlookMailProvider
+        from src.providers.mails.outlook import OutlookMailProvider
         providers.append(OutlookMailProvider(
             base_url=base_url,
             api_key=api_key,
@@ -510,7 +533,7 @@ def build_mail_providers(config: Any) -> list[MailProvider]:
         ))
 
     if getattr(config, "cfworker_enabled", False):
-        from src.providers.mail_cfworker import CFWorkerMailProvider
+        from src.providers.mails.cfworker import CFWorkerMailProvider
         providers.append(CFWorkerMailProvider(
             base_url=base_url,
             api_key=api_key,

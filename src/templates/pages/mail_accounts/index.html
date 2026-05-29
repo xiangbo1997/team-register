@@ -1,152 +1,305 @@
 {% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
 {% block title %}邮件账号 - Team Register{% endblock %}
-{% block nav_mail_accounts %}bg-gray-800 text-white{% endblock %}
+{% block nav_mail_accounts %}sidebar-active{% endblock %}
 {% block page_title %}邮件账号{% endblock %}
 
 {% block content %}
-<div x-data="mailAccountsData()" x-init="fetchAccounts()">
-    <div class="flex items-center justify-between mb-4">
+<div x-data="mailAccountsData()" x-init="initColumnWatcher(); fetchAccounts()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
+
+    {# ─── Page Header ─── #}
+    <div class="flex items-start justify-between gap-3 flex-wrap">
         <div>
-            <h3 class="text-sm text-gray-500">管理 credentialed 邮箱账号池（如 AppleMail）。</h3>
+            <h3 class="text-2xl font-bold text-body">邮件账号池</h3>
+            <p class="text-muted mt-1 text-sm">管理 credentialed 邮箱账号池（如 AppleMail）</p>
         </div>
-        <button @click="toggleForm()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-            <span x-text="showForm ? '取消' : '+ 新增账号'"></span>
+        <button @click="toggleForm()"
+                class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white font-semibold rounded-lg shadow-token-sm transition-all transform active:scale-95">
+            <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;"
+                  x-text="showForm ? 'close' : 'add_circle'"></span>
+            <span x-text="showForm ? '取消' : '新增账号'"></span>
         </button>
     </div>
 
-    <div x-show="showForm" x-cloak class="bg-white rounded-lg shadow-sm border p-6 mb-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">标签</label>
-                <input type="text" x-model="form.label" class="w-full text-sm border rounded-md px-3 py-2" placeholder="工作账号 A">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">Provider</label>
-                <input type="text" x-model="form.provider_name" class="w-full text-sm border rounded-md px-3 py-2" placeholder="applemail">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">邮箱</label>
-                <input type="email" x-model="form.email" class="w-full text-sm border rounded-md px-3 py-2" placeholder="name@example.com">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">启用</label>
-                <select x-model="form.is_active" class="w-full text-sm border rounded-md px-3 py-2">
-                    <option :value="true">是</option>
-                    <option :value="false">否</option>
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">角色</label>
-                <select x-model="form.role" class="w-full text-sm border rounded-md px-3 py-2">
-                    <option value="regular">regular（注册流程用）</option>
-                    <option value="pro_warmup">pro_warmup（卡预热垫脚石）</option>
-                </select>
-                <p class="mt-1 text-[11px] text-gray-400">regular = 任务级 mail_account_id 下拉显示；pro_warmup = 仅卡预热使用，不在任务下拉显示</p>
-            </div>
-            <!-- 所有角色都允许填 client_id / refresh_token / 登录密码 / AdsPower Profile，
-                 但都不强制必填 — 服务端按角色与凭据组合自行决定走哪条路径：
-                   - regular（注册流程用）：通常需要 client_id + refresh_token 走 OAuth 拉收件箱
-                   - pro_warmup（卡预热）：通常需要 登录密码 + AdsPower Profile 走 ChatGPT 密码登录；
-                     如果走的是 OAuth-only 邮箱（如 outlook + Microsoft Graph），同样可以填
-                     client_id + refresh_token 让 mail provider 直接拉验证码
-                 不互斥显示，由用户根据账号实际情况决定填哪些。 -->
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">client_id</label>
-                <input type="password" x-model="form.client_id" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：OAuth client id">
-                <p class="mt-1 text-[11px] text-gray-400">applemail / OAuth provider 拉收件箱用；不需要可留空</p>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">refresh_token</label>
-                <input type="password" x-model="form.refresh_token" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：OAuth refresh token">
-                <p class="mt-1 text-[11px] text-gray-400">applemail / OAuth provider 刷 access_token 用；不需要可留空</p>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">登录密码</label>
-                <input type="password" x-model="form.warmup_password" class="w-full text-sm border rounded-md px-3 py-2" placeholder="可选：ChatGPT 账号登录密码">
-                <p class="mt-1 text-[11px] text-gray-400">pro_warmup 卡预热现场登录用；不需要可留空</p>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">AdsPower Profile ID</label>
-                <input type="text" x-model="form.warmup_profile_id" class="w-full text-sm border rounded-md px-3 py-2 font-mono" placeholder="可选：例如 k1b9945d">
-                <p class="mt-1 text-[11px] text-gray-400">pro_warmup 卡预热绑定的 AdsPower 浏览器环境 ID；不需要可留空</p>
+    {# ─── KPI Quick View ─── #}
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
+        <div class="bg-white p-6 rounded-xl shadow-token-sm border border-neutral-100 hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-bold text-muted uppercase tracking-widest mb-2">Total Accounts</p>
+            <div class="flex items-end gap-2">
+                <span class="text-3xl font-bold text-body tabular-nums" x-text="accounts.length">0</span>
             </div>
         </div>
-        <div class="mt-4">
-            <label class="block text-xs font-medium text-gray-600 mb-1">额外 JSON（可选）</label>
-            <textarea x-model="form.extra_json" rows="4" class="w-full text-xs font-mono border rounded-md px-3 py-2" placeholder='{"account_id":"optional","preserve_existing_mail":true}'></textarea>
+        <div class="bg-white p-6 rounded-xl shadow-token-sm border border-neutral-100 hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-bold text-muted uppercase tracking-widest mb-2">Active Ratio</p>
+            <div class="flex items-end gap-2">
+                <span class="text-3xl font-bold text-body tabular-nums" x-text="activeRatio">0%</span>
+            </div>
         </div>
-        <div class="flex justify-end gap-2 mt-4">
-            <button @click="testAccount()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50">测试</button>
-            <button @click="saveAccount()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">保存</button>
+        <div class="bg-white p-6 rounded-xl shadow-token-sm border border-neutral-100 hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-bold text-muted uppercase tracking-widest mb-2">Failure Alerts</p>
+            <div class="flex items-end gap-2">
+                <span class="text-3xl font-bold text-danger tabular-nums" x-text="failureCount">0</span>
+                <span x-show="failureCount > 0" class="text-xs text-danger font-medium bg-danger/10 px-2 py-0.5 rounded-full mb-1">Attention</span>
+            </div>
+        </div>
+        <div class="bg-white p-6 rounded-xl shadow-token-sm border border-neutral-100 hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-bold text-muted uppercase tracking-widest mb-2">Warmup Active</p>
+            <div class="flex items-end gap-2">
+                <span class="text-3xl font-bold text-secondary tabular-nums" x-text="warmupCount">0</span>
+            </div>
         </div>
     </div>
 
-    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
-                <tr>
-                    <th class="px-4 py-3 text-left">标签</th>
-                    <th class="px-4 py-3 text-left">Provider</th>
-                    <th class="px-4 py-3 text-left">邮箱</th>
-                    <th class="px-4 py-3 text-left">角色</th>
-                    <th class="px-4 py-3 text-left">状态</th>
-                    <th class="px-4 py-3 text-left">预热调度</th>
-                    <th class="px-4 py-3 text-left">更新时间</th>
-                    <th class="px-4 py-3 text-left">操作</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y">
-                <template x-for="account in accounts" :key="account.id">
-                    <tr class="hover:bg-gray-50">
-                        <td class="px-4 py-3" x-text="account.label"></td>
-                        <td class="px-4 py-3 font-mono text-xs" x-text="account.provider_name"></td>
-                        <td class="px-4 py-3 font-mono text-xs" x-text="account.email"></td>
-                        <td class="px-4 py-3 text-xs">
-                            <span class="px-2 py-0.5 rounded-full text-[11px]"
-                                :class="(account.role || 'regular') === 'pro_warmup' ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-700'"
-                                x-text="account.role || 'regular'"></span>
-                        </td>
-                        <td class="px-4 py-3">
-                            <span class="w-2 h-2 rounded-full inline-block" :class="account.is_active ? 'bg-green-500' : 'bg-gray-300'"></span>
-                            <template x-if="(account.role || 'regular') === 'pro_warmup' && account.consecutive_failures > 0">
-                                <span class="ml-1 text-[10px] text-red-600" x-text="'失败×' + account.consecutive_failures"></span>
-                            </template>
-                        </td>
-                        <td class="px-4 py-3 text-xs">
-                            <template x-if="(account.role || 'regular') === 'pro_warmup'">
-                                <div>
-                                    <div class="text-gray-500" x-text="account.last_used_at ? '上次: ' + new Date(account.last_used_at).toLocaleString(window._locale) : '从未使用'"></div>
-                                    <div class="text-gray-400 text-[11px]" x-show="account.cooldown_until && new Date(account.cooldown_until) > new Date()" x-text="'冷却至: ' + (account.cooldown_until ? new Date(account.cooldown_until).toLocaleString(window._locale) : '-')"></div>
-                                    <div class="text-red-500 text-[11px]" x-show="account.last_failure_reason" x-text="'原因: ' + account.last_failure_reason"></div>
+    {# ─── Add/Edit Form (collapsible inset) ─── #}
+    <div x-show="showForm" x-cloak class="bg-slate-50 border border-border rounded-xl p-6 shadow-token-sm ring-1 ring-white/50 fade-in">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">标签</label>
+                <input type="text" x-model="form.label"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="工作账号 A">
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">Provider</label>
+                <input type="text" x-model="form.provider_name"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="applemail">
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">邮箱</label>
+                <input type="email" x-model="form.email"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="name@example.com">
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">角色</label>
+                <select x-model="form.role"
+                        class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                    <option value="regular">regular（注册流程用）</option>
+                    <option value="pro_warmup">pro_warmup（卡预热垫脚石）</option>
+                </select>
+                <p class="text-[11px] text-muted">regular = 任务级 mail_account_id 下拉显示；pro_warmup = 仅卡预热使用</p>
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">client_id</label>
+                <input type="password" x-model="form.client_id"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="可选：OAuth client id">
+                <p class="text-[11px] text-muted">applemail / OAuth provider 拉收件箱用</p>
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">refresh_token</label>
+                <input type="password" x-model="form.refresh_token"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="可选：OAuth refresh token">
+                <p class="text-[11px] text-muted">applemail / OAuth provider 刷 access_token 用</p>
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">登录密码</label>
+                <input type="password" x-model="form.warmup_password"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="可选：ChatGPT 账号登录密码">
+                <p class="text-[11px] text-muted">pro_warmup 卡预热现场登录用</p>
+            </div>
+            <div class="space-y-1.5">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">AdsPower Profile ID</label>
+                <input type="text" x-model="form.warmup_profile_id"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="可选：例如 k1b9945d">
+                <p class="text-[11px] text-muted">pro_warmup 卡预热绑定的 AdsPower 浏览器环境 ID</p>
+            </div>
+            <div class="space-y-1.5 md:col-span-2">
+                <div class="flex items-center gap-3">
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" x-model="form.is_active" class="sr-only peer">
+                        <div class="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-success"></div>
+                        <span class="ml-3 text-sm font-medium text-body">启用此账号</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        {# Extra JSON #}
+        <div class="mb-6">
+            <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider mb-2">额外 JSON（可选）</label>
+            <textarea x-model="form.extra_json" rows="4"
+                      class="w-full bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
+                      placeholder='{"account_id":"optional","preserve_existing_mail":true}'></textarea>
+        </div>
+
+        <div class="flex justify-end gap-3 border-t border-border pt-6">
+            <button @click="toggleForm()" class="px-4 py-2 text-sm font-semibold text-muted hover:text-body transition-colors">取消</button>
+            <button @click="testAccount()" class="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-secondary border border-secondary/30 rounded-lg hover:bg-secondary/5 transition-all">
+                <span class="material-symbols-outlined text-base">science</span>
+                测试
+            </button>
+            <button @click="saveAccount()" class="flex items-center gap-1.5 px-6 py-2 text-sm font-bold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-token-md transition-all">
+                <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;">save</span>
+                保存
+            </button>
+        </div>
+    </div>
+
+    {# ─── Data Grid ─── #}
+    <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+
+        {# Filter chip toolbar #}
+        <div class="px-6 py-4 border-b border-border flex items-center justify-between bg-neutral-50/50 flex-wrap gap-3">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-xs font-label font-semibold text-muted uppercase tracking-wider">Filters:</span>
+                <template x-for="chip in chips" :key="chip.key">
+                    <button @click="filter[chip.key] = ''"
+                            :class="filter[chip.key] === '' ? 'bg-white border-border text-body' : 'bg-primary/10 border-primary/20 text-primary'"
+                            class="inline-flex items-center gap-1.5 px-3 py-1 border rounded-full text-xs font-medium">
+                        <span x-text="chip.label + ': ' + (filter[chip.key] || 'All')"></span>
+                        <span x-show="filter[chip.key]" class="material-symbols-outlined text-[14px] cursor-pointer">close</span>
+                    </button>
+                </template>
+            </div>
+            <div class="flex items-center gap-3">
+                {{ ui.grid_search(placeholder='搜索 邮箱 / 标签 / Provider...') }}
+                <div class="flex items-center bg-white border border-border rounded-lg p-0.5">
+                    <button @click="density = 'medium'"
+                            :class="density === 'medium' ? 'bg-neutral-100 text-primary shadow-inner' : 'text-muted hover:bg-neutral-100'"
+                            class="p-1.5 rounded-md transition-colors">
+                        <span class="material-symbols-outlined" style="font-size: 18px;">density_medium</span>
+                    </button>
+                    <button @click="density = 'small'"
+                            :class="density === 'small' ? 'bg-neutral-100 text-primary shadow-inner' : 'text-muted hover:bg-neutral-100'"
+                            class="p-1.5 rounded-md transition-colors">
+                        <span class="material-symbols-outlined" style="font-size: 18px;">density_small</span>
+                    </button>
+                </div>
+                {{ ui.grid_columns_settings() }}
+            </div>
+        </div>
+
+        {# Main grid table #}
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-neutral-50">
+                    <tr class="border-b border-border">
+                        <th class="px-6 py-4">
+                            <input type="checkbox" class="rounded border-border text-primary focus:ring-primary/20">
+                        </th>
+                        <th x-show="visibleColumns.includes('label')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">
+                            <button class="inline-flex items-center gap-0.5 hover:text-body">
+                                <span>标签</span>
+                                <span class="material-symbols-outlined text-xs">arrow_drop_down</span>
+                            </button>
+                        </th>
+                        <th x-show="visibleColumns.includes('provider')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">Provider</th>
+                        <th x-show="visibleColumns.includes('email')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">邮箱</th>
+                        <th x-show="visibleColumns.includes('role')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">角色</th>
+                        <th x-show="visibleColumns.includes('status')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">状态</th>
+                        <th x-show="visibleColumns.includes('warmup')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">预热调度</th>
+                        <th x-show="visibleColumns.includes('updated_at')" class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap">更新</th>
+                        <th class="px-4 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-widest whitespace-nowrap sticky right-0 bg-neutral-50 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-neutral-100">
+                    <template x-for="account in filteredAccounts" :key="account.id">
+                        <tr class="group hover:bg-primary/[0.04] transition-colors">
+                            <td :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <input type="checkbox" class="rounded border-border text-primary focus:ring-primary/20">
+                            </td>
+                            <td x-show="visibleColumns.includes('label')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <span class="text-sm font-medium text-body truncate max-w-[180px] block" :title="account.label" x-text="account.label || '—'"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('provider')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <code class="mono-text text-xs text-muted bg-neutral-100 px-2 py-0.5 rounded" x-text="account.provider_name"></code>
+                            </td>
+                            <td x-show="visibleColumns.includes('email')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <span class="mono-text text-xs text-body" x-text="account.email"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('role')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <span :class="(account.role || 'regular') === 'pro_warmup'
+                                    ? 'bg-purple-100 text-purple-700 border-purple-200'
+                                    : 'bg-secondary/10 text-secondary border-secondary/10'"
+                                      class="inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-label font-bold uppercase tracking-wider border"
+                                      x-text="account.role || 'regular'"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('status')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-2 h-2 rounded-full"
+                                          :class="account.is_active ? (account.consecutive_failures > 0 ? 'bg-danger' : 'bg-success') : 'bg-border'"></span>
+                                    <span class="text-sm font-medium"
+                                          :class="account.is_active ? (account.consecutive_failures > 0 ? 'text-danger' : 'text-success') : 'text-muted'"
+                                          x-text="account.is_active ? (account.consecutive_failures > 0 ? '失败×' + account.consecutive_failures : 'Active') : 'Inactive'"></span>
                                 </div>
-                            </template>
-                            <template x-if="(account.role || 'regular') !== 'pro_warmup'">
-                                <span class="text-gray-300">-</span>
-                            </template>
-                        </td>
-                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="account.updated_at ? new Date(account.updated_at).toLocaleString(window._locale) : '-'"></td>
-                        <td class="px-4 py-3">
-                            <div class="flex gap-1">
-                                <button @click="editAccount(account)" class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded">编辑</button>
-                                <button @click="deleteAccount(account)" class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded">删除</button>
+                            </td>
+                            <td x-show="visibleColumns.includes('warmup')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <template x-if="(account.role || 'regular') === 'pro_warmup'">
+                                    <div class="space-y-0.5">
+                                        <div class="text-xs text-muted" x-text="account.last_used_at ? '上次: ' + new Date(account.last_used_at).toLocaleString(window._locale) : '从未使用'"></div>
+                                        <div x-show="account.cooldown_until && new Date(account.cooldown_until) > new Date()" class="text-[11px] text-muted" x-text="'冷却至: ' + (account.cooldown_until ? new Date(account.cooldown_until).toLocaleString(window._locale) : '-')"></div>
+                                        <div x-show="account.last_failure_reason" class="text-[11px] text-danger" x-text="'原因: ' + account.last_failure_reason"></div>
+                                    </div>
+                                </template>
+                                <template x-if="(account.role || 'regular') !== 'pro_warmup'">
+                                    <span class="text-sm text-muted">—</span>
+                                </template>
+                            </td>
+                            <td x-show="visibleColumns.includes('updated_at')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4">
+                                <span class="mono-text text-xs text-muted tabular-nums" x-text="account.updated_at ? new Date(account.updated_at).toLocaleString(window._locale, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'"></span>
+                            </td>
+                            <td :class="density === 'small' ? 'py-2.5' : 'py-4'"
+                                class="px-4 sticky right-0 bg-white group-hover:bg-primary/[0.04] shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)] transition-colors">
+                                <div class="flex items-center gap-2">
+                                    <button @click="editAccount(account)" class="p-1.5 hover:bg-white hover:shadow-token-sm rounded-md text-muted hover:text-primary transition-all" title="编辑">
+                                        <span class="material-symbols-outlined" style="font-size: 18px;">edit</span>
+                                    </button>
+                                    <button @click="deleteAccount(account)" class="p-1.5 hover:bg-white hover:shadow-token-sm rounded-md text-muted hover:text-danger transition-all" title="删除">
+                                        <span class="material-symbols-outlined" style="font-size: 18px;">delete</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="accounts.length === 0">
+                        <td colspan="9" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">mail</span>
+                                <span class="text-sm">暂无邮箱账号</span>
                             </div>
                         </td>
                     </tr>
-                </template>
-                <tr x-show="accounts.length === 0">
-                    <td colspan="8" class="px-4 py-8 text-center text-gray-400">暂无邮箱账号</td>
-                </tr>
-            </tbody>
-        </table>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
 <script>
 function mailAccountsData() {
+    const _DEFAULT_COLS = ['label', 'provider', 'email', 'role', 'status', 'warmup', 'updated_at'];
     return {
         accounts: [],
         showForm: false,
         editingId: '',
+        density: 'medium',
+        filter: { Status: '', Provider: '', Role: '' },
+        chips: [
+            { key: 'Status',   label: 'Status' },
+            { key: 'Provider', label: 'Provider' },
+            { key: 'Role',     label: 'Role' },
+        ],
+        // 搜索 + 列设置
+        searchTerm: '',
+        searchExpanded: false,
+        visibleColumns: (() => {
+            try { const raw = localStorage.getItem('mail_accounts.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT_COLS; }
+            catch (_) { return _DEFAULT_COLS; }
+        })(),
+        columnOptions: [
+            { key: 'label',      label: '标签' },
+            { key: 'provider',   label: 'Provider' },
+            { key: 'email',      label: '邮箱' },
+            { key: 'role',       label: '角色' },
+            { key: 'status',     label: '状态' },
+            { key: 'warmup',     label: '预热调度' },
+            { key: 'updated_at', label: '更新时间' },
+        ],
         form: {
             label: '',
             provider_name: 'applemail',
@@ -156,24 +309,51 @@ function mailAccountsData() {
             is_active: true,
             role: 'regular',
             extra_json: '{}',
-            // pro_warmup 专用字段（保存时合并到 extra）
             warmup_password: '',
             warmup_profile_id: '',
+        },
+
+        get filteredAccounts() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            return this.accounts.filter(a => {
+                if (this.filter.Status && (this.filter.Status === 'Active') !== !!a.is_active) return false;
+                if (this.filter.Provider && a.provider_name !== this.filter.Provider) return false;
+                if (this.filter.Role && (a.role || 'regular') !== this.filter.Role) return false;
+                if (q) {
+                    const haystack = `${a.label || ''} ${a.email || ''} ${a.provider_name || ''}`.toLowerCase();
+                    if (!haystack.includes(q)) return false;
+                }
+                return true;
+            });
+        },
+
+        initColumnWatcher() {
+            this.$watch('visibleColumns', (cols) => {
+                try { localStorage.setItem('mail_accounts.visibleColumns', JSON.stringify(cols)); } catch (_) {}
+            });
+        },
+
+        get activeRatio() {
+            if (this.accounts.length === 0) return '0%';
+            const active = this.accounts.filter(a => a.is_active && !(a.consecutive_failures > 0)).length;
+            return `${((active / this.accounts.length) * 100).toFixed(1)}%`;
+        },
+
+        get failureCount() {
+            return this.accounts.filter(a => a.consecutive_failures > 0).length;
+        },
+
+        get warmupCount() {
+            return this.accounts.filter(a => (a.role || 'regular') === 'pro_warmup' && a.is_active).length;
         },
 
         resetForm() {
             this.editingId = '';
             this.form = {
-                label: '',
-                provider_name: 'applemail',
-                email: '',
-                client_id: '',
-                refresh_token: '',
-                is_active: true,
-                role: 'regular',
-                extra_json: '{}',
-                warmup_password: '',
-                warmup_profile_id: '',
+                label: '', provider_name: 'applemail', email: '',
+                client_id: '', refresh_token: '', is_active: true,
+                role: 'regular', extra_json: '{}',
+                warmup_password: '', warmup_profile_id: '',
             };
         },
 
@@ -198,7 +378,6 @@ function mailAccountsData() {
                 is_active: !!account.is_active,
                 role: account.role || 'regular',
                 extra_json: JSON.stringify(ex, null, 2),
-                // pro_warmup 字段从 extra 回填（密码 redact 后看不到原值，留空让用户决定改不改）
                 warmup_password: '',
                 warmup_profile_id: ex.adspower_profile_id || '',
             };
@@ -209,21 +388,14 @@ function mailAccountsData() {
             let extra = {};
             const isWarmup = (this.form.role || 'regular') === 'pro_warmup';
             if (isWarmup) {
-                // pro_warmup 用专用字段；前端校验密码 + profile_id 必填
-                if (!this.form.warmup_profile_id) {
-                    showToast('请填写 AdsPower Profile ID', 'error'); return;
-                }
-                // 密码留空表示不改（编辑场景）；新建必须填
-                if (!this.editingId && !this.form.warmup_password) {
-                    showToast('请填写登录密码', 'error'); return;
-                }
+                if (!this.form.warmup_profile_id) { showToast('请填写 AdsPower Profile ID', 'error'); return; }
+                if (!this.editingId && !this.form.warmup_password) { showToast('请填写登录密码', 'error'); return; }
                 extra = { adspower_profile_id: this.form.warmup_profile_id };
                 if (this.form.warmup_password) extra.password = this.form.warmup_password;
             } else {
                 try { extra = JSON.parse(this.form.extra_json || '{}'); }
                 catch { showToast('extra JSON 不合法', 'error'); return; }
             }
-
             const payload = {
                 label: this.form.label,
                 provider_name: this.form.provider_name,
@@ -236,11 +408,7 @@ function mailAccountsData() {
             };
             const url = this.editingId ? `/api/mail-accounts/${this.editingId}` : '/api/mail-accounts';
             const method = this.editingId ? 'PUT' : 'POST';
-            await fetchJson(url, {
-                method,
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            await fetchJson(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             showToast('邮箱账号已保存', 'success');
             this.showForm = false;
             this.resetForm();
@@ -248,10 +416,7 @@ function mailAccountsData() {
         },
 
         async testAccount() {
-            if (!this.editingId) {
-                showToast('请先保存账号再测试', 'warning');
-                return;
-            }
+            if (!this.editingId) { showToast('请先保存账号再测试', 'warning'); return; }
             const result = await fetchJson(`/api/mail-accounts/${this.editingId}/test`, { method: 'POST' });
             showToast(result.message || '测试完成', result.ok ? 'success' : 'error');
             await this.fetchAccounts();

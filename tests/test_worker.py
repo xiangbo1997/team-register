@@ -15,6 +15,7 @@ from src.api.worker import (
     emit_current_task_event,
     set_current_task_state,
     update_current_task_run,
+    update_current_task_tokens,
 )
 from src.db.engine import get_engine, get_session, init_db
 from src.db.models import Run, RunEvent
@@ -119,6 +120,33 @@ class TestWorkerTaskBridge(unittest.TestCase):
         self.assertEqual(event.event_type, "state_change")
         self.assertEqual(event.state, "AUTH")
         self.assertEqual(event.payload["message"], "进入密码页")
+
+    def test_update_current_task_tokens_persists_to_run(self):
+        """主流程提取 token 后通过此 helper 落库到 Run.openai_tokens。"""
+        run_id = self._create_run()
+        broadcaster = EventBroadcaster()
+
+        LogBroadcastHandler.bind(run_id, broadcaster)
+        try:
+            update_current_task_tokens("ey-AT-main", "rt-main-xyz")
+        finally:
+            LogBroadcastHandler.unbind()
+
+        with get_session() as session:
+            run = session.get(Run, run_id)
+
+        self.assertEqual(run.openai_tokens["access_token"], "ey-AT-main")
+        self.assertEqual(run.openai_tokens["refresh_token"], "rt-main-xyz")
+        self.assertTrue(run.openai_tokens["extracted_at"])  # ISO timestamp
+        self.assertEqual(run.openai_tokens["id_token"], "")  # 占位
+
+    def test_update_current_task_tokens_without_bound_run_is_noop(self):
+        """没绑定 Worker 上下文（CLI 直跑场景）时静默跳过，不抛异常。"""
+        # 不 bind() → 直接调
+        try:
+            update_current_task_tokens("a", "b")
+        except Exception as exc:
+            self.fail(f"应静默跳过，实际抛: {exc}")
 
     def test_resolve_runtime_config_uses_selected_mail_account(self):
         svc = ConfigService(dotenv_path="/tmp/__nonexistent__.env")
@@ -442,3 +470,100 @@ class TestLogBroadcastSanitization(unittest.TestCase):
         )
         handler.emit(record)
         self.assertEqual(record.getMessage(), original)
+
+
+class TestDecideFinalOutcome(unittest.TestCase):
+    """worker._decide_final_outcome：注册 Run 的终态判定逻辑（方案 A）。
+
+    核心约束：
+      - final_state == "HOME" → success，无论 has_error 如何（修复 reached_HOME_but_error_logged 误判）
+      - final_state != "HOME" + has_error → failed (error_logged_at_state=XXX)
+      - final_state != "HOME" + no has_error → failed (silent_failure_at_state=XXX)
+    """
+
+    def test_home_without_error_is_success(self):
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("HOME", has_error=False)
+        self.assertEqual(outcome["status"], "success")
+        self.assertEqual(outcome["error_reason"], "")
+        self.assertFalse(outcome["has_warning"])
+        self.assertEqual(outcome["message"], "自动化流程执行完成")
+        self.assertEqual(outcome["i18n_key"], "task_events.orchestrator_complete")
+
+    def test_home_with_error_is_still_success_with_warning(self):
+        """到 HOME + 有 ERROR → 仍标 success，但 has_warning=True（修复历史误判 bug）。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("HOME", has_error=True)
+        self.assertEqual(outcome["status"], "success", "到 HOME 即视为成功，不应因 ERROR 翻盘")
+        self.assertEqual(outcome["error_reason"], "")
+        self.assertTrue(outcome["has_warning"])
+        self.assertIn("warning", outcome["message"])
+
+    def test_lowercase_home_normalized_to_success(self):
+        """final_state 大小写不敏感（worker 已 upper 但纯函数应自防御）。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("home", has_error=False)
+        self.assertEqual(outcome["status"], "success")
+
+    def test_intermediate_state_with_error_is_failed(self):
+        """未到 HOME + 有 ERROR → failed with error_logged_at_state。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("VERIFY_EMAIL", has_error=True)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_reason"], "error_logged_at_state=VERIFY_EMAIL")
+        self.assertFalse(outcome["has_warning"])
+        self.assertIn("VERIFY_EMAIL", outcome["message"])
+        self.assertEqual(outcome["i18n_key"], "task_events.orchestrator_complete_with_error")
+
+    def test_intermediate_state_without_error_is_silent_failure(self):
+        """未到 HOME + 无 ERROR → failed with silent_failure_at_state。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("ABOUT_YOU", has_error=False)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_reason"], "silent_failure_at_state=ABOUT_YOU")
+        self.assertIn("ABOUT_YOU", outcome["message"])
+
+    def test_empty_state_with_error_yields_unknown(self):
+        """状态为空（极端：从未进入任何 state）→ failed, UNKNOWN 占位。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("", has_error=True)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_reason"], "error_logged_at_state=UNKNOWN")
+
+    def test_empty_state_without_error_yields_silent_failure_unknown(self):
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome("", has_error=False)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_reason"], "silent_failure_at_state=UNKNOWN")
+
+    def test_none_state_is_treated_as_empty(self):
+        """final_state=None（worker 入参防御）→ 等同空串。"""
+        from src.api.worker import _decide_final_outcome
+        outcome = _decide_final_outcome(None, has_error=False)  # type: ignore[arg-type]
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["error_reason"], "silent_failure_at_state=UNKNOWN")
+
+
+class TestWorkerNoLongerOwnsExitIpCapture(unittest.TestCase):
+    """worker._capture_and_persist_exit_ip 已被删除。
+
+    职责拆分为：
+    - DB 落库 → ``src/orchestration/preflight.write_run_exit_ip``（见 test_preflight.py）
+    - 浏览器内抓 IP → ``main.run_task`` 内 ``fetch_exit_ip_from_page``（线上 E2E 验证）
+
+    本测试仅留一道护栏：确保 worker 模块里没人再 import 该死代码。
+    """
+
+    def test_function_is_removed(self):
+        from src.api import worker as worker_mod
+        self.assertFalse(
+            hasattr(worker_mod, "_capture_and_persist_exit_ip"),
+            "_capture_and_persist_exit_ip 已废弃；IP 抓取改到 main.run_task 浏览器启动后做。"
+            " 历史 bug：旧实现在浏览器启动前用 Python httpx 抓 ipinfo.io，"
+            " 跟 AdsPower 注入的住宅代理是两条网络栈，永远抓不到正确 IP。",
+        )
+
+    def test_write_run_exit_ip_is_canonical_path(self):
+        """write_run_exit_ip 是新版唯一公开的 IP 落库入口。"""
+        from src.orchestration.preflight import write_run_exit_ip
+        self.assertTrue(callable(write_run_exit_ip))

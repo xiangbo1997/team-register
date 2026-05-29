@@ -20,7 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from src.api.deps import get_auth_service, get_knowledge_service
 from src.api.i18n import setup_i18n
-from src.api.routes import assistant, auth, cards, config, events, export, tasks
+from src.api.routes import accounts, assistant, auth, cards, config, events, export, link_templates, promo_discovery, proxies, proxy_providers, registration_profiles, tasks
 from src.api.security import (
     SESSION_COOKIE_NAME,
     get_or_create_csrf_token,
@@ -95,6 +95,12 @@ app.include_router(assistant.router)
 app.include_router(config.router)
 app.include_router(tasks.router)
 app.include_router(cards.router)
+app.include_router(accounts.router)
+app.include_router(link_templates.router)
+app.include_router(promo_discovery.router)
+app.include_router(proxies.router)
+app.include_router(proxy_providers.router)
+app.include_router(registration_profiles.router)
 app.include_router(events.router)
 app.include_router(export.router)
 
@@ -183,6 +189,14 @@ async def providers_page(request: Request):
     return HTMLResponse("<p>Template not found</p>", status_code=404)
 
 
+@app.get("/registration-profiles", response_class=HTMLResponse)
+async def registration_profiles_page(request: Request):
+    """注册方式 × 供应商组合管理页。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "registration_profiles" / "index.html").exists():
+        return _protected_template_response(request, "pages/registration_profiles/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
 @app.get("/mail-accounts", response_class=HTMLResponse)
 async def mail_accounts_page(request: Request):
     """邮箱账号管理页。"""
@@ -196,6 +210,50 @@ async def cards_page(request: Request):
     """虚拟卡缓存管理页（X988 已激活卡列表 + 手动作废）。"""
     if templates and (_TEMPLATES_DIR / "pages" / "cards" / "index.html").exists():
         return _protected_template_response(request, "pages/cards/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/proxies", response_class=HTMLResponse)
+async def proxies_page(request: Request):
+    """代理池管理页（仅用于"生成 checkout 链接"按号选 IP 出口）。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "proxies" / "index.html").exists():
+        return _protected_template_response(request, "pages/proxies/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/proxy-providers", response_class=HTMLResponse)
+async def proxy_providers_page(request: Request):
+    """动态代理供应商管理页（1024Proxy 等按需拉 IP 的 API 配置）。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "proxy_providers" / "index.html").exists():
+        return _protected_template_response(request, "pages/proxy_providers/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/promo-codes", response_class=HTMLResponse)
+async def promo_codes_page(request: Request):
+    """促销码列表 + 手动 eligibility 验证（promo_eligibility 模块）。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "promo_codes" / "index.html").exists():
+        return _protected_template_response(request, "pages/promo_codes/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    """账号池管理页（普号池 / Plus 号池 / Team 号池 / 已放弃）。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "accounts" / "index.html").exists():
+        return _protected_template_response(request, "pages/accounts/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/checkout-link", response_class=HTMLResponse)
+async def checkout_link_page(request: Request):
+    """独立 Checkout 链接生成器 —— 用户手动喂 access_token，不依赖号池上下文。
+
+    与 ``/accounts`` 的弹窗共享 PaymentLinkGenerator 后端，仅 UI 入口不同；
+    本页**不**会读写 DB（access_token 由前端临时输入，关闭即丢）。
+    """
+    if templates and (_TEMPLATES_DIR / "pages" / "checkout_link" / "index.html").exists():
+        return _protected_template_response(request, "pages/checkout_link/index.html")
     return HTMLResponse("<p>Template not found</p>", status_code=404)
 
 

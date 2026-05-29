@@ -511,5 +511,171 @@ class TestX988CardProviderCache(unittest.TestCase):
         m.assert_called_once_with("CDK_3DS", timeout_sec=10)
 
 
+class TestSmsActivateProvider(unittest.TestCase):
+    """SMS-Activate Provider 适配器测试。
+
+    设计：mock 掉 requests.get 与 SMSManager，不发任何真实 HTTP；
+    覆盖注册、校验、互斥约束、country_fallback 解析、价格降级、test_connection。
+    """
+
+    def _build_provider(self, **overrides):
+        from src.providers.sms.sms_activate import SmsActivateProvider
+
+        defaults = {
+            "api_key": "test-key",
+            "country": "6",
+            "country_fallback": "",
+            "max_price": "",
+            "min_price": "",
+            "operator": "any",
+            "service": "dr",
+            "max_retries": 30,
+            "proxy": "",
+        }
+        defaults.update(overrides)
+        with patch("src.providers.sms.sms_activate.SMSManager") as mock_mgr_cls:
+            mock_mgr_cls.side_effect = lambda **kwargs: MagicMock(_kwargs=kwargs)
+            provider = SmsActivateProvider(**defaults)
+        return provider
+
+    def test_registered(self):
+        """sms_activate kind 应被 ProviderRegistry 发现并注册。"""
+        from src.providers import get_registry
+
+        reg = get_registry()
+        reg.discover()
+        self.assertIn(
+            "sms_activate",
+            reg.list_kinds("sms"),
+            f"已注册 SMS kinds: {reg.list_kinds('sms')}",
+        )
+        meta = reg.get_meta("sms", "sms_activate")
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.provider_type, "sms")
+        self.assertEqual(meta.display_name, "SMS-Activate 接码平台")
+        field_names = {f.name for f in meta.schema}
+        for required in (
+            "api_key", "country", "country_fallback",
+            "max_price", "min_price", "operator",
+            "service", "max_retries", "proxy",
+        ):
+            self.assertIn(required, field_names, f"schema 缺字段 {required}")
+
+    def test_validate_required_api_key(self):
+        """不传 api_key 应被 registry.build 拦下。"""
+        from src.providers.registry import ProviderConfigInvalidError, get_registry
+
+        reg = get_registry()
+        reg.discover()
+        with self.assertRaises(ProviderConfigInvalidError) as ctx:
+            reg.build("sms", "sms_activate", {"country": "6"})
+        self.assertIn("api_key", ctx.exception.missing_fields)
+
+    def test_operator_max_price_mutex(self):
+        """operator != 'any' 时同时传 max_price 应在 __init__ 抛 ValueError。"""
+        from src.providers.sms.sms_activate import SmsActivateProvider
+
+        with patch("src.providers.sms.sms_activate.SMSManager"):
+            with self.assertRaises(ValueError) as ctx:
+                SmsActivateProvider(
+                    api_key="test-key",
+                    country="6",
+                    max_price="30",
+                    operator="mts",
+                )
+        self.assertIn("互斥", str(ctx.exception))
+
+    def test_country_fallback_parsing(self):
+        """country_fallback 应支持 ';' 和 ',' 双分隔符且去重去主国家。"""
+        provider = self._build_provider(country="6", country_fallback="22;12,6, 0")
+        self.assertEqual(provider.country_chain, ["6", "22", "12", "0"])
+
+    def test_country_fallback_empty(self):
+        """无 fallback 时国家链只含主国家。"""
+        provider = self._build_provider(country="6", country_fallback="")
+        self.assertEqual(provider.country_chain, ["6"])
+
+    def test_price_filter_downgrade_then_succeed(self):
+        """主国家价格超 max_price → 降级到 fallback；fallback 价格符合 → 申号成功。"""
+        from src.models import SMSOrder
+        from src.providers.sms.sms_activate import SmsActivateProvider
+
+        price_responses = {
+            "6": MagicMock(json=lambda: {"6": {"dr": {"cost": 50.0, "count": 100}}}),
+            "22": MagicMock(json=lambda: {"22": {"dr": {"cost": 20.0, "count": 50}}}),
+        }
+
+        def fake_requests_get(url, params=None, **kwargs):
+            country = str(params.get("country", ""))
+            action = params.get("action")
+            if action == "getPrices":
+                return price_responses[country]
+            raise AssertionError(f"未预期的 action={action}")
+
+        order_22 = SMSOrder(order_id="ORDER_22", phone_number="62812345")
+
+        managers_created: dict = {}
+
+        def make_mgr(**kwargs):
+            mock = MagicMock()
+            if kwargs["country"] == "22":
+                mock.get_number = MagicMock(return_value=order_22)
+            else:
+                mock.get_number = MagicMock(return_value=None)
+            managers_created[kwargs["country"]] = mock
+            return mock
+
+        with patch(
+            "src.providers.sms.sms_activate.SMSManager", side_effect=make_mgr
+        ), patch(
+            "src.providers.sms.sms_activate.requests.get", side_effect=fake_requests_get
+        ):
+            provider = SmsActivateProvider(
+                api_key="test-key",
+                country="6",
+                country_fallback="22",
+                max_price="30",
+            )
+            result = provider.get_number(service="dr")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.order_id, "ORDER_22")
+        # 主国家被价格过滤跳过，不应调用其 get_number
+        managers_created["6"].get_number.assert_not_called()
+        managers_created["22"].get_number.assert_called_once_with(service="dr")
+
+    def test_test_connection_success(self):
+        """getBalance 返回 ACCESS_BALANCE:42.50 → ok=True, balance=42.5。"""
+        with patch("src.providers.sms.sms_activate.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(text="ACCESS_BALANCE:42.50")
+            provider = self._build_provider()
+            result = provider.test_connection()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["balance"], 42.5)
+        self.assertIn("42.50", result["message"])
+
+    def test_test_connection_bad_key(self):
+        """getBalance 返回 BAD_KEY → ok=False, balance=None。"""
+        with patch("src.providers.sms.sms_activate.requests.get") as mock_get:
+            mock_get.return_value = MagicMock(text="BAD_KEY")
+            provider = self._build_provider()
+            result = provider.test_connection()
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["balance"])
+        self.assertIn("BAD_KEY", result["message"])
+
+    def test_test_connection_network_error(self):
+        """请求异常时应返回 ok=False 而不是抛异常（端点契约）。"""
+        import requests as _requests
+
+        with patch("src.providers.sms.sms_activate.requests.get") as mock_get:
+            mock_get.side_effect = _requests.ConnectionError("dns fail")
+            provider = self._build_provider()
+            result = provider.test_connection()
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["balance"])
+        self.assertIn("请求异常", result["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

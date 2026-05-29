@@ -4,59 +4,200 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ _('login.title') }} - Team Register</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script>
+        // 严格对齐 Stitch 原型 token
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: { DEFAULT: '#4F46E5', hover: '#4338CA' },
+                        secondary: '#0EA5E9',
+                        success: '#10B981',
+                        warning: '#F59E0B',
+                        danger: '#EF4444',
+                        surface: '#FFFFFF',
+                        app: '#F8FAFC',
+                        subtle: '#F1F5F9',
+                        border: '#E2E8F0',
+                        muted: '#64748B',
+                        body: '#0F172A',
+                    },
+                    fontFamily: {
+                        headline: ['Inter', 'sans-serif'],
+                        display:  ['Inter', 'sans-serif'],
+                        body:     ['Inter', 'sans-serif'],
+                        label:    ['"Public Sans"', 'sans-serif'],
+                        mono:     ['"JetBrains Mono"', 'monospace'],
+                    },
+                    boxShadow: {
+                        'token-sm': '0 1px 2px rgba(15,23,42,.06)',
+                        'token-md': '0 4px 12px rgba(15,23,42,.08)',
+                        'token-lg': '0 16px 48px rgba(15,23,42,.16)',
+                    },
+                },
+            },
+        };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Public+Sans:wght@500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        body { font-feature-settings: 'cv02','cv03','cv04','cv11'; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        /* Floating label —— 严格按 Stitch 原型 */
+        .floating-label-input:placeholder-shown + label {
+            transform: translateY(0) scale(1);
+            color: #64748B;
+        }
+        .floating-label-input:focus + label,
+        .floating-label-input:not(:placeholder-shown) + label {
+            transform: translateY(-1.5rem) scale(0.85);
+            color: #4F46E5;
+        }
+    </style>
 </head>
-<body class="min-h-screen bg-gray-950 text-gray-100">
-<div class="mx-auto flex min-h-screen max-w-6xl items-center px-6 py-12">
-    <div class="grid w-full gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-        <section class="rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur">
-            <div class="inline-flex items-center rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1 text-xs text-blue-200">{{ _('login.badge') }}</div>
-            <h1 class="mt-6 text-3xl font-semibold tracking-tight">{{ _('login.hero_title') }}</h1>
-            <p class="mt-4 max-w-xl text-sm leading-6 text-gray-300">{{ _('login.hero_desc') }}</p>
+<body class="bg-app font-body text-body antialiased min-h-screen">
 
-            <div class="mt-8 grid gap-4 sm:grid-cols-2">
-                <div class="rounded-2xl border border-white/10 bg-black/20 p-4">
-                    <div class="text-sm font-medium">{{ _('login.card_help_title') }}</div>
-                    <p class="mt-2 text-sm text-gray-400">{{ _('login.card_help_desc') }}</p>
-                    <a href="{{ help_url or '/help' }}" class="mt-3 inline-block text-sm text-blue-300 hover:text-blue-200">{{ _('nav.help') }}</a>
+<main class="flex min-h-screen">
+
+    {# ────────────── 左侧 hero panel (55%) —— 严格按 Stitch ────────────── #}
+    <section class="hidden lg:flex lg:w-[55%] relative overflow-hidden bg-gradient-to-br from-[#0F172A] to-[#4F46E5] p-[60px] flex-col justify-between">
+
+        {# 装饰点阵背景 #}
+        <div class="absolute inset-0 opacity-20" style="background-image: radial-gradient(circle at 2px 2px, rgba(255,255,255,0.15) 1px, transparent 0); background-size: 32px 32px;"></div>
+
+        <div class="relative z-10">
+            {# Pill badge #}
+            <div class="inline-flex items-center px-3 py-1 rounded-full bg-white/5 border border-white/10 text-secondary text-[13px] font-medium tracking-wide mb-8">
+                {{ _('login.badge') }}
+            </div>
+
+            {# Headline #}
+            <h1 class="text-[48px] font-bold text-white leading-[1.1] tracking-tight mb-6">
+                {{ _('login.hero_title') }}
+            </h1>
+
+            {# Description #}
+            <p class="text-slate-300 text-lg max-w-xl leading-relaxed">
+                {{ _('login.hero_desc') }}
+            </p>
+        </div>
+
+        {# 2-col info cards #}
+        <div class="relative z-10 grid grid-cols-2 gap-6">
+            <a href="{{ help_url or '/help' }}"
+               class="block p-6 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm hover:bg-white/10 transition-colors group">
+                <div class="text-white font-semibold text-lg mb-1 flex items-center justify-between">
+                    {{ _('login.card_help_title') }}
+                    <span class="material-symbols-outlined text-white/40 group-hover:text-white transition-colors">help_outline</span>
                 </div>
-                <div class="rounded-2xl border border-white/10 bg-black/20 p-4">
-                    <div class="text-sm font-medium">{{ _('login.card_manual_title') }}</div>
-                    <p class="mt-2 text-sm text-gray-400">{{ _('login.card_manual_desc') }}</p>
-                    <a href="{{ manual_url or '/manual' }}" target="_blank" class="mt-3 inline-block text-sm text-blue-300 hover:text-blue-200">{{ _('assistant.open_manual') }}</a>
+                <p class="text-slate-400 text-sm mb-4">{{ _('login.card_help_desc') }}</p>
+                <span class="text-secondary text-sm font-medium hover:underline flex items-center gap-1">
+                    {{ _('common.learn_more') }}
+                    <span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+                </span>
+            </a>
+            <a href="{{ manual_url or '/manual' }}" target="_blank"
+               class="block p-6 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm hover:bg-white/10 transition-colors group">
+                <div class="text-white font-semibold text-lg mb-1 flex items-center justify-between">
+                    {{ _('login.card_manual_title') }}
+                    <span class="material-symbols-outlined text-white/40 group-hover:text-white transition-colors">description</span>
+                </div>
+                <p class="text-slate-400 text-sm mb-4">{{ _('login.card_manual_desc') }}</p>
+                <span class="text-secondary text-sm font-medium hover:underline flex items-center gap-1">
+                    {{ _('assistant.open_manual') }}
+                    <span class="material-symbols-outlined text-[16px]">open_in_new</span>
+                </span>
+            </a>
+        </div>
+
+        {# 装饰圆形光晕 mix-blend #}
+        <div class="absolute bottom-[-10%] right-[-10%] w-[80%] h-[80%] opacity-30 pointer-events-none">
+            <div class="w-full h-full rounded-full mix-blend-screen"
+                 style="background: radial-gradient(circle, rgba(99,102,241,0.6) 0%, rgba(14,165,233,0.3) 40%, transparent 70%);"></div>
+        </div>
+    </section>
+
+    {# ────────────── 右侧 form panel (45%) ────────────── #}
+    <section class="w-full lg:w-[45%] flex items-center justify-center p-6 bg-app" x-data="loginForm()">
+        <div class="w-full max-w-[440px]">
+            <div class="bg-white rounded-xl shadow-token-lg p-10 border border-border">
+
+                {# Brand row #}
+                <div class="flex items-center gap-3 mb-8">
+                    <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
+                        <span class="material-symbols-outlined text-white" style="font-variation-settings: 'FILL' 1;">terminal</span>
+                    </div>
+                    <span class="text-xl font-bold tracking-tight text-body">{{ _('app.title') }}</span>
+                </div>
+
+                <div class="mb-8">
+                    <h2 class="text-2xl font-semibold text-body mb-2">{{ _('login.form_title') }}</h2>
+                    <p class="text-muted">{{ login_hint or _('login.form_hint') }}</p>
+                </div>
+
+                {# Error alert #}
+                <div x-show="errorMessage" x-cloak class="flex items-center gap-3 p-4 mb-6 bg-danger/5 border-l-4 border-danger rounded-r-lg">
+                    <span class="material-symbols-outlined text-danger text-[20px]">error</span>
+                    <p class="text-danger text-sm font-medium" x-text="errorMessage"></p>
+                </div>
+
+                {# Form #}
+                <form class="space-y-6" @submit.prevent="submit">
+                    <input type="hidden" x-model="nextUrl">
+
+                    {# Floating-label username #}
+                    <div class="relative">
+                        <input x-model="username" id="username" name="username" type="text" autocomplete="username" placeholder=" "
+                               class="floating-label-input block w-full px-4 pt-6 pb-2 text-body bg-transparent border border-border rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary transition-all appearance-none outline-none">
+                        <label for="username" class="absolute left-4 top-4 text-muted transition-all origin-top-left pointer-events-none">
+                            {{ _('login.username') }}
+                        </label>
+                    </div>
+
+                    {# Floating-label password + eye toggle #}
+                    <div class="relative" x-data="{ visible: false }">
+                        <input x-model="password" id="password" name="password" autocomplete="current-password" placeholder=" "
+                               :type="visible ? 'text' : 'password'"
+                               class="floating-label-input block w-full px-4 pt-6 pb-2 text-body bg-transparent border border-border rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary transition-all appearance-none outline-none">
+                        <label for="password" class="absolute left-4 top-4 text-muted transition-all origin-top-left pointer-events-none">
+                            {{ _('login.password') }}
+                        </label>
+                        <button type="button" @click="visible = !visible" class="absolute right-4 top-5 text-muted hover:text-primary transition-colors">
+                            <span class="material-symbols-outlined" x-text="visible ? 'visibility_off' : 'visibility'">visibility</span>
+                        </button>
+                    </div>
+
+                    {# Submit #}
+                    <button type="submit" :disabled="loading"
+                            class="w-full h-12 bg-primary hover:bg-primary-hover text-white font-semibold rounded-lg shadow-token-sm transition-all active:scale-[0.98] focus:ring-4 focus:ring-primary/20 disabled:opacity-60 disabled:cursor-not-allowed">
+                        <span x-text="loading ? i18n('login.submitting') : i18n('auth.login')"></span>
+                    </button>
+                </form>
+
+                {# Footer links #}
+                <div class="mt-8 pt-6 border-t border-border flex items-center justify-between text-sm text-muted">
+                    <a href="{{ help_url or '/help' }}" class="hover:text-primary transition-colors flex items-center gap-1">
+                        <span class="material-symbols-outlined text-[16px]">help_outline</span>
+                        {{ _('nav.help') }}
+                    </a>
+                    <a href="{{ manual_url or '/manual' }}" target="_blank"
+                       class="hover:text-primary transition-colors flex items-center gap-1">
+                        {{ _('assistant.open_manual') }}
+                        <span class="material-symbols-outlined text-[16px]">open_in_new</span>
+                    </a>
                 </div>
             </div>
-        </section>
-
-        <section class="rounded-3xl bg-white p-8 text-gray-900 shadow-2xl" x-data="loginForm()">
-            <h2 class="text-2xl font-semibold">{{ _('login.form_title') }}</h2>
-            <p class="mt-2 text-sm text-gray-500">{{ login_hint or _('login.form_hint') }}</p>
-
-            <div x-show="errorMessage" x-cloak class="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" x-text="errorMessage"></div>
-
-            <form class="mt-6 space-y-4" @submit.prevent="submit">
-                <input type="hidden" x-model="nextUrl">
-                <div>
-                    <label class="mb-1 block text-sm font-medium">{{ _('login.username') }}</label>
-                    <input x-model="username" type="text" autocomplete="username" class="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none" :placeholder="i18n('login.username_placeholder')">
-                </div>
-                <div>
-                    <label class="mb-1 block text-sm font-medium">{{ _('login.password') }}</label>
-                    <input x-model="password" type="password" autocomplete="current-password" class="w-full rounded-2xl border border-gray-200 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none" :placeholder="i18n('login.password_placeholder')">
-                </div>
-                <button type="submit" :disabled="loading" class="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
-                    <span x-text="loading ? i18n('login.submitting') : i18n('auth.login')"></span>
-                </button>
-            </form>
-
-            <div class="mt-6 flex items-center justify-between text-sm text-gray-500">
-                <a href="{{ help_url or '/help' }}" class="hover:text-gray-700">{{ _('nav.help') }}</a>
-                <a href="{{ manual_url or '/manual' }}" target="_blank" class="hover:text-gray-700">{{ _('assistant.open_manual') }}</a>
-            </div>
-        </section>
-    </div>
-</div>
+        </div>
+    </section>
+</main>
 
 <script>
 window._translations = {{ _translations() | tojson }};
@@ -89,15 +230,8 @@ function loginForm() {
             try {
                 const response = await fetch('/api/auth/login', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-Token': window.__csrfToken || '',
-                    },
-                    body: JSON.stringify({
-                        username: this.username,
-                        password: this.password,
-                        next: this.nextUrl,
-                    }),
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.__csrfToken || '' },
+                    body: JSON.stringify({ username: this.username, password: this.password, next: this.nextUrl }),
                 });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || response.statusText);

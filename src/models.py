@@ -33,6 +33,27 @@ class CardInfo:
         try:
             expiry_month = data.get("expiry_month", data.get("expiryMonth"))
             expiry_year = data.get("expiry_year", data.get("expiryYear"))
+            billing_address = (
+                data.get("billing_address")
+                or data.get("billingAddress")
+                or data.get("full_billing_address")
+                or data.get("fullBillingAddress")
+                or data.get("address")
+                or ""
+            )
+            if not billing_address:
+                # 兼容拆字段返回：addressLine1/city/state/postalCode/country
+                line1 = data.get("addressLine1") or data.get("billingAddressLine1") or ""
+                line2 = data.get("addressLine2") or data.get("billingAddressLine2") or ""
+                city = data.get("city") or data.get("billingLocality") or ""
+                state = data.get("state") or data.get("billingAdministrativeArea") or ""
+                postal = data.get("postalCode") or data.get("zip") or data.get("billingPostalCode") or ""
+                country = data.get("country") or data.get("billingCountry") or ""
+                billing_address = ", ".join(
+                    str(part).strip()
+                    for part in (line1, line2, city, state, postal, country)
+                    if str(part or "").strip()
+                )
             return cls(
                 card_number=str(data["cardNumber"]),
                 expiry_month=str(expiry_month),
@@ -43,6 +64,7 @@ class CardInfo:
                 status=str(data.get("status", "") or ""),
                 created_at=str(data.get("createdAt", "") or ""),
                 auto_cancel_at=str(data.get("autoCancelAt", "") or ""),
+                billing_address=str(billing_address or ""),
                 card_prefix=str(data.get("cardPrefix", "") or ""),
                 validity_minutes=int(data.get("validityMinutes", 0)),
                 is_replace=bool(data.get("isReplace", False)),

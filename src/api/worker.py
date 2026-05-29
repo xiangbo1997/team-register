@@ -402,16 +402,64 @@ def _execute_task(run_id: str, broadcaster: EventBroadcaster) -> None:
 
 
 def _resolve_runtime_config(run: Run):
-    """把任务级 provider / account 选择折叠到运行时配置对象。"""
-    from src.api.deps import get_config_service
+    """把任务级 provider / account 选择折叠到运行时配置对象。
+
+    优先级（高 → 低）：
+      1. Run 字段（run.browser_provider 等）—— 控制台/旧 API 直接指定
+      2. config_snapshot.provider_overrides[<slot>] —— 新 API 任务级覆盖
+      3. RegistrationProfile.provider_bindings[<slot>] —— 注册方式预设组合
+      4. AppConfig.default_*_provider —— 全局兜底（兼容护栏，未来标 deprecated）
+
+    优先级 1/4 是老路径；新增 2/3 在中间插入，老 task 行为完全不变。
+    """
+    from src.api.deps import get_config_service, get_registration_profile_service
 
     svc = get_config_service()
     config = svc.get_config()
 
+    # ── 解析 RegistrationProfile：拿到当前任务用的 bindings + overrides ──
+    snapshot = dict(run.config_snapshot or {})
+    profile_name = str(snapshot.get("registration_profile_name") or "").strip()
+    registration_kind = str(snapshot.get("registration_kind") or "email").strip().lower() or "email"
+    raw_overrides = snapshot.get("provider_overrides") or {}
+    overrides = {
+        str(k).strip(): str(v).strip()
+        for k, v in raw_overrides.items()
+        if str(k).strip() and str(v).strip()
+    } if isinstance(raw_overrides, dict) else {}
+
+    profile_bindings: dict[str, str] = {}
+    if profile_name or registration_kind in ("email", "phone"):
+        try:
+            profile_svc = get_registration_profile_service()
+            profile = None
+            if profile_name:
+                profile = profile_svc.get_profile(profile_name)
+                if profile is None:
+                    logger.warning(
+                        "registration_profile_name=%r 不存在，回退到 kind=%s 的默认组合",
+                        profile_name, registration_kind,
+                    )
+            if profile is None:
+                profile = profile_svc.get_default(registration_kind)
+            if profile is not None:
+                profile_bindings = dict(profile.provider_bindings or {})
+        except Exception as exc:
+            # 不阻塞任务：profile 解析失败仅记 warning，老 fallback 接管
+            logger.warning("RegistrationProfile 解析失败（不阻塞，走 AppConfig 默认）: %s", exc)
+
+    def _pick_binding(slot: str) -> str:
+        """按优先级 2 → 3 取槽位 provider name；都没命中返回 ''。"""
+        if slot in overrides:
+            return overrides[slot]
+        return profile_bindings.get(slot, "")
+
+    # browser provider：Run 字段优先；其次 overrides / profile bindings；最后 AppConfig
+    browser_default = _pick_binding("browser") or config.default_browser_provider
     browser_profile = svc.resolve_provider_config(
         "browser",
         run.browser_provider,
-        default_name=config.default_browser_provider,
+        default_name=browser_default,
     )
     if browser_profile is not None:
         browser_payload = dict(browser_profile.config or {})
@@ -424,10 +472,11 @@ def _resolve_runtime_config(run: Run):
         if browser_proxy:
             config.proxy = browser_proxy
 
+    card_default = _pick_binding("card") or config.default_card_provider
     card_profile = svc.resolve_provider_config(
         "card",
         run.card_provider,
-        default_name=config.default_card_provider,
+        default_name=card_default,
     )
     if card_profile is not None:
         card_payload = dict(card_profile.config or {})
@@ -451,10 +500,11 @@ def _resolve_runtime_config(run: Run):
             except (TypeError, ValueError):
                 pass
 
+    mail_default = _pick_binding("mail") or config.default_mail_provider
     mail_profile = svc.resolve_provider_config(
         "mail",
         run.mail_provider,
-        default_name=config.default_mail_provider,
+        default_name=mail_default,
     )
     if mail_profile is not None:
         mail_payload = dict(mail_profile.config or {})
@@ -471,6 +521,59 @@ def _resolve_runtime_config(run: Run):
         mail_proxy = str(mail_payload.get("proxy") or "").strip()
         if mail_proxy:
             config.proxy = mail_proxy
+
+    # SMS provider：profile_bindings.sms → default_sms_provider；查到则覆盖 config.sms_*
+    # 未命中（DB 无对应 active 行）则保留 .env 加载的 sms_api_key/sms_country，向后兼容。
+    sms_default = _pick_binding("sms") or config.default_sms_provider
+    sms_profile = svc.resolve_provider_config("sms", "", default_name=sms_default)
+    if sms_profile is not None:
+        sms_payload = dict(sms_profile.config or {})
+        if "api_key" in sms_payload:
+            config.sms_api_key = str(sms_payload.get("api_key") or "").strip()
+        if "country" in sms_payload:
+            config.sms_country = str(sms_payload.get("country") or "0").strip() or "0"
+
+    # LLM provider：同模式
+    llm_default = _pick_binding("llm") or config.default_llm_provider
+    llm_profile = svc.resolve_provider_config("llm", "", default_name=llm_default)
+    if llm_profile is not None:
+        llm_payload = dict(llm_profile.config or {})
+        if "base_url" in llm_payload:
+            config.llm_base_url = str(llm_payload.get("base_url") or "").rstrip("/")
+        if "api_key" in llm_payload:
+            config.llm_api_key = str(llm_payload.get("api_key") or "").strip()
+        if "model" in llm_payload:
+            config.llm_model = str(llm_payload.get("model") or "").strip()
+        if "timeout_ms" in llm_payload:
+            try:
+                config.llm_timeout_ms = int(llm_payload.get("timeout_ms") or 30000)
+            except (TypeError, ValueError):
+                pass
+        if "confidence_threshold" in llm_payload:
+            try:
+                config.llm_confidence_threshold = float(llm_payload.get("confidence_threshold") or 0.6)
+            except (TypeError, ValueError):
+                pass
+
+    # Captcha provider：同模式
+    captcha_default = _pick_binding("captcha") or config.default_captcha_provider
+    captcha_profile = svc.resolve_provider_config("captcha", "", default_name=captcha_default)
+    if captcha_profile is not None:
+        captcha_payload = dict(captcha_profile.config or {})
+        if "kind" in captcha_payload:
+            config.captcha_solver_kind = str(captcha_payload.get("kind") or "noop").strip().lower() or "noop"
+        if "user_token" in captcha_payload:
+            config.nocaptcha_user_token = str(captcha_payload.get("user_token") or "").strip()
+        if "timeout_ms" in captcha_payload:
+            try:
+                config.captcha_solver_timeout_ms = int(captcha_payload.get("timeout_ms") or 30000)
+            except (TypeError, ValueError):
+                pass
+        if "budget_cap_usd" in captcha_payload:
+            try:
+                config.captcha_solver_budget_cap_usd = float(captcha_payload.get("budget_cap_usd") or 5.0)
+            except (TypeError, ValueError):
+                pass
 
     selected_account_id = str(run.mail_account_id or config.default_mail_account_id).strip()
     if selected_account_id:
@@ -505,7 +608,133 @@ def _resolve_runtime_config(run: Run):
         config.mail_client_id = ""
         config.mail_refresh_token = ""
 
+    # task_mode 路由：
+    #   "register_only" → 关掉 enable_payment_flow 让 main.run_task 跳过 Phase 3，
+    #                     注册成功 + 提取 token 后 phase 停在 token_extraction，进普号池
+    #   其他           → full 模式，按 .env / config 默认走完整流程
+    # 注：snapshot 已在函数开头读取，这里直接复用
+    task_mode = str(snapshot.get("task_mode") or "full").strip().lower()
+    if task_mode == "register_only":
+        config.enable_payment_flow = False
+        logger.info(
+            "task_mode=register_only：已强制关闭 enable_payment_flow，注册成功后跳过支付绑卡进入普号池"
+        )
+
+    # 真实身份注入（批量注册防风控用）：
+    #   batch_register_service 创建 Run 时把 identity 落到 config_snapshot；
+    #   这里取出来挂到 config，main.py:fill_about_you 优先用这些字段填表
+    identity = snapshot.get("identity") or {}
+    if isinstance(identity, dict):
+        config.identity_first_name = str(identity.get("first_name") or "").strip()
+        config.identity_last_name = str(identity.get("last_name") or "").strip()
+        config.identity_email_local = str(identity.get("email_local") or "").strip()
+        config.identity_birthdate = str(identity.get("birthdate") or "").strip()
+        if config.identity_first_name:
+            logger.info(
+                "已注入真实身份: %s %s (email_local=%s, dob=%s)",
+                config.identity_first_name, config.identity_last_name,
+                config.identity_email_local, config.identity_birthdate,
+            )
+
+    # 三模式注册：把 registration_kind / requested_phone / sms_country 注入 config，
+    # automation/runtime.py PHONE state 用 registration_kind 判定放行 vs fail。
+    # registration_kind 已在函数开头读取，这里直接挂到 config
+    config.registration_kind = registration_kind
+    config.requested_phone = str(snapshot.get("requested_phone") or run.phone_number or "").strip()
+    config.sms_order_id = str(run.sms_order_id or "").strip()
+    sms_country_override = str(snapshot.get("sms_country") or "").strip()
+    if sms_country_override:
+        config.sms_country = sms_country_override
+
     return config
+
+
+# 模块级 domain 列表缓存：避免每个任务都打一次 GET /managed-providers/<name>/domains。
+# key = (provider_name, config_name)；value = (timestamp, list[str])。
+# TTL 设 300 秒，平衡运维改动 domain 列表的反应速度 vs 请求频次。
+_DOMAIN_CACHE_TTL_S = 300.0
+_domain_cache: dict[tuple[str, str], tuple[float, list[str], str]] = {}
+_domain_cache_lock = threading.Lock()
+
+
+def _resolve_requested_email_from_identity(
+    config,
+    mail_api,
+    run_id: str,
+    broadcaster: EventBroadcaster,
+) -> str:
+    """根据 batch 注入的 identity 拼出完整 email，让远端走"模式 B"路径生成有意义邮箱。
+
+    流程：
+    1. 拿 ``config.identity_email_local``（如 ``william.harrison82``），无则返回空串
+    2. 通过 ``mail_api._provider.list_provider_domains`` 查可用 domain 列表（带 TTL 缓存）
+    3. 随机选一个 domain（多 domain 轮换，分散注册指纹）
+    4. 拼出 ``william.harrison82@gitee.shop`` 返回给调用方
+    5. 任何步骤失败均返回空串，调用方降级回原 ``email=""`` 路径（远端默认 tmpXXXXXX）
+
+    返回空串语义：调用方应直接传 ``email=""``，让远端自己生成。
+    """
+    import random
+    import time
+
+    email_local = (getattr(config, "identity_email_local", "") or "").strip().lower()
+    if not email_local or "@" in email_local:
+        # 没有注入身份（CLI 直跑 / 老批次）或 email_local 已是完整邮箱：跳过
+        return ""
+
+    provider_name = str(getattr(mail_api, "_provider_name", "") or "").strip().lower()
+    config_name = str(getattr(mail_api, "_config_name", "") or "").strip()
+    cache_key = (provider_name, config_name)
+
+    # L1 缓存命中
+    now = time.monotonic()
+    with _domain_cache_lock:
+        cached = _domain_cache.get(cache_key)
+        if cached is not None:
+            ts, domains, default_domain = cached
+            if (now - ts) <= _DOMAIN_CACHE_TTL_S:
+                return _pick_email_from_domains(email_local, domains, default_domain)
+
+    # 远端拉取
+    try:
+        result = mail_api._provider.list_provider_domains(
+            provider=provider_name,
+            config_name=config_name or "",
+        )
+    except Exception as exc:
+        logger.warning("查询 provider 域名失败，降级走默认 tmpXXXXXX: %s", exc)
+        return ""
+
+    domains = result.get("enabled_domains") or []
+    default_domain = str(result.get("default_domain") or "").strip().lower()
+    if not domains and not default_domain:
+        # 远端尚未部署该端点 / 该 provider 没配 domain：降级
+        logger.info(
+            "邮箱拼接降级：远端未返回 enabled_domains（provider=%s）→ 走默认 tmpXXXXXX",
+            provider_name,
+        )
+        return ""
+
+    # 写缓存
+    with _domain_cache_lock:
+        _domain_cache[cache_key] = (now, list(domains), default_domain)
+
+    return _pick_email_from_domains(email_local, domains, default_domain)
+
+
+def _pick_email_from_domains(email_local: str, domains: list[str], default_domain: str) -> str:
+    """在已知 domain 列表里随机挑一个拼成完整 email；列表空时回退 default_domain。"""
+    import random
+
+    if domains:
+        domain = random.choice(domains)
+    elif default_domain:
+        domain = default_domain
+    else:
+        return ""
+    full_email = f"{email_local}@{domain}".lower()
+    logger.info("使用注入身份拼出真名邮箱: %s（替代默认 tmpXXXXXX）", full_email)
+    return full_email
 
 
 def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
@@ -579,13 +808,91 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
         _update_run_status(run_id, "failed", error_reason=f"init_failed: {exc}")
         return
 
+    # 手机号模式 + 空号 → 通过 SMS-Activate 静默申领手机号，回写 Run 与 config（在 mail preflight 之前）。
+    # 任何失败立即标 failed —— 手机号是 Mode B 的核心，没号没法继续。
+    registration_kind = str(getattr(config, "registration_kind", "email") or "email").strip().lower()
+    if registration_kind == "phone" and not (getattr(config, "requested_phone", "") or "").strip():
+        try:
+            ensure_task_active(run_id, "before_sms_auto_allocate")
+            order = sms_api.get_number(service="dr")
+            if order is None or not order.phone_number:
+                raise RuntimeError("SMS-Activate 获取手机号失败 (api 返回空)")
+            config.requested_phone = order.phone_number
+            config.sms_order_id = order.order_id
+            with get_session() as s:
+                run_to_update = s.get(Run, run_id)
+                if run_to_update:
+                    run_to_update.phone_number = order.phone_number
+                    run_to_update.sms_order_id = order.order_id
+                    run_to_update.updated_at = datetime.now(timezone.utc)
+                    s.add(run_to_update)
+                    s.commit()
+            # 用 PREFLIGHT_PHONE 状态推进进度条（PHONE 留给真正进入手机验证步骤）。
+            broadcaster.emit_sync(
+                run_id,
+                "state_change",
+                state="PREFLIGHT_PHONE",
+                payload=build_i18n_message_payload(
+                    f"已自动分配手机号: {order.phone_number}（order={order.order_id}）",
+                    "task_events.phone_auto_allocated",
+                    params={"phone": order.phone_number, "order_id": order.order_id},
+                    action_id="phone_auto_allocate",
+                    result="ok",
+                ),
+            )
+            logger.info("Mode B 自动分配手机号: %s (order=%s)", order.phone_number, order.order_id)
+        except TaskCancelledError:
+            _update_run_status(run_id, "cancelled", error_reason="cancelled_by_user")
+            return
+        except Exception as exc:
+            logger.error("任务 %s SMS 手机号申领失败: %s", run_id, exc)
+            broadcaster.emit_sync(
+                run_id,
+                "action",
+                state="PHONE",
+                payload=build_i18n_message_payload(
+                    "SMS 手机号申领失败",
+                    "task_events.phone_auto_allocate_failed",
+                    action_id="phone_auto_allocate",
+                    result="failed",
+                    error=str(exc),
+                ),
+            )
+            _update_run_status(run_id, "failed", error_reason=f"phone_auto_allocate_failed: {exc}")
+            return
+
+    # 单任务邮箱模式 + 空邮箱 + cfworker：用 generate_identity() 合成 first/last/email_local，
+    # 让下面 _resolve_requested_email_from_identity 能拼出 first.last82@<domain> 而不是 tmpXXXXXX。
+    # batch 路径已有 identity 注入，这里只补单任务漏掉的链路。
+    if (
+        registration_kind == "email"
+        and not email
+        and not (getattr(config, "identity_email_local", "") or "").strip()
+        and str(getattr(config, "email_provider_name", "") or "").strip().lower() == "cfworker"
+    ):
+        try:
+            from src.services.identity_generator import generate_identity
+            identity = generate_identity()
+            config.identity_first_name = identity.first_name
+            config.identity_last_name = identity.last_name
+            config.identity_email_local = identity.email_local
+            config.identity_birthdate = identity.birthdate
+            logger.info(
+                "Mode A cfworker 单任务静默生成身份: %s %s (email_local=%s, dob=%s)",
+                identity.first_name, identity.last_name, identity.email_local, identity.birthdate,
+            )
+        except Exception as exc:
+            # 身份生成失败不应阻塞 —— 退回 server 端默认 tmpXXXXXX
+            logger.warning("Mode A cfworker identity 合成失败（回退 tmpXXX）: %s", exc)
+
     try:
         ensure_task_active(run_id, "before_mail_runtime_preflight")
         resolved_session_mode = mail_api.ensure_runtime_ready(email)
+        # 推进到 PREFLIGHT_MAIL（VERIFY_EMAIL 留给真正进入邮箱验证状态机步骤时）。
         broadcaster.emit_sync(
             run_id,
-            "action",
-            state="VERIFY_EMAIL",
+            "state_change",
+            state="PREFLIGHT_MAIL",
             payload=build_i18n_message_payload(
                 f"邮箱服务运行态预检通过（session_mode={resolved_session_mode}）",
                 "task_events.mail_runtime_preflight_ok",
@@ -598,11 +905,19 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
         # 邮箱留空 → 走自动分配模式（仅 managed providers 支持）
         if not email and resolved_session_mode == "managed":
             ensure_task_active(run_id, "before_mail_auto_allocate")
+            # 如果有 identity_email_local（来自 batch_register_service 的 identity_generator），
+            # 拼出完整 email 通过 HTTP body.email 传给 server，走 server 已有的"模式 B"代码路径
+            # （/software/email-provider/core/base_mailbox.py:1294 _CFWorkerProvider.get_email
+            # 中 `if requested_email and "@" in requested_email` 分支）。
+            # domain 来源：先调 server GET /managed-providers/<name>/domains 拿可用列表，随机挑一个。
+            # 没有 identity_email_local 时（CLI 直跑 / 老批次）保持空 email，server 走默认 tmpXXXXXX。
+            requested_email = _resolve_requested_email_from_identity(config, mail_api, run_id, broadcaster)
             allocated = mail_api._provider.create_session(
                 provider=mail_api._provider_name,
                 purpose="auto-allocate",
                 session_mode="managed",
                 config_name=mail_api._config_name,
+                email=requested_email,
             )
             email = allocated.email
             # 立刻释放预分配的 session（实际收码用时再创建新 session，避免占住）
@@ -621,8 +936,8 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
             logger.info("自动分配邮箱: %s", email)
             broadcaster.emit_sync(
                 run_id,
-                "action",
-                state="VERIFY_EMAIL",
+                "state_change",
+                state="PREFLIGHT_MAIL",
                 payload=build_i18n_message_payload(
                     f"自动分配邮箱: {email}",
                     "task_events.mail_auto_allocated",
@@ -651,6 +966,19 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
         _update_run_status(run_id, "failed", error_reason=f"mail_runtime_preflight_failed: {exc}")
         return
 
+    # 3.5 邮箱预检完成 → 即将启动浏览器。推进进度条到 PREFLIGHT_BROWSER。
+    # 真实出口 IP 抓取已移至 main.run_task 浏览器启动后（PREFLIGHT_IP），
+    # 因为只有浏览器内才能拿到 AdsPower 注入的住宅代理实际出口。
+    broadcaster.emit_sync(
+        run_id,
+        "state_change",
+        state="PREFLIGHT_BROWSER",
+        payload=build_i18n_message_payload(
+            "准备启动浏览器...",
+            "task_events.preflight_browser_start",
+        ),
+    )
+
     # 4. 执行主流程（日志会通过 LogBroadcastHandler 自动推送到 SSE）
     try:
         run_task(
@@ -664,6 +992,7 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
             password=password,
             retry_mode=retry_mode,
             start_phase=start_phase,
+            db_run_id=run_id,
         )
 
         if _is_cancel_requested(run_id):
@@ -678,25 +1007,23 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
             _update_run_status(run_id, "cancelled", error_reason="cancelled_by_user")
             return
 
-        # 通过日志级别判断真实执行结果（run_task 失败时不抛异常，只记录 ERROR 日志）
-        if LogBroadcastHandler.check_has_error():
-            broadcaster.emit_sync(
-                run_id, "orchestrator_complete",
-                payload=build_i18n_message_payload(
-                    "自动化流程执行完成，但检测到错误",
-                    "task_events.orchestrator_complete_with_error",
-                ),
-            )
-            _update_run_status(run_id, "failed", error_reason="execution_error_detected")
+        final_state = (LogBroadcastHandler.get_current_state() or "").upper()
+        has_error = LogBroadcastHandler.check_has_error()
+        outcome = _decide_final_outcome(final_state, has_error)
+
+        broadcaster.emit_sync(
+            run_id,
+            "orchestrator_complete",
+            payload=build_i18n_message_payload(
+                outcome["message"],
+                outcome["i18n_key"],
+                has_warning=outcome["has_warning"],
+            ),
+        )
+        if outcome["status"] == "success":
+            _update_run_status(run_id, "success", phase=final_state.lower())
         else:
-            broadcaster.emit_sync(
-                run_id, "orchestrator_complete",
-                payload=build_i18n_message_payload(
-                    "自动化流程执行完成",
-                    "task_events.orchestrator_complete",
-                ),
-            )
-            _update_run_status(run_id, "success")
+            _update_run_status(run_id, "failed", error_reason=outcome["error_reason"])
 
     except TaskCancelledError:
         logger.warning("任务 %s 执行过程中收到取消信号，停止后续步骤。", run_id)
@@ -712,6 +1039,64 @@ def _execute_task_inner(run_id: str, broadcaster: EventBroadcaster) -> None:
     except Exception as exc:
         logger.error("任务 %s 执行失败: %s", run_id, exc)
         _update_run_status(run_id, "failed", error_reason=str(exc))
+
+
+# Run 终态判定的"成功 sentinel"集合。
+# HOME 是 main.run_task 主流程的唯一终点（register_only 在 token 提取后 / full 在支付收尾后），
+# 状态机能推到 HOME = 注册 + 邮箱验证 + token 提取（+ 支付，full 模式）都完成了。
+_SUCCESS_TERMINAL_STATES: frozenset[str] = frozenset({"HOME"})
+
+
+def _decide_final_outcome(final_state: str, has_error: bool) -> dict[str, Any]:
+    """根据 run_task 收尾后的 final_state + has_error 决定 Run 终态。
+
+    设计立场（方案 A）：
+      到 HOME 即视为成功，**不再因为 has_error 翻盘**。
+      历史 bug：旧逻辑要求 ``final_state == HOME AND not has_error`` 才算成功，
+      但 HOME 后期常有非致命 ERROR（邮箱 session 清理超时 / 浏览器关闭 / IP 抓取失败），
+      流程已跑完却被误标 failed。HOME 是状态机唯一终点 sentinel，能到这步可以信任。
+      has_error 仍透出到 payload.has_warning，前端可显示"成功但有 warning"。
+
+    Args:
+        final_state: 最终状态字符串（已 upper），如 "HOME" / "ENTRY" / ""
+        has_error: 本次 Worker 执行期间是否记录到 ERROR 级别日志
+
+    Returns:
+        dict:
+            status: "success" / "failed"
+            error_reason: 失败原因（仅 failed 时有意义）
+            message: 给 SSE 推送的人类可读描述
+            i18n_key: 给 build_i18n_message_payload 的键
+            has_warning: 成功但有非致命 ERROR 时为 True
+    """
+    normalized = (final_state or "").upper()
+    if normalized in _SUCCESS_TERMINAL_STATES:
+        return {
+            "status": "success",
+            "error_reason": "",
+            "message": (
+                "自动化流程执行完成（含非致命 warning）"
+                if has_error
+                else "自动化流程执行完成"
+            ),
+            "i18n_key": "task_events.orchestrator_complete",
+            "has_warning": has_error,
+        }
+
+    # 未到 HOME = 流程没跑完 = failed
+    if has_error:
+        reason = f"error_logged_at_state={normalized or 'UNKNOWN'}"
+    else:
+        # 没 ERROR 但状态没到终点 = run_task 静默 return（典型场景：吞异常 / 中途退出）
+        reason = f"silent_failure_at_state={normalized or 'UNKNOWN'}"
+
+    return {
+        "status": "failed",
+        "error_reason": reason,
+        "message": f"自动化流程未达成功状态：{reason}",
+        "i18n_key": "task_events.orchestrator_complete_with_error",
+        "has_warning": False,
+    }
 
 
 def _update_run_status(
@@ -776,6 +1161,40 @@ def update_current_task_run(
         phase=phase,
         error_reason=error_reason,
     )
+
+
+def update_current_task_tokens(
+    access_token: str,
+    refresh_token: str,
+) -> None:
+    """把当前 Worker 任务的 OpenAI session tokens 落库到 Run.openai_tokens。
+
+    号池"生成 checkout 链接"和 cpa 格式导出依赖此字段。
+    main.py:run_task 和 orchestrator.run 两条路径都要调一次。失败不抛。
+    """
+    run_id = getattr(LogBroadcastHandler._local, "run_id", None)
+    if not run_id:
+        return
+    try:
+        from src.db.engine import get_session
+        from src.db.models import Run
+
+        with get_session() as session:
+            db_run = session.get(Run, run_id)
+            if db_run is None:
+                return
+            db_run.openai_tokens = {
+                "access_token": access_token or "",
+                "refresh_token": refresh_token or "",
+                "id_token": "",
+                "extracted_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": "",
+            }
+            db_run.updated_at = datetime.now(timezone.utc)
+            session.add(db_run)
+            session.commit()
+    except Exception as exc:
+        logger.warning("token 写库失败 run=%s: %s", run_id[:12], exc)
 
 
 def get_worker_status() -> dict[str, Any]:

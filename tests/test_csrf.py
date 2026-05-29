@@ -137,6 +137,23 @@ class TestCSRF(unittest.TestCase):
         ok = client.post("/api/config/reload", headers={"X-CSRF-Token": token})
         self.assertEqual(ok.status_code, 200)
 
+    def test_card_pool_add_requires_csrf_token(self):
+        client = self._new_client()
+        token = self._login(client, "admin", "admin123456")
+
+        payload = {
+            "card_key": "csrf-card",
+            "card_provider": "efuncard",
+            "target_warmup_count": 0,
+        }
+        client.headers.pop("X-CSRF-Token", None)
+        denied = client.post("/api/cards", json=payload)
+        self.assertEqual(denied.status_code, 403)
+
+        # 有 CSRF 后才会进入业务层；这里不要求卡商配置可用，只验证不再被 CSRF 拦截。
+        reached_business = client.post("/api/cards", headers={"X-CSRF-Token": token}, json=payload)
+        self.assertNotEqual(reached_business.status_code, 403)
+
     def test_cross_origin_rejected_even_with_token(self):
         client = self._new_client()
         token = self._login(client, "admin", "admin123456")

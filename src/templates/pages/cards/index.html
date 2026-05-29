@@ -1,213 +1,369 @@
 {% extends "base.html" %}
+{% from 'components/_country.html' import country_flag_card %}
+{% import 'components/_ui.html' as ui %}
 {% block title %}虚拟卡缓存 - Team Register{% endblock %}
-{% block nav_cards %}bg-gray-800 text-white{% endblock %}
+{% block nav_cards %}sidebar-active{% endblock %}
 {% block page_title %}虚拟卡缓存{% endblock %}
 
 {% block content %}
-<div x-data="cardsData()" x-init="fetchCards(); startPolling()">
-    <div class="flex items-center justify-between mb-4">
-        <div class="text-sm text-gray-500">
-            虚拟卡缓存 + <strong>卡池预热</strong>：手动入池 → 手动点"热这张卡" → 达到目标次数即可在任务页"从卡池选"使用。
+<div x-data="cardsData()" x-init="initColumnWatcher(); fetchCards(); startPolling()" class="flex flex-col h-[calc(100vh-108px)] gap-6 max-w-[1400px] mx-auto">
+
+    {# ─── Page Header ─── #}
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+            <h3 class="text-2xl font-bold text-body">虚拟卡缓存</h3>
+            <p class="text-muted mt-1 text-sm">
+                虚拟卡缓存 + <strong class="text-body">卡池预热</strong>：手动入池 → 手动点"热这张卡" → 达到目标次数即可在任务页"从卡池选"使用
+            </p>
         </div>
         <div class="flex items-center gap-3">
-            <label class="flex items-center gap-1 text-xs text-gray-600">
-                <input type="checkbox" x-model="includeInvalidated" @change="fetchCards()">
+            <label class="flex items-center gap-2 text-xs text-muted cursor-pointer">
+                <input type="checkbox" x-model="includeInvalidated" @change="fetchCards()"
+                       class="rounded border-border text-primary focus:ring-primary/20">
                 显示已作废
             </label>
-            <button @click="fetchCards()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50">刷新</button>
+            <button @click="fetchCards()"
+                    class="flex items-center gap-1.5 text-sm px-3 py-2 border border-border text-body rounded-lg hover:bg-subtle transition-colors">
+                <span class="material-symbols-outlined text-base">refresh</span>
+                刷新
+            </button>
         </div>
     </div>
 
-    <!-- 入池表单 -->
-    <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <div class="text-sm font-medium text-blue-900 mb-2">📥 添加卡到池中</div>
-        <div class="flex flex-wrap gap-2 items-center">
-            <input type="text" x-model="newCard.card_key" placeholder="粘贴 CDK / 卡密..."
-                   class="flex-1 min-w-[260px] px-3 py-1.5 border rounded text-sm font-mono">
-            <select x-model="newCard.card_provider" class="px-3 py-1.5 border rounded text-sm">
-                <option value="efuncard">EfunCard</option>
-                <option value="nodecard">NodeCard</option>
-                <option value="x988card">X988Card</option>
-            </select>
-            <input type="number" x-model.number="newCard.target_warmup_count" min="0" max="20"
-                   class="w-20 px-3 py-1.5 border rounded text-sm" title="目标热卡次数">
-            <span class="text-xs text-gray-500">次</span>
-            <button @click="addCard()" :disabled="addingCard"
-                    class="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300">
-                <span x-text="addingCard ? '入池中...' : '添加'"></span>
-            </button>
-        </div>
-        <div class="text-xs text-gray-500 mt-1">
-            "目标热卡次数"建议 3-5 次。0 = 不预热直接可用（不推荐）。入池时会调卡商 API 拿卡，可能耗时数秒。
-        </div>
-    </div>
+    {# ─── Top Grid: 2 Info Cards ─── #}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-    <!-- PayPal 友好合成卡生成器（2026-05-26 P0 移植自 d4cc975 工程） -->
-    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-        <div class="text-sm font-medium text-amber-900 mb-2">
-            🃏 PayPal 友好合成卡（用于 PayPal guest checkout 绑卡）
-        </div>
-        <div class="flex flex-wrap gap-2 items-center">
-            <select x-model="synthBinPrefix" class="px-3 py-1.5 border rounded text-sm">
-                <option value="">随机 BIN（4147 或 4100）</option>
-                <option value="4147">4147（Chase / Capital One）</option>
-                <option value="4100">4100（Wells Fargo / Apple Card）</option>
-            </select>
-            <button @click="generateSyntheticVisa()" :disabled="generatingSynth"
-                    class="px-4 py-1.5 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 disabled:bg-gray-300">
-                <span x-text="generatingSynth ? '生成中...' : '🃏 生成一张'"></span>
-            </button>
-            <button @click="generateSyntheticVisa(true)" :disabled="generatingSynth"
-                    class="px-4 py-1.5 bg-amber-100 text-amber-800 border border-amber-300 rounded text-sm hover:bg-amber-200"
-                    title="批量生成 5 张可同时复制">
-                <span>🎲 一次 5 张</span>
-            </button>
-        </div>
-        <div class="text-xs text-amber-700 mt-1">
-            ⚠️ 合成卡仅通过 PayPal <strong>Luhn + BIN 预校验</strong>，<strong>不能真实扣款</strong>。
-            用于绑 0 元试用（首月不扣钱，月底自动取消订阅）。EFunCard 等真实虚拟卡被 PayPal RESTRICTED_USER 秒封时切换到这个。
-        </div>
-        <!-- 生成结果展示区（完整套件：卡 + 姓名 + 地址 + 电话）-->
-        <div x-show="synthCards.length > 0" x-cloak class="mt-3 space-y-2">
-            <template x-for="(c, i) in synthCards" :key="c.card_number">
-                <div class="p-3 bg-white border border-amber-200 rounded text-sm">
-                    <!-- 顶部：序号 + 复制按钮组 -->
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="text-xs font-bold text-amber-700">#<span x-text="i + 1"></span></span>
-                        <span class="text-xs text-gray-500" x-text="`${c.full_name} · ${c.address_city}, ${c.address_state}`"></span>
-                        <div class="ml-auto flex gap-1">
-                            <button @click="copySynthCard(c, 'card')"
-                                    class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 border border-blue-300 rounded hover:bg-blue-200"
-                                    title="卡号 + 过期 + CVV，Tab 分隔">📋 卡</button>
-                            <button @click="copySynthCard(c, 'name')"
-                                    class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 border border-purple-300 rounded hover:bg-purple-200"
-                                    title="First name + Last name，Tab 分隔">📋 姓名</button>
-                            <button @click="copySynthCard(c, 'address')"
-                                    class="px-2 py-0.5 text-xs bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200"
-                                    title="街道 + 城市 + 州 + 邮编，多行">📋 地址</button>
-                            <button @click="copySynthCard(c, 'phone')"
-                                    class="px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 border border-yellow-300 rounded hover:bg-yellow-200">
-                                📋 电话</button>
-                            <button @click="copySynthCard(c, 'all')"
-                                    class="px-2 py-0.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
-                                    title="所有字段 Tab 分隔，按顺序粘贴">📋 全套</button>
-                        </div>
+        {# Left: Add Card (Sky/Secondary) #}
+        <div class="bg-white rounded-xl shadow-token-sm border-l-4 border-secondary border border-border p-6 hover:shadow-token-md transition-all">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 rounded-lg bg-secondary/10 flex items-center justify-center text-secondary">
+                    <span class="material-symbols-outlined">add_card</span>
+                </div>
+                <h3 class="text-lg font-semibold text-body">添加卡到池中</h3>
+            </div>
+            <div class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="relative group">
+                        <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider group-focus-within:text-primary transition-colors">卡密 CDK</label>
+                        <input type="text" x-model="newCard.card_key"
+                               class="w-full border border-border rounded-lg px-4 py-3 text-sm mono-text focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all"
+                               placeholder="输入 CDK 序列号">
                     </div>
-                    <!-- 字段网格 -->
-                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
-                        <div><span class="text-gray-500">卡号：</span><span x-text="c.card_number" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">姓名：</span><span x-text="c.full_name" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">过期：</span><span x-text="c.expiry_display" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">街道：</span><span x-text="c.address_line1" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">CVV：</span><span x-text="c.cvv" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">城市：</span><span x-text="c.address_city + ', ' + c.address_state + ' ' + c.address_zip" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">BIN：</span><span x-text="c.bin_prefix" class="font-medium"></span></div>
-                        <div><span class="text-gray-500">电话：</span><span x-text="c.phone" class="font-medium"></span></div>
+                    <div class="relative group">
+                        <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider group-focus-within:text-primary transition-colors">卡商 PROVIDER</label>
+                        <select x-model="newCard.card_provider"
+                                class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all appearance-none bg-white">
+                            <option value="efuncard">EfunCard</option>
+                            <option value="nodecard">NodeCard</option>
+                            <option value="x988card">X988Card</option>
+                        </select>
                     </div>
                 </div>
-            </template>
-            <button x-show="synthCards.length > 0" @click="synthCards = []"
-                    class="text-xs text-gray-500 hover:text-gray-700">
+                <div class="flex items-center gap-3">
+                    <label class="text-xs text-muted">目标热卡次数</label>
+                    <input type="number" x-model.number="newCard.target_warmup_count" min="0" max="20"
+                           class="w-20 px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                    <span class="text-xs text-muted">次（建议 3-5 次）</span>
+                </div>
+                <button @click="addCard()" :disabled="addingCard"
+                        class="w-full bg-secondary hover:bg-secondary/90 text-white font-semibold py-3 rounded-lg shadow-token-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-sm" x-show="!addingCard">add</span>
+                    <span x-text="addingCard ? '入池中...' : '添加'"></span>
+                </button>
+                <p class="text-xs text-muted">入池时会调卡商 API 拿卡，可能耗时数秒。0 = 不预热直接可用（不推荐）</p>
+            </div>
+        </div>
+
+        {# Right: PayPal Synthetic Card (Amber/Warning) #}
+        <div class="bg-white rounded-xl shadow-token-sm border-l-4 border-warning border border-border p-6 hover:shadow-token-md transition-all">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 rounded-lg bg-warning/10 flex items-center justify-center text-warning">
+                    <span class="material-symbols-outlined">auto_fix_high</span>
+                </div>
+                <h3 class="text-lg font-semibold text-body">PayPal 友好合成卡</h3>
+            </div>
+            <div class="mb-4 bg-warning/5 border-l-2 border-warning p-3 flex gap-3">
+                <span class="material-symbols-outlined text-warning text-sm mt-0.5">warning</span>
+                <p class="text-xs text-warning/90 leading-relaxed font-medium">
+                    合成卡仅通过 PayPal <strong>Luhn + BIN 预校验</strong>，<strong>不能真实扣款</strong>。用于绑 0 元试用（首月不扣钱，月底自动取消订阅）
+                </p>
+            </div>
+            <div class="space-y-4">
+                <div class="relative group">
+                    <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider group-focus-within:text-primary transition-colors">随机 BIN 选择</label>
+                    <select x-model="synthBinPrefix"
+                            class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all appearance-none bg-white">
+                        <option value="">随机 BIN（4147 或 4100）</option>
+                        <option value="4147">4147（Chase / Capital One）</option>
+                        <option value="4100">4100（Wells Fargo / Apple Card）</option>
+                    </select>
+                </div>
+                {# A3: 持卡人姓名注入（对齐 OpenAI 账户姓名时通过率更高） #}
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="relative group">
+                        <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider">FIRST NAME（可选）</label>
+                        <input x-model="synthFirstName" type="text" placeholder="留空 = 随机"
+                               class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all" />
+                    </div>
+                    <div class="relative group">
+                        <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider">LAST NAME（可选）</label>
+                        <input x-model="synthLastName" type="text" placeholder="留空 = 随机"
+                               class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all" />
+                    </div>
+                </div>
+                <p class="text-[11px] text-muted -mt-2 leading-relaxed">
+                    💡 填注入姓名时务必跟 OpenAI 账户姓名一致；两个字段须**同时**填或同时留空
+                </p>
+                <div class="grid grid-cols-2 gap-4">
+                    <button @click="generateSyntheticVisa()" :disabled="generatingSynth"
+                            class="bg-white border border-warning/30 text-warning font-semibold py-3 rounded-lg hover:bg-warning/5 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50">
+                        <span class="material-symbols-outlined text-sm" x-show="!generatingSynth">magic_button</span>
+                        <span x-text="generatingSynth ? '生成中...' : '生成一张'"></span>
+                    </button>
+                    <button @click="generateSyntheticVisa(true)" :disabled="generatingSynth"
+                            class="bg-warning hover:bg-warning/90 text-white font-semibold py-3 rounded-lg shadow-token-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50">
+                        <span class="material-symbols-outlined text-sm">filter_5</span>
+                        一次 5 张
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ─── Synthetic Card Results 生成结果 ─── #}
+    <div x-show="synthCards.length > 0" x-cloak class="bg-white rounded-xl shadow-token-sm border border-warning/30 p-6">
+        <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-warning">style</span>
+                <h4 class="text-base font-semibold text-body">已生成合成卡套件</h4>
+                <span class="bg-warning/10 text-warning text-[10px] font-bold px-1.5 py-0.5 rounded-full" x-text="synthCards.length"></span>
+            </div>
+            <button @click="synthCards = []" class="text-xs text-muted hover:text-body transition-colors flex items-center gap-1">
+                <span class="material-symbols-outlined text-sm">clear_all</span>
                 清空结果
             </button>
         </div>
-    </div>
-
-    <!-- 卡商过滤 tab -->
-    <div class="flex gap-1 mb-4 border-b">
-        <template x-for="tab in providerTabs" :key="tab.value">
-            <button @click="providerFilter = tab.value; fetchCards()"
-                    :class="providerFilter === tab.value
-                        ? 'border-blue-600 text-blue-600 font-medium'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'"
-                    class="px-4 py-2 text-sm border-b-2 -mb-px transition">
-                <span x-text="tab.label"></span>
-                <span x-show="tab.value !== 'all' && providerCounts[tab.value]"
-                      class="ml-1 text-xs bg-gray-100 px-1.5 rounded-full"
-                      x-text="providerCounts[tab.value]"></span>
-            </button>
-        </template>
-    </div>
-
-    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
-                <tr>
-                    <th class="px-4 py-3 text-left">卡密 (cdk)</th>
-                    <th class="px-4 py-3 text-left">卡商</th>
-                    <th class="px-4 py-3 text-left">卡号</th>
-                    <th class="px-4 py-3 text-left">BIN</th>
-                    <th class="px-4 py-3 text-left">有效期</th>
-                    <th class="px-4 py-3 text-left">使用</th>
-                    <th class="px-4 py-3 text-left">热卡进度</th>
-                    <th class="px-4 py-3 text-left">热卡状态</th>
-                    <th class="px-4 py-3 text-left">操作</th>
-                </tr>
-            </thead>
-            <tbody class="divide-y">
-                <template x-for="card in cards" :key="card.card_key">
-                    <tr :class="card.is_invalidated ? 'bg-red-50' : (card.is_ready ? 'bg-green-50' : 'hover:bg-gray-50')">
-                        <td class="px-4 py-3 font-mono text-xs" x-text="card.card_key.substring(0, 12) + '...'"></td>
-                        <td class="px-4 py-3 text-xs" x-text="card.card_provider"></td>
-                        <td class="px-4 py-3 font-mono text-xs">
-                            <span x-text="card.bin_prefix + '****' + card.last4"></span>
-                        </td>
-                        <td class="px-4 py-3 text-xs" x-text="card.bin_country || '-'"></td>
-                        <td class="px-4 py-3 font-mono text-xs" x-text="card.expiry_month + '/' + card.expiry_year"></td>
-                        <td class="px-4 py-3 text-xs" x-text="card.use_count + '次'"></td>
-                        <td class="px-4 py-3 text-xs">
-                            <span class="font-mono" x-text="card.warmup_count + '/' + card.target_warmup_count"></span>
-                            <template x-if="card.is_ready && !card.is_invalidated">
-                                <span class="ml-1 text-[10px] text-green-700">✓ ready</span>
-                            </template>
-                        </td>
-                        <td class="px-4 py-3 text-xs">
-                            <span class="px-2 py-0.5 rounded-full text-[11px]"
-                                  :class="{
-                                      'bg-gray-100 text-gray-600': card.last_warmup_status === 'pending',
-                                      'bg-blue-100 text-blue-700 animate-pulse': card.last_warmup_status === 'running',
-                                      'bg-green-100 text-green-700': card.last_warmup_status === 'success',
-                                      'bg-red-100 text-red-700': card.last_warmup_status === 'failed',
-                                  }"
-                                  x-text="card.last_warmup_status"
-                                  :title="card.last_warmup_reason || ''"></span>
-                            <template x-if="card.last_warmup_status === 'failed' && card.last_warmup_reason">
-                                <div class="text-[10px] text-red-600 mt-1 max-w-[180px] truncate"
-                                     :title="card.last_warmup_reason"
-                                     x-text="card.last_warmup_reason"></div>
-                            </template>
-                            <template x-if="card.is_invalidated">
-                                <div class="text-[10px] text-red-600 mt-1">已作废</div>
-                            </template>
-                        </td>
-                        <td class="px-4 py-3 whitespace-nowrap">
-                            <button x-show="!card.is_invalidated && card.last_warmup_status !== 'running'"
-                                    @click="warmupCard(card)"
-                                    class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded">
-                                热这张卡
+        <div class="space-y-3">
+            <template x-for="(c, i) in synthCards" :key="c.card_number">
+                <div class="p-4 bg-warning/5 border border-warning/20 rounded-lg">
+                    <div class="flex items-center gap-2 mb-3 flex-wrap">
+                        <span class="text-xs font-bold text-warning bg-warning/10 px-2 py-0.5 rounded-full">#<span x-text="i + 1"></span></span>
+                        <span class="text-xs text-muted" x-text="`${c.full_name} · ${c.address_city}, ${c.address_state}`"></span>
+                        <div class="ml-auto flex flex-wrap gap-1">
+                            <button @click="copySynthCard(c, 'card')" class="px-2 py-1 text-[11px] bg-secondary/10 text-secondary border border-secondary/20 rounded hover:bg-secondary/20 transition-colors flex items-center gap-1" title="卡号+过期+CVV">
+                                <span class="material-symbols-outlined text-[14px]">credit_card</span>卡
                             </button>
-                            <button x-show="!card.is_invalidated"
-                                    @click="invalidateCard(card)"
-                                    class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded">作废</button>
+                            <button @click="copySynthCard(c, 'name')" class="px-2 py-1 text-[11px] bg-purple-50 text-purple-700 border border-purple-200 rounded hover:bg-purple-100 transition-colors flex items-center gap-1" title="姓+名">
+                                <span class="material-symbols-outlined text-[14px]">person</span>姓名
+                            </button>
+                            <button @click="copySynthCard(c, 'address')" class="px-2 py-1 text-[11px] bg-success/10 text-success border border-success/20 rounded hover:bg-success/20 transition-colors flex items-center gap-1" title="街道+城市+州+邮编">
+                                <span class="material-symbols-outlined text-[14px]">home</span>地址
+                            </button>
+                            <button @click="copySynthCard(c, 'phone')" class="px-2 py-1 text-[11px] bg-warning/10 text-warning border border-warning/20 rounded hover:bg-warning/20 transition-colors flex items-center gap-1">
+                                <span class="material-symbols-outlined text-[14px]">phone</span>电话
+                            </button>
+                            <button @click="copySynthCard(c, 'all')" class="px-2.5 py-1 text-[11px] bg-warning text-white rounded hover:bg-warning/90 transition-colors flex items-center gap-1 font-semibold">
+                                <span class="material-symbols-outlined text-[14px]">content_copy</span>全套
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 mono-text text-xs">
+                        <div><span class="text-muted">卡号：</span><span x-text="c.card_number" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">姓名：</span><span x-text="c.full_name" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">过期：</span><span x-text="c.expiry_display" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">街道：</span><span x-text="c.address_line1" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">CVV：</span><span x-text="c.cvv" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">城市：</span><span x-text="c.address_city + ', ' + c.address_state + ' ' + c.address_zip" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">BIN：</span><span x-text="c.bin_prefix" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">电话：</span><span x-text="c.phone" class="font-medium text-body"></span></div>
+                    </div>
+                    {# A2: 绑卡反馈按钮（数据闭环）#}
+                    <div x-show="c.audit_id" class="mt-3 pt-3 border-t border-warning/20 flex items-center gap-2 flex-wrap">
+                        <span class="text-[11px] text-muted">PayPal 绑卡结果：</span>
+                        <template x-if="c.feedback_status === 'success'">
+                            <span class="px-2 py-0.5 text-[11px] bg-success/10 text-success border border-success/20 rounded font-semibold flex items-center gap-1">
+                                <span class="material-symbols-outlined text-[14px]">check_circle</span>已通过
+                            </span>
+                        </template>
+                        <template x-if="c.feedback_status === 'declined'">
+                            <span class="px-2 py-0.5 text-[11px] bg-danger/10 text-danger border border-danger/20 rounded font-semibold flex items-center gap-1">
+                                <span class="material-symbols-outlined text-[14px]">cancel</span>已拒绝<span x-show="c.decline_code" x-text="`: ${c.decline_code}`"></span>
+                            </span>
+                        </template>
+                        <template x-if="!c.feedback_status">
+                            <div class="flex items-center gap-1.5">
+                                <button @click="markSynthFeedback(c, 'success')" class="px-2 py-1 text-[11px] bg-success/10 text-success border border-success/20 rounded hover:bg-success/20 transition-colors flex items-center gap-1">
+                                    <span class="material-symbols-outlined text-[14px]">thumb_up</span>通过
+                                </button>
+                                <button @click="markSynthFeedback(c, 'declined')" class="px-2 py-1 text-[11px] bg-danger/10 text-danger border border-danger/20 rounded hover:bg-danger/20 transition-colors flex items-center gap-1">
+                                    <span class="material-symbols-outlined text-[14px]">thumb_down</span>失败
+                                </button>
+                                <span class="text-[10px] text-muted ml-1">反馈帮助调参</span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    {# ─── Provider Filter Tabs ─── #}
+    <div class="border-b border-border flex items-center justify-between">
+        <div class="flex gap-8">
+            <template x-for="tab in providerTabs" :key="tab.value">
+                <button @click="providerFilter = tab.value; fetchCards()"
+                        :class="providerFilter === tab.value
+                            ? 'border-primary text-primary font-semibold'
+                            : 'border-transparent text-muted hover:text-primary font-medium'"
+                        class="pb-3 border-b-2 text-sm transition-colors px-1 flex items-center gap-2">
+                    <span x-text="tab.label"></span>
+                    <span x-show="tab.value !== 'all' && providerCounts[tab.value]"
+                          class="bg-subtle text-muted text-[10px] px-1.5 py-0.5 rounded-full border border-border tabular-nums"
+                          x-text="providerCounts[tab.value]"></span>
+                </button>
+            </template>
+        </div>
+        <div class="flex items-center gap-2 mb-2">
+            {{ ui.grid_search(placeholder='搜索 CDK / 卡号尾4位 / BIN...') }}
+            <button class="p-1.5 text-muted hover:bg-subtle rounded transition-colors" title="密度">
+                <span class="material-symbols-outlined text-xl">density_medium</span>
+            </button>
+            {{ ui.grid_columns_settings() }}
+        </div>
+    </div>
+
+    {# ─── Data Grid ─── #}
+    <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-subtle">
+                    <tr class="border-b border-border">
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">
+                            <div class="flex items-center gap-1.5">
+                                卡密 (CDK)
+                                <span class="material-symbols-outlined text-xs">unfold_more</span>
+                            </div>
+                        </th>
+                        <th x-show="visibleColumns.includes('provider')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 PROVIDER</th>
+                        <th x-show="visibleColumns.includes('card_number')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡号 CARD NUMBER</th>
+                        <th x-show="visibleColumns.includes('bin')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">BIN</th>
+                        <th x-show="visibleColumns.includes('expiry')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">有效期 EXPIRY</th>
+                        <th x-show="visibleColumns.includes('usage')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">使用 USAGE</th>
+                        <th x-show="visibleColumns.includes('warmup')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">热卡进度</th>
+                        <th x-show="visibleColumns.includes('status')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">状态</th>
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                    <template x-for="card in filteredCards" :key="card.card_key">
+                        <tr :class="card.is_invalidated ? 'bg-danger/5' : ''"
+                            class="hover:bg-primary/[0.04] transition-colors group">
+                            <td class="px-6 py-4">
+                                <span class="mono-text text-sm font-medium text-body" :title="card.card_key" x-text="card.card_key.substring(0, 12) + '...'"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('provider')" class="px-6 py-4">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-6 h-6 rounded-full bg-secondary/10 flex items-center justify-center">
+                                        <span class="material-symbols-outlined text-[14px] text-secondary">corporate_fare</span>
+                                    </div>
+                                    <span class="text-sm font-medium text-body" x-text="card.card_provider"></span>
+                                </div>
+                            </td>
+                            <td x-show="visibleColumns.includes('card_number')" class="px-6 py-4">
+                                <span class="mono-text text-sm text-body" x-text="card.bin_prefix + '****' + card.last4"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('bin')" class="px-6 py-4">
+                                {{ country_flag_card('card.bin_country') }}
+                            </td>
+                            <td x-show="visibleColumns.includes('expiry')" class="px-6 py-4">
+                                <span class="text-sm mono-text text-body" x-text="card.expiry_month + '/' + card.expiry_year"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('usage')" class="px-6 py-4">
+                                <span class="text-sm text-muted tabular-nums" x-text="card.use_count + ' 次'"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('warmup')" class="px-6 py-4">
+                                <div class="w-32">
+                                    <div class="flex justify-between items-center mb-1">
+                                        <span class="text-[10px] font-bold text-muted uppercase tabular-nums" x-text="card.warmup_count + '次'"></span>
+                                        <span class="text-[10px] font-bold text-primary tabular-nums" x-text="card.warmup_count + ' / ' + card.target_warmup_count"></span>
+                                    </div>
+                                    <div class="w-full h-1.5 bg-subtle rounded-full overflow-hidden">
+                                        <div class="bg-primary h-full rounded-full transition-all"
+                                             :style="`width: ${Math.min(100, (card.warmup_count / Math.max(1, card.target_warmup_count)) * 100)}%`"></div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td x-show="visibleColumns.includes('status')" class="px-6 py-4">
+                                <span :class="warmupBadgeClass(card)"
+                                      class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-label font-bold uppercase tracking-wider border"
+                                      :title="card.last_warmup_reason || ''">
+                                    <span class="w-1.5 h-1.5 rounded-full"
+                                          :class="warmupDotClass(card)"></span>
+                                    <span x-text="card.is_invalidated ? '已作废' : (card.is_ready ? 'READY' : (card.last_warmup_status || 'pending'))"></span>
+                                </span>
+                                <template x-if="card.last_warmup_status === 'failed' && card.last_warmup_reason">
+                                    <div class="text-[10px] text-danger mt-1 max-w-[180px] truncate" :title="card.last_warmup_reason" x-text="card.last_warmup_reason"></div>
+                                </template>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <div class="flex items-center justify-end gap-1">
+                                    <button x-show="!card.is_invalidated && card.last_warmup_status !== 'running'"
+                                            @click="warmupCard(card)"
+                                            class="p-1.5 text-primary hover:bg-primary/10 rounded transition-colors" title="热这张卡">
+                                        <span class="material-symbols-outlined text-base">local_fire_department</span>
+                                    </button>
+                                    <button x-show="!card.is_invalidated"
+                                            @click="invalidateCard(card)"
+                                            class="p-1.5 text-danger hover:bg-danger/10 rounded transition-colors" title="作废">
+                                        <span class="material-symbols-outlined text-base">block</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="cards.length === 0">
+                        <td colspan="9" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">credit_card_off</span>
+                                <span class="text-sm">卡池为空，请用上面的表单添加卡</span>
+                            </div>
                         </td>
                     </tr>
-                </template>
-                <tr x-show="cards.length === 0">
-                    <td colspan="9" class="px-4 py-8 text-center text-gray-400">卡池为空，请用上面的表单添加卡</td>
-                </tr>
-            </tbody>
-        </table>
+                </tbody>
+            </table>
+        </div>
+
+        {# Pagination footer #}
+        <div class="px-6 py-4 bg-subtle/30 border-t border-border flex justify-between items-center text-xs font-medium text-muted">
+            <div>Showing <span class="tabular-nums" x-text="cards.length"></span> rows · 25 per page</div>
+            <div class="flex items-center gap-2">
+                <button class="p-1 hover:bg-border rounded disabled:opacity-30" disabled>‹ Prev</button>
+                <button class="w-6 h-6 flex items-center justify-center bg-primary text-white rounded shadow-token-sm">1</button>
+                <button class="p-1 hover:bg-border rounded disabled:opacity-30">Next ›</button>
+            </div>
+        </div>
     </div>
 
-    <div class="mt-4 text-xs text-gray-400 space-y-1">
-        <div>· <span class="font-medium">绿色行</span> = warmup_count ≥ target，已是成熟卡，可在任务页"从卡池选"</div>
-        <div>· <span class="font-medium">red 行</span> = 已作废；X988 卡密作废后**无法**重新激活</div>
-        <div>· 热卡是异步任务（点按钮 → running 状态 → 5s 后看结果）。每次成功 warmup_count +1，达到 target 就 ready</div>
+    {# ─── Legend ─── #}
+    <div class="flex flex-wrap gap-6 items-center px-2">
+        <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-success"></div>
+            <span class="text-xs font-medium text-muted">已就绪 (READY)</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-danger"></div>
+            <span class="text-xs font-medium text-muted">已作废 (INVALIDATED)</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-secondary"></div>
+            <span class="text-xs font-medium text-muted">异步任务队列 (ASYNC QUEUE)</span>
+        </div>
     </div>
 </div>
 
 <script>
 function cardsData() {
+    const _DEFAULT_COLS = ['provider', 'card_number', 'bin', 'expiry', 'usage', 'warmup', 'status'];
     return {
         cards: [],
         includeInvalidated: false,
@@ -219,13 +375,69 @@ function cardsData() {
             { value: 'efuncard', label: 'Efuncard' },
             { value: 'nodecard', label: 'NodeCard' },
         ],
+
+        // 搜索 + 列设置
+        searchTerm: '',
+        searchExpanded: false,
+        visibleColumns: (() => {
+            try { const raw = localStorage.getItem('cards.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT_COLS; }
+            catch (_) { return _DEFAULT_COLS; }
+        })(),
+        columnOptions: [
+            { key: 'provider',    label: '卡商' },
+            { key: 'card_number', label: '卡号' },
+            { key: 'bin',         label: 'BIN（国家）' },
+            { key: 'expiry',      label: '有效期' },
+            { key: 'usage',       label: '使用次数' },
+            { key: 'warmup',      label: '热卡进度' },
+            { key: 'status',      label: '状态' },
+        ],
+        initColumnWatcher() {
+            this.$watch('visibleColumns', (cols) => {
+                try { localStorage.setItem('cards.visibleColumns', JSON.stringify(cols)); } catch (_) {}
+            });
+        },
+        get filteredCards() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            if (!q) return this.cards;
+            return this.cards.filter(c => {
+                const haystack = `${c.card_key || ''} ${c.last4 || ''} ${c.bin_prefix || ''} ${c.card_provider || ''}`.toLowerCase();
+                return haystack.includes(q);
+            });
+        },
         addingCard: false,
         newCard: { card_key: '', card_provider: 'efuncard', target_warmup_count: 5 },
         _pollTimer: null,
         // 合成卡生成器（P0 移植自 d4cc975 工程）
         synthBinPrefix: '',           // '' = 随机 / '4147' / '4100'
+        synthFirstName: '',           // A3: 持卡人 First name 注入（对齐账户名）
+        synthLastName: '',            // A3: 持卡人 Last name 注入
         generatingSynth: false,
         synthCards: [],               // 已生成卡列表（含 card_number/expiry_display/cvv 等）
+
+        warmupBadgeClass(card) {
+            if (card.is_invalidated) return 'bg-danger/10 text-danger border-danger/20';
+            if (card.is_ready)       return 'bg-success/10 text-success border-success/20';
+            const map = {
+                pending: 'bg-subtle text-muted border-border',
+                running: 'bg-secondary/10 text-secondary border-secondary/20 animate-pulse',
+                success: 'bg-success/10 text-success border-success/20',
+                failed:  'bg-danger/10 text-danger border-danger/20',
+            };
+            return map[card.last_warmup_status] || map.pending;
+        },
+
+        warmupDotClass(card) {
+            if (card.is_invalidated) return 'bg-danger';
+            if (card.is_ready)       return 'bg-success';
+            const map = {
+                pending: 'bg-muted',
+                running: 'bg-secondary pulse-dot',
+                success: 'bg-success',
+                failed:  'bg-danger',
+            };
+            return map[card.last_warmup_status] || map.pending;
+        },
 
         async fetchCards() {
             const params = new URLSearchParams();
@@ -276,19 +488,33 @@ function cardsData() {
 
         // P0 合成卡：调 POST /api/cards/synthetic-visa 生成 PayPal 友好 Luhn 卡
         async generateSyntheticVisa(batch5 = false) {
+            // A3: 姓名注入校验 —— 必须同时填或同时空，避免半填导致 first/last 不同源
+            const firstClean = (this.synthFirstName || '').trim();
+            const lastClean = (this.synthLastName || '').trim();
+            if ((firstClean && !lastClean) || (!firstClean && lastClean)) {
+                showToast('First/Last name 须同时填写或同时留空', 'error');
+                return;
+            }
             this.generatingSynth = true;
             try {
                 const count = batch5 ? 5 : 1;
                 const newCards = [];
+                const payload = {
+                    bin_prefix: this.synthBinPrefix || null,
+                    seed: null,  // 真随机；运营要确定性卡可用 API 直接传 seed
+                };
+                if (firstClean && lastClean) {
+                    payload.first_name = firstClean;
+                    payload.last_name = lastClean;
+                }
                 for (let i = 0; i < count; i++) {
                     const result = await fetchJson('/api/cards/synthetic-visa', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            bin_prefix: this.synthBinPrefix || null,
-                            seed: null,  // 真随机；运营要确定性卡可用 API 直接传 seed
-                        }),
+                        body: JSON.stringify(payload),
                     });
+                    // 初始化 feedback_status 为空字符串便于 Alpine x-if 判定
+                    result.feedback_status = result.feedback_status || '';
                     newCards.push(result);
                 }
                 // 新卡插在结果列表前面（最近生成的在上）
@@ -298,6 +524,34 @@ function cardsData() {
                 showToast(exc.message || '合成卡生成失败', 'error');
             } finally {
                 this.generatingSynth = false;
+            }
+        },
+
+        // A2: 反馈绑卡结果到 /api/cards/synthetic-visa/{audit_id}/feedback
+        async markSynthFeedback(card, status) {
+            if (!card.audit_id) {
+                showToast('该卡缺 audit_id，无法反馈', 'error');
+                return;
+            }
+            let declineCode = '';
+            if (status === 'declined') {
+                declineCode = window.prompt('（可选）拒绝码，如 do_not_honor / card_declined / fraudulent，直接回车跳过：') || '';
+            }
+            try {
+                await fetchJson(`/api/cards/synthetic-visa/${card.audit_id}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        status,
+                        decline_code: declineCode.trim() || null,
+                    }),
+                });
+                // 就地更新该卡的反馈状态（Alpine 反应式刷新按钮显示）
+                card.feedback_status = status;
+                if (declineCode.trim()) card.decline_code = declineCode.trim();
+                showToast(status === 'success' ? '已记录通过反馈' : '已记录失败反馈', 'success');
+            } catch (exc) {
+                showToast(exc.message || '反馈失败', 'error');
             }
         },
 

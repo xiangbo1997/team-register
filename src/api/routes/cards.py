@@ -27,7 +27,8 @@ from pydantic import BaseModel, Field
 
 from src.api.security import require_csrf, require_role
 from src.config import load_config
-from src.db.models import CardActivation, User
+from src.db.engine import get_session
+from src.db.models import CardActivation, SyntheticCardAudit, User
 from src.services.card_activation_service import (
     WARMUP_CARD_CACHE_MAX_AGE_DAYS,
     _ensure_aware,
@@ -226,6 +227,44 @@ class SyntheticVisaRequest(BaseModel):
         default=None,
         description="可选确定性 seed：同 seed 永远生成同一张卡（用于审计追踪 / 同账号重试）",
     )
+    # A3：可选注入持卡人姓名（对齐 OpenAI 账户姓名时通过率更高）
+    first_name: Optional[str] = Field(
+        default=None,
+        min_length=1, max_length=60,
+        description="可选：覆写持卡人 First name（用于对齐 OpenAI 账户姓名）",
+    )
+    last_name: Optional[str] = Field(
+        default=None,
+        min_length=1, max_length=60,
+        description="可选：覆写持卡人 Last name（用于对齐 OpenAI 账户姓名）",
+    )
+
+
+class SyntheticVisaFeedbackRequest(BaseModel):
+    """合成卡绑卡反馈：A2 数据闭环用。"""
+    status: str = Field(..., description="success / declined")
+    decline_code: Optional[str] = Field(default=None, max_length=60,
+        description="declined 时的拒绝码，例如 do_not_honor / card_declined")
+    note: Optional[str] = Field(default=None, max_length=200,
+        description="可选备注（PayPal 错误文案 / 触发场景等）")
+
+
+_NAME_SAFE_RE = re.compile(r"^[A-Za-z][A-Za-z\-' ]{0,59}$")
+
+
+def _validate_name(value: Optional[str], field: str) -> Optional[str]:
+    """姓名白名单校验：只允许英文字母 / 连字符 / 撇号 / 空格，首位必须是字母。"""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if not _NAME_SAFE_RE.match(cleaned):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} 只允许英文字母 / 连字符 / 撇号 / 空格，且首位是字母",
+        )
+    return cleaned
 
 
 @router.post("/synthetic-visa")
@@ -238,8 +277,8 @@ def generate_synthetic_visa_card(
 
     用于 PayPal guest checkout 绑卡场景（一次返回所有 PayPal 表单需要的字段）：
       - 卡：4147/4100 BIN + Luhn 合法，通过 PayPal 预校验
-      - 持卡人姓名：跟主注册流姓名池一致（First name + Last name + Full name）
-      - 账单地址：精选 24 个美国中产社区真实地址（ZIP+state+city 通过 USPS）
+      - 持卡人姓名：默认走主注册流姓名池；可通过 first_name/last_name 注入对齐 OpenAI 账户
+      - 账单地址：精选 24 个美国中产社区真实地址（ZIP+state+city 通过 USPS）+ 24h 冷却（A1）
       - 电话：区号跟 state 一致，避坑 555 测试号
 
     所有字段保证内部一致：
@@ -249,6 +288,8 @@ def generate_synthetic_visa_card(
 
     ⚠️ 注意：合成卡**不能真实扣款**，仅用于绑定 0 元试用场景。
     """
+    from sqlmodel import select
+
     from src.fintech.synthetic_visa import generate_synthetic_visa_kit
 
     bin_tuple = None
@@ -261,15 +302,122 @@ def generate_synthetic_visa_card(
             )
         bin_tuple = tuple(int(c) for c in clean)
 
-    kit = generate_synthetic_visa_kit(bin_prefix=bin_tuple, seed=body.seed)
+    override_first = _validate_name(body.first_name, "first_name")
+    override_last = _validate_name(body.last_name, "last_name")
+
+    kit = generate_synthetic_visa_kit(
+        bin_prefix=bin_tuple,
+        seed=body.seed,
+        override_first_name=override_first,
+        override_last_name=override_last,
+    )
     payload = kit.to_form_payload()
+
+    # A2：落审计（不存完整卡号 / CVV）
+    audit_id = ""
+    try:
+        with get_session() as session:
+            audit = SyntheticCardAudit(
+                bin_prefix=kit.card.bin_prefix,
+                last_four=kit.card.last_four,
+                address_state=kit.address_state,
+                address_zip=kit.address_zip,
+                first_name=kit.first_name,
+                last_name=kit.last_name,
+                feedback_status="pending",
+                created_by=user.username,
+            )
+            session.add(audit)
+            session.commit()
+            session.refresh(audit)
+            audit_id = audit.id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("synthetic_visa_kit 审计落表失败（不阻塞生成）: %s", exc)
+
     logger.info(
-        "synthetic_visa_kit 已生成: bin=%s last4=%s name=%s state=%s requester=%s",
+        "synthetic_visa_kit 已生成: bin=%s last4=%s name=%s state=%s audit=%s requester=%s",
         kit.card.bin_prefix, kit.card.last_four, kit.full_name,
-        kit.address_state, user.username,
+        kit.address_state, audit_id or "skip", user.username,
     )
     payload["note"] = "合成卡仅过 PayPal 预校验，不能真实扣款；用于 0 元试用场景"
+    payload["audit_id"] = audit_id
     return payload
+
+
+@router.post("/synthetic-visa/{audit_id}/feedback")
+def feedback_synthetic_visa(
+    audit_id: str,
+    body: SyntheticVisaFeedbackRequest,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """回写合成卡绑卡结果（A2 数据闭环）。
+
+    前端用户在 /cards 面板点 "通过 / 失败" 按钮触发，
+    或运维直接 curl 反馈。
+    """
+    status = (body.status or "").strip().lower()
+    if status not in ("success", "declined"):
+        raise HTTPException(status_code=400, detail="status 必须是 'success' 或 'declined'")
+
+    with get_session() as session:
+        audit = session.get(SyntheticCardAudit, audit_id)
+        if audit is None:
+            raise HTTPException(status_code=404, detail="审计记录不存在或已被清理")
+        if audit.feedback_status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail=f"该审计记录已反馈 ({audit.feedback_status})，不允许重复回写",
+            )
+        audit.feedback_status = status
+        audit.decline_code = (body.decline_code or "").strip()[:60] or None
+        audit.feedback_note = (body.note or "").strip()[:200] or None
+        audit.feedback_at = datetime.now(timezone.utc)
+        session.add(audit)
+        session.commit()
+        session.refresh(audit)
+
+    return {
+        "ok": True,
+        "audit_id": audit.id,
+        "status": audit.feedback_status,
+        "feedback_at": audit.feedback_at.isoformat() if audit.feedback_at else "",
+    }
+
+
+@router.get("/synthetic-visa/stats")
+def stats_synthetic_visa(
+    user: User = Depends(require_role("admin")),
+):
+    """合成卡审计统计：按 BIN / State 聚合通过率（运维 / 调参用）。"""
+    from sqlmodel import select
+
+    with get_session() as session:
+        rows = session.exec(select(SyntheticCardAudit)).all()
+
+    total = len(rows)
+    by_bin: dict[str, dict[str, int]] = {}
+    by_state: dict[str, dict[str, int]] = {}
+    pending = sum(1 for r in rows if r.feedback_status == "pending")
+    success = sum(1 for r in rows if r.feedback_status == "success")
+    declined = sum(1 for r in rows if r.feedback_status == "declined")
+
+    for r in rows:
+        b = by_bin.setdefault(r.bin_prefix or "?", {"total": 0, "success": 0, "declined": 0, "pending": 0})
+        b["total"] += 1
+        b[r.feedback_status] = b.get(r.feedback_status, 0) + 1
+        s = by_state.setdefault(r.address_state or "?", {"total": 0, "success": 0, "declined": 0, "pending": 0})
+        s["total"] += 1
+        s[r.feedback_status] = s.get(r.feedback_status, 0) + 1
+
+    return {
+        "total": total,
+        "pending": pending,
+        "success": success,
+        "declined": declined,
+        "by_bin": by_bin,
+        "by_state": by_state,
+    }
 
 
 @router.get("/{card_key}")

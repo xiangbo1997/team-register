@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import SQLModel, Session, create_engine
@@ -89,6 +89,9 @@ def _run_schema_migrations(engine: Engine) -> None:
         # 注册时浏览器实际走的代理出口 IP + 国家（ipinfo.io 抓取，账号池列表展示）
         "ip_address": "ALTER TABLE runs ADD COLUMN ip_address VARCHAR(45) NOT NULL DEFAULT ''",
         "ip_country": "ALTER TABLE runs ADD COLUMN ip_country VARCHAR(8) NOT NULL DEFAULT ''",
+        # 手机号注册模式（feat/mode-phone-registration 2026-05-27 引入）
+        "phone_number": "ALTER TABLE runs ADD COLUMN phone_number VARCHAR(40) NOT NULL DEFAULT ''",
+        "sms_order_id": "ALTER TABLE runs ADD COLUMN sms_order_id VARCHAR(64) NOT NULL DEFAULT ''",
     }
     # mail_accounts.role 列（消除 Ambiguity #2）+ pro_warmup 号池调度字段
     mail_columns = _table_columns(engine, "mail_accounts")
@@ -125,6 +128,13 @@ def _run_schema_migrations(engine: Engine) -> None:
         "sort_order": "ALTER TABLE link_templates ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         # P6 暴露 checkout_ui_mode（2026-05-25）
         "checkout_ui_mode": "ALTER TABLE link_templates ADD COLUMN checkout_ui_mode VARCHAR(10) NULL",
+        # promo metadata 结构化字段（2026-05-29，由 promo_eligibility_service._extract_promo_fields 填写）
+        # 抽取自 last_eligibility_metadata 的 ChatGPT /promotions/metadata 响应
+        "promo_percent_off": "ALTER TABLE link_templates ADD COLUMN promo_percent_off INTEGER NULL",
+        "promo_duration_months": "ALTER TABLE link_templates ADD COLUMN promo_duration_months INTEGER NULL",
+        "promo_expires_at": "ALTER TABLE link_templates ADD COLUMN promo_expires_at DATETIME NULL",
+        "promo_max_redemptions": "ALTER TABLE link_templates ADD COLUMN promo_max_redemptions INTEGER NULL",
+        "promo_applicable_plans": "ALTER TABLE link_templates ADD COLUMN promo_applicable_plans VARCHAR(120) NOT NULL DEFAULT ''",
     }
 
     with engine.begin() as conn:
@@ -161,6 +171,18 @@ def _table_columns(engine: Engine, table_name: str) -> set[str]:
     if table_name not in inspector.get_table_names():
         return set()
     return {str(item.get("name") or "") for item in inspector.get_columns(table_name)}
+
+
+_SECRET_PLACEHOLDER_HINTS = ("your-", "xxx", "placeholder", "todo", "changeme", "example")
+
+
+def _looks_like_secret(value: Any) -> bool:
+    """简单非空 + 非占位符校验，避免把 .env 模板里的占位串 seed 到 DB。"""
+    text = str(value or "").strip()
+    if len(text) < 6:
+        return False
+    lower = text.lower()
+    return not any(hint in lower for hint in _SECRET_PLACEHOLDER_HINTS)
 
 
 def _seed_runtime_defaults(engine: Engine) -> None:
@@ -243,6 +265,42 @@ def _seed_runtime_defaults(engine: Engine) -> None:
         *mail_defaults,
     ]
 
+    # SMS / CAPTCHA / LLM provider seed —— 仅当 .env 有真值时建立默认 active 实例，
+    # 占位值/空串/明显垃圾不入库，避免运维拿到 PROVIDER_NOT_CONFIGURED 误以为是 bug。
+    # 幂等：以 (type, name) 为键，已存在则跳过；运维改名/停用后启动不会再覆盖。
+    if _looks_like_secret(config.sms_api_key):
+        default_providers.append((
+            "sms",
+            str(config.default_sms_provider or "sms-default").strip() or "sms-default",
+            {
+                "api_key": config.sms_api_key,
+                "country": str(getattr(config, "sms_country", "") or "0").strip() or "0",
+            },
+        ))
+    if str(getattr(config, "captcha_solver_kind", "noop") or "noop").strip().lower() != "noop":
+        default_providers.append((
+            "captcha",
+            str(config.default_captcha_provider or "captcha-default").strip() or "captcha-default",
+            {
+                "kind": str(config.captcha_solver_kind or "noop").strip().lower(),
+                "user_token": str(getattr(config, "nocaptcha_user_token", "") or "").strip(),
+                "timeout_ms": int(getattr(config, "captcha_solver_timeout_ms", 30000) or 30000),
+                "budget_cap_usd": float(getattr(config, "captcha_solver_budget_cap_usd", 5.0) or 5.0),
+            },
+        ))
+    if _looks_like_secret(config.llm_api_key) and config.llm_base_url and config.llm_model:
+        default_providers.append((
+            "llm",
+            str(config.default_llm_provider or "llm-default").strip() or "llm-default",
+            {
+                "base_url": config.llm_base_url,
+                "api_key": config.llm_api_key,
+                "model": config.llm_model,
+                "timeout_ms": int(getattr(config, "llm_timeout_ms", 30000) or 30000),
+                "confidence_threshold": float(getattr(config, "llm_confidence_threshold", 0.6) or 0.6),
+            },
+        ))
+
     with Session(engine) as session:
         for provider_type, provider_name, payload in default_providers:
             existing = session.exec(
@@ -309,6 +367,36 @@ def _seed_runtime_defaults(engine: Engine) -> None:
     # P2 seed：把弹窗里硬编码的 4 个快捷预设迁到 DB（is_preset=true）
     # 运营加新预设零代码，刷新 UI 立即生效
     _seed_link_template_presets(engine)
+
+    # 注册方式 × 供应商组合 seed（feat/registration-profile 2026-05-27）：
+    # 把 default_*_provider 等散落字段折叠成 email-default / phone-default 两条预设
+    # 幂等：service 内部按 name 跳过已存在记录，运维改过的组合不被覆盖
+    _seed_registration_profiles()
+
+
+def _seed_registration_profiles() -> None:
+    """初始化 email-default / phone-default 两个默认注册组合。
+
+    幂等：service 内部按 name 跳过，已存在的组合不动；只有首次启动 / 全新库才创建。
+    与 _seed_runtime_defaults 的 ProviderConfig seed 串联：那边先建好默认
+    browser-default / card-default / mail-* 等记录，这边再 seed 引用它们。
+    """
+    # 延迟 import，避免循环依赖（service 依赖 db.engine.get_session）
+    from src.services.registration_profile_service import RegistrationProfileService
+
+    svc = RegistrationProfileService()
+    try:
+        result = svc.seed_from_appconfig()
+        if result["seeded"]:
+            logger.info("RegistrationProfile 已 seed: %s", result["seeded"])
+        if result["skipped_existing"]:
+            logger.debug(
+                "RegistrationProfile 已存在跳过: %s",
+                result["skipped_existing"],
+            )
+    except Exception as exc:
+        # seed 失败不阻塞应用启动；下次启动会重试
+        logger.warning("RegistrationProfile seed 失败（不阻塞启动）: %s", exc)
 
 
 def _seed_link_template_presets(engine: Engine) -> None:

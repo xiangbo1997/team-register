@@ -61,6 +61,19 @@ class Run(SQLModel, table=True):
     # 本 Run 内 Stripe decline 重试计数（decline_retry_service 写入）。
     # 用途：① 控制台/日志可视化；② BIN 健康度查询时按 Run 聚合 decline 次数。
     decline_attempts: int = Field(default=0)
+    # 手机号注册模式（registration_kind="phone"）专用：
+    # phone_number = 任务请求时用户填入或由 worker._execute_task_inner 通过
+    # SMSManager.get_number() 申领后回写的国际格式手机号（含国家码，如 +14155551212）。
+    # sms_order_id = SMS-Activate 订单号，runtime handler 用它 get_code 轮询 OTP。
+    # 非加密 —— 这两个字段需要参与「同号复用 / 跨任务统计」查询。
+    phone_number: str = Field(
+        default="",
+        sa_column=Column(String(40), nullable=False, server_default=""),
+    )
+    sms_order_id: str = Field(
+        default="",
+        sa_column=Column(String(64), nullable=False, server_default=""),
+    )
     # 注册时浏览器实际走的代理出口 IP（ChatGPT 服务端看到的 IP）。
     # 由 orchestrator preflight 调 ipinfo.io 抓取写入，失败留空；账号池列表展示用。
     # 非加密 —— IP 不是个人敏感信息，且后续聚合分析（同 IP 多号、IP 段位历史）需要明文。
@@ -375,6 +388,23 @@ class LinkTemplate(SQLModel, table=True):
     # 原始 metadata 响应（折扣金额/币种/时长等），便于 dashboard 展示
     last_eligibility_metadata: Optional[dict] = Field(default=None, sa_column=Column(JSON))
 
+    # ── 从 last_eligibility_metadata 抽取的结构化字段（P4 引入）────────
+    # 抽取由 promo_eligibility_service._extract_promo_fields() 完成；字段路径基于
+    # scripts/probe_promo_metadata.py 探测的真实 ChatGPT /promotions/metadata 响应。
+    # 这些字段让号池升级弹窗"快捷模板"下拉能显示折扣力度并排序，而不是只显示模板名。
+    # 全部 Optional：码未验证 / metadata API 缺失对应字段时为 None。
+    #
+    # 折扣百分比（0-100）。例：25 表示 25% off。索引便于按力度排序。
+    promo_percent_off: Optional[int] = Field(default=None, index=True)
+    # 折扣月数。例：12 = 12 个月内享折扣。
+    promo_duration_months: Optional[int] = Field(default=None)
+    # 促销过期时间（UTC）。可做"快过期告警"用。
+    promo_expires_at: Optional[datetime] = Field(default=None, index=True)
+    # 最大兑换次数（None 表示无上限或 metadata 未返回）。
+    promo_max_redemptions: Optional[int] = Field(default=None)
+    # 适用计划 CSV，如 "plus,team"。空串 = 适用全部或 metadata 未返回。
+    promo_applicable_plans: str = Field(default="", max_length=120)
+
 
 # Eligibility 状态常量（不入库，纯 Python 枚举字符串）
 # 使用字符串常量而非 Enum，便于 SQL 直接对比 + JSON 序列化
@@ -382,10 +412,11 @@ class EligibilityStatus:
     ELIGIBLE = "eligible"      # 当前账号 + 当前代理可直接用
     EXISTS = "exists"          # 码存在但地区不匹配（user_not_eligible）
     NOT_FOUND = "not_found"    # 码不存在（invalid_code）或 token 过期
+    REDEEMED = "redeemed"      # 码已被兑换过（code_already_redeemed）
     UNKNOWN = "unknown"        # API 返回了未识别的 reason_code
     ERROR = "error"            # 网络/解析异常
 
-    ALL = (ELIGIBLE, EXISTS, NOT_FOUND, UNKNOWN, ERROR)
+    ALL = (ELIGIBLE, EXISTS, NOT_FOUND, REDEEMED, UNKNOWN, ERROR)
 
 
 # ── Proxy ────────────────────────────────────────
@@ -416,3 +447,193 @@ class Proxy(SQLModel, table=True):
     notes: str = Field(default="", max_length=200)
     is_active: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=_utc_now)
+
+
+# ── ProxyProvider ────────────────────────────────
+#
+# 动态代理供应商：存"按需拉取 IP"的 API 端点配置（如 1024Proxy / IPRoyal）。
+# 与 Proxy（静态死 IP）正交：Proxy 一条 = 一个固定 host:port；ProxyProvider 一条
+# = 一个 API 套餐，运行时调 adapter 现拉一次性 IP（家庭住宅 IP 池）。
+#
+# 接入逻辑见：
+#   src/proxy_clients/adapters/base.py    ProviderAdapter ABC + 模板方法
+#   src/proxy_clients/adapters/registry.py  按 kind 分发
+#   src/proxy_clients/dynamic_pool.py     "每 N 条换 IP" 状态机
+#
+# 主要消费方：src/services/code_discovery_service.py (promo 探索任务)
+# 注册流程不读这张表（继续走 .env PROXY），与现有 fetch_proxy() 解耦。
+
+
+class ProxyProvider(SQLModel, table=True):
+    """动态代理供应商：存 API 端点配置 + 鉴权方式，运行时按需拉一次性 IP。"""
+
+    __tablename__ = "proxy_providers"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # 供应商标签（UI 下拉识别），如 "1024 美国住宅" / "IPRoyal 全球随机"
+    label: str = Field(
+        max_length=80,
+        sa_column=Column(String(80), nullable=False, unique=True, index=True),
+    )
+    # 适配器分发键：决定调 ProviderAdapter 子类。
+    # 本轮支持 "1024proxy" / "generic_http"；后续可扩 "iproyal" / "brightdata" 等。
+    kind: str = Field(
+        max_length=32,
+        sa_column=Column(String(32), nullable=False),
+    )
+    # URL 模板（加密）。占位符由 adapter 渲染：{country} {num} {format} {session}
+    # 1024 示例：
+    #   https://white.1024proxy.com/white/api?region={country}&num={num}&time=10&format=1&type=txt&session={session}
+    api_url_template: str = Field(
+        default="",
+        sa_column=Column(EncryptedString(512), nullable=False, server_default=""),
+    )
+    # 鉴权方式：决定 credentials 字段结构与 build_request_kwargs 行为。
+    #   "ip_whitelist" → credentials={"whitelisted_ip": "47.251.25.143"}（仅展示，不发送）
+    #   "api_key"      → credentials={"key": "xxx", "header_name": "X-API-Key"}
+    #   "basic_auth"   → credentials={"username": "u", "password": "p"}
+    #   "none"         → credentials={}
+    auth_kind: str = Field(
+        default="none",
+        sa_column=Column(String(20), nullable=False, server_default="none"),
+    )
+    # 凭据 JSON（加密）。结构按 auth_kind 决定；UI 层负责脱敏返回。
+    credentials: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    # 响应格式：决定 parse_proxy_response 的解析路径。
+    #   "txt_line"             → 每行 host:port
+    #   "json_array_host_port" → [{"host":..., "port":...}, ...]
+    response_format: str = Field(
+        default="txt_line",
+        sa_column=Column(String(32), nullable=False, server_default="txt_line"),
+    )
+    # 国家码映射：项目 ISO alpha-2（GB/US）→ 供应商专属（UK/US）。
+    # 空 dict 表示直接透传；例 1024：{"GB": "UK", "Default": "Rand"}
+    country_map: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    # 轮换阈值：每扫 N 条 promo 换一次 IP（DynamicProxyPool 用）。50 是本计划拍板默认。
+    rotation_per_n_requests: int = Field(
+        default=50,
+        sa_column=Column(Integer, nullable=False, server_default="50"),
+    )
+    # Sticky 窗口（秒）：供应商保持同 IP 的时长；用于 UI 提示和未来 sticky 检测。
+    # 1024 推荐 600（10 分钟）。0 表示供应商每次请求都返回新 IP（无需 session 占位符）。
+    sticky_seconds: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    # UI 默认值：建任务时该供应商默认拉哪个国家的 IP
+    default_country: str = Field(default="Rand", max_length=8)
+    notes: str = Field(default="", max_length=200)
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=_utc_now)
+
+
+# ── RegistrationProfile ──────────────────────────
+#
+# 注册方式 × 供应商组合：把散落在 AppConfig 的 12 个选择器字段
+# （default_browser_provider / default_card_provider / default_mail_provider /
+#  card_provider / email_provider_name / outlook_enabled / cfworker_enabled / ...）
+# 收敛成"按注册方式（email/phone）预设一套 provider 组合"。
+#
+# 与 ProviderConfig 的关系：
+#   ProviderConfig  = 单个外部平台的凭据/驱动参数（如 card-efuncard 的 token）
+#   RegistrationProfile = 一组 ProviderConfig 名字的命名引用（如 email-default 引用
+#     browser-default + mail-cfworker-default + card-default）
+#
+# provider_bindings JSON 结构：
+#   { "browser": "browser-default",
+#     "card":    "card-default",
+#     "mail":    "mail-cfworker-default",
+#     "sms":     "sms-activate",       # phone 模式才需要
+#     ... }
+# value 必须是 ProviderConfig.provider_name 现有值；resolve 时若指向不存在的 name 报错。
+
+
+class RegistrationProfile(SQLModel, table=True):
+    """注册方式预设：把一组 provider 命名引用打包成"组合"。"""
+
+    __tablename__ = "registration_profiles"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # 组合名：UI 用来识别（如 "email-default" / "phone-default"）。
+    # unique 防止同名重复；index 加速 set_default / get_default 查询。
+    name: str = Field(
+        max_length=60,
+        sa_column=Column(String(60), nullable=False, unique=True, index=True),
+    )
+    # 注册方式：email / phone。
+    # 一对一约束的软实现：靠 (registration_kind, is_default=True) 仅允许 1 条
+    # （由 service 层在 set_default 时保证；DB 层不加 partial unique 索引，
+    # 一是 SQLite/PG 写法不同，二是留一对多扩展空间）。
+    registration_kind: str = Field(max_length=20, index=True)
+    # provider 槽位 → ProviderConfig.provider_name 映射。
+    # 槽位约定：browser / card / mail / sms / captcha / llm（按需补充）。
+    # 不强校验槽位名称，让未来加新 provider 类型零 schema 改动。
+    provider_bindings: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, server_default="{}"),
+    )
+    description: Optional[str] = Field(default=None, max_length=200)
+    # 该 kind 的默认组合标志；同一 kind 仅允许 1 条 is_default=True（service 层保证）。
+    is_default: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="0", index=True),
+    )
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+
+# ── RegistrationProfileRevision ──────────────────
+#
+# 与 ProviderConfigRevision / AppSettingRevision 同款：写前 snapshot 旧值，
+# 串 action_log_id 让助手 commit 可回溯，给未来接入 AssistantService 留接口。
+
+
+class RegistrationProfileRevision(SQLModel, table=True):
+    """RegistrationProfile 写前快照，用于审计与回滚。"""
+
+    __tablename__ = "registration_profile_revisions"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    profile_name: str = Field(max_length=60, index=True)
+    # snapshot 结构：{"exists": bool, "registration_kind": str,
+    #               "provider_bindings": dict, "description": str|None,
+    #               "is_default": bool, "is_active": bool}
+    snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False, server_default="{}"),
+    )
+    action_log_id: Optional[str] = Field(default=None, max_length=32, index=True)
+    created_by: Optional[str] = Field(default=None, max_length=32, index=True)
+    created_at: datetime = Field(default_factory=_utc_now)
+
+
+# ── SyntheticCardAudit ────────────────────────────
+#
+# 合成卡生成审计表（A2）：用于"哪个 BIN + 哪个 State 的组合通过率最高"分析。
+# 合规：**只存 BIN 前 4 位 + 卡号后 4 位**，绝不存完整卡号 / CVV。
+# 数据闭环：生成时插 pending → 用户绑卡后通过 feedback 端点回写 success/declined。
+
+
+class SyntheticCardAudit(SQLModel, table=True):
+    """合成卡生成与绑卡反馈审计记录（不存完整卡号）。"""
+
+    __tablename__ = "synthetic_card_audits"
+
+    id: str = Field(default_factory=_uuid, primary_key=True, max_length=32)
+    bin_prefix: str = Field(max_length=8, index=True)           # 4147 / 4100 等
+    last_four: str = Field(max_length=4)                        # 卡号末 4 位
+    address_state: str = Field(default="", max_length=4, index=True)   # NY / CA / ...
+    address_zip: str = Field(default="", max_length=10)
+    first_name: str = Field(default="", max_length=60)
+    last_name: str = Field(default="", max_length=60)
+    # feedback_status: pending(刚生成) / success(绑卡通过) / declined(绑卡被拒)
+    feedback_status: str = Field(
+        default="pending",
+        sa_column=Column(String(20), nullable=False, server_default="pending", index=True),
+    )
+    decline_code: Optional[str] = Field(default=None, max_length=60)
+    feedback_note: Optional[str] = Field(default=None, max_length=200)
+    created_at: datetime = Field(default_factory=_utc_now, index=True)
+    feedback_at: Optional[datetime] = Field(default=None)
+    created_by: Optional[str] = Field(default=None, max_length=32, index=True)

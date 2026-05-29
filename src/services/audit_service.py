@@ -12,7 +12,7 @@ class AuditService:
     """当前版本使用本地规则审计，拒绝高风险或越权动作。"""
 
     SAFE_CONFIG_KEYS = set(ConfigService.SAFE_UPDATE_FIELDS)
-    ALLOWED_PROVIDER_TYPES = {"browser", "card", "mail", "sms", "openai"}
+    ALLOWED_PROVIDER_TYPES = {"browser", "card", "mail", "sms", "captcha", "llm", "openai"}
 
     def review(self, plan: dict[str, Any]) -> dict[str, Any]:
         action_type = str(plan.get("action_type", "") or "")

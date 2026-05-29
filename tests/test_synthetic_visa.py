@@ -200,5 +200,125 @@ class TestSyntheticCardKit(unittest.TestCase):
             self.assertNotIn(addr.line1, BLOCKED, f"地址池含网红地址：{addr.line1}")
 
 
+class TestCvvAndExpiryDistribution(unittest.TestCase):
+    """B1 + B2：CVV 全空间 + 过期分布偏态 + 月份避开当月。"""
+
+    def test_cvv_can_be_zero_prefix(self):
+        """B1: 1000 次采样中至少出现一次 0XX（000-099），证明不再漏 10% 空间"""
+        zero_prefix_seen = False
+        for _ in range(2000):
+            card = generate_synthetic_visa()
+            if card.cvv.startswith("0"):
+                zero_prefix_seen = True
+                break
+        self.assertTrue(zero_prefix_seen, "2000 次采样未出现 0XX CVV：B1 修正没生效")
+
+    def test_cvv_always_3_digits_with_leading_zero(self):
+        """B1: CVV 永远 3 位（补零正确）"""
+        for _ in range(100):
+            card = generate_synthetic_visa()
+            self.assertEqual(len(card.cvv), 3)
+            self.assertTrue(card.cvv.isdigit())
+
+    def test_expiry_month_avoids_current_month(self):
+        """B2: 过期月避开当月"""
+        from datetime import datetime
+        current_month = datetime.utcnow().month
+        for _ in range(50):
+            card = generate_synthetic_visa()
+            self.assertNotEqual(
+                int(card.expiry_month), current_month,
+                f"过期月 {card.expiry_month} 不应等于当前月 {current_month}",
+            )
+
+    def test_expiry_year_offset_distribution_skewed(self):
+        """B2: +3 / +4 年应明显多于 +2 / +5 年（偏态分布）"""
+        from datetime import datetime
+        current_yy = datetime.utcnow().year % 100
+        offsets: dict[int, int] = {2: 0, 3: 0, 4: 0, 5: 0}
+        N = 2000
+        for _ in range(N):
+            card = generate_synthetic_visa()
+            offset = (int(card.expiry_year) - current_yy) % 100
+            self.assertIn(offset, offsets, f"非法 offset: {offset}")
+            offsets[offset] += 1
+        # +3 / +4 各占 30%（共 60%），+2 / +5 各 20%（共 40%）
+        # 用宽松边界容忍统计抖动：+3 + +4 应 > +2 + +5
+        center = offsets[3] + offsets[4]
+        edges = offsets[2] + offsets[5]
+        self.assertGreater(center, edges, f"中心年份分布应高于边缘：{offsets}")
+
+
+class TestAddressCooldown(unittest.TestCase):
+    """A1 地址冷却：24h 内单地址最多 3 次，超过自动剔除。"""
+
+    def setUp(self):
+        from src.fintech.billing_addresses import reset_usage_log
+        reset_usage_log()
+
+    def tearDown(self):
+        from src.fintech.billing_addresses import reset_usage_log
+        reset_usage_log()
+
+    def test_pick_address_with_cooldown_records_usage(self):
+        from src.fintech.billing_addresses import (
+            address_usage_snapshot,
+            pick_address_with_cooldown,
+        )
+        pick_address_with_cooldown()
+        snap = address_usage_snapshot()
+        self.assertEqual(sum(snap.values()), 1, "应记录 1 次使用")
+
+    def test_cooldown_excludes_overused_addresses(self):
+        """同一地址 3 次后从可用池剔除"""
+        from src.fintech.billing_addresses import (
+            list_all_addresses,
+            pick_address_with_cooldown,
+            address_usage_snapshot,
+        )
+        pool_size = len(list_all_addresses())
+
+        # 把每个地址各用满 3 次（用 seed 强制选同一地址不现实；改用反复随机直到全部 ≥ 3）
+        # 用 max_uses=1 + 反复抽 N 次，比 max_uses=3 更快验证剔除逻辑
+        seen_addresses = set()
+        for _ in range(pool_size * 5):  # 5 倍冗余确保覆盖全部地址
+            addr = pick_address_with_cooldown(max_uses=1)
+            seen_addresses.add((addr.line1, addr.zip_code))
+
+        # 验证：max_uses=1 下，重复抽 N 次后全部地址都被 seen 过（说明 cooldown 在剔除已用地址）
+        self.assertEqual(len(seen_addresses), pool_size, "应轮转覆盖全部地址")
+
+    def test_cooldown_degrades_to_random_when_pool_exhausted(self):
+        """全池冷却后降级真随机，不抛异常"""
+        from src.fintech.billing_addresses import (
+            list_all_addresses,
+            pick_address_with_cooldown,
+        )
+        pool_size = len(list_all_addresses())
+        # 用 max_uses=1 抽 pool_size * 2 次：前 pool_size 次填满，后面强制走降级路径
+        results = [pick_address_with_cooldown(max_uses=1) for _ in range(pool_size * 2)]
+        self.assertEqual(len(results), pool_size * 2)
+        # 全部结果必须是池内地址
+        pool_lines = {a.line1 for a in list_all_addresses()}
+        for addr in results:
+            self.assertIn(addr.line1, pool_lines)
+
+    def test_seed_mode_bypasses_cooldown(self):
+        """seed != None 时跳过 cooldown 过滤，保持确定性"""
+        from src.fintech.billing_addresses import pick_address_with_cooldown
+        addr1 = pick_address_with_cooldown(seed="determ-seed-1")
+        addr2 = pick_address_with_cooldown(seed="determ-seed-1")
+        self.assertEqual(addr1.line1, addr2.line1, "同 seed 应返回同地址")
+        self.assertEqual(addr1.zip_code, addr2.zip_code)
+
+    def test_kit_no_seed_uses_cooldown(self):
+        """generate_synthetic_visa_kit 在无 seed 时走 cooldown 路径"""
+        from src.fintech.billing_addresses import address_usage_snapshot
+        from src.fintech.synthetic_visa import generate_synthetic_visa_kit
+        generate_synthetic_visa_kit()
+        snap = address_usage_snapshot()
+        self.assertEqual(sum(snap.values()), 1, "kit 调用一次应记录一次地址使用")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,500 @@
+{% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
+{% block title %}动态供应商 - Team Register{% endblock %}
+{% block nav_proxy_providers %}sidebar-active{% endblock %}
+{% block page_title %}动态代理供应商（Proxy Providers）{% endblock %}
+
+{% block content %}
+<div x-data="proxyProvidersData()" x-init="init()" class="space-y-6">
+
+    {# ─── Page Header ─── #}
+    <div class="flex justify-between items-end flex-wrap gap-3">
+        <div>
+            <p class="text-[11px] font-label text-muted mb-1 uppercase tracking-wider">PROXY MANAGEMENT</p>
+            <h3 class="text-2xl font-bold text-body">动态代理供应商</h3>
+            <p class="text-sm text-muted mt-1">管理 1024Proxy 等动态家庭 IP 供应商，供 promo 探索任务按需轮换 IP 规避 Cloudflare 风控</p>
+        </div>
+        <div class="flex items-center gap-2">
+            <button @click="refresh()" title="刷新"
+                    class="flex items-center gap-1.5 px-3 py-2 text-muted hover:bg-subtle rounded-lg text-sm font-medium transition-all">
+                <span class="material-symbols-outlined text-base">refresh</span>
+                刷新
+            </button>
+            <button @click="openCreate()"
+                    class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-all">
+                <span class="material-symbols-outlined text-base">add</span>
+                新建供应商
+            </button>
+        </div>
+    </div>
+
+    {# ─── 供应商列表 ─── #}
+    <div class="bg-white rounded-xl border border-border overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-subtle border-b border-border">
+                <tr>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">标签</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">类型</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">鉴权方式</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">URL 模板</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">默认国家</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">轮换/Sticky</th>
+                    <th class="text-left px-4 py-3 font-label text-muted text-xs uppercase">状态</th>
+                    <th class="text-right px-4 py-3 font-label text-muted text-xs uppercase">操作</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-border">
+                <template x-for="p in providers" :key="p.id">
+                    <tr class="hover:bg-subtle/50 transition-colors">
+                        <td class="px-4 py-3 font-medium text-body" x-text="p.label"></td>
+                        <td class="px-4 py-3">
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium"
+                                  :class="p.kind === '1024proxy' ? 'bg-info-50 text-info-600' : 'bg-warning-50 text-warning-600'"
+                                  x-text="kindLabel(p.kind)"></span>
+                        </td>
+                        <td class="px-4 py-3">
+                            <span class="inline-flex px-2 py-0.5 bg-subtle text-muted rounded-full text-xs font-medium"
+                                  x-text="authLabel(p.auth_kind)"></span>
+                        </td>
+                        <td class="px-4 py-3 font-mono text-xs text-muted truncate max-w-[160px]"
+                            :title="p.api_url_template_masked"
+                            x-text="p.api_url_template_masked"></td>
+                        <td class="px-4 py-3 text-xs text-body" x-text="p.default_country || '—'"></td>
+                        <td class="px-4 py-3 text-xs text-muted" x-text="rotationLabel(p)"></td>
+                        <td class="px-4 py-3">
+                            <button @click="toggleActive(p)"
+                                    :class="p.is_active ? 'bg-success-50 text-success-600' : 'bg-subtle text-muted'"
+                                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-all">
+                                <span class="w-1.5 h-1.5 rounded-full" :class="p.is_active ? 'bg-success-500' : 'bg-gray-400'"></span>
+                                <span x-text="p.is_active ? '启用' : '停用'"></span>
+                            </button>
+                        </td>
+                        <td class="px-4 py-3 text-right whitespace-nowrap">
+                            <button @click="testProvider(p)" class="p-1.5 text-muted hover:text-primary hover:bg-subtle rounded transition-all" title="测试连通性">
+                                <span class="material-symbols-outlined text-base">bolt</span>
+                            </button>
+                            <button @click="openEdit(p)" class="p-1.5 text-muted hover:text-primary hover:bg-subtle rounded transition-all" title="编辑">
+                                <span class="material-symbols-outlined text-base">edit</span>
+                            </button>
+                            <button @click="confirmDelete(p)" class="p-1.5 text-muted hover:text-danger hover:bg-subtle rounded transition-all" title="删除">
+                                <span class="material-symbols-outlined text-base">delete</span>
+                            </button>
+                        </td>
+                    </tr>
+                </template>
+                <tr x-show="providers.length === 0">
+                    <td colspan="8" class="px-4 py-16 text-center">
+                        <span class="material-symbols-outlined text-5xl text-muted/40 mb-2 block">cloud_off</span>
+                        <p class="text-body font-medium mb-1">还没有动态代理供应商</p>
+                        <p class="text-muted text-sm mb-4">配置 1024 等家庭 IP 套餐，让 promo 探索任务自动轮换 IP 避免被 CF 拦截</p>
+                        <button @click="openCreate()" class="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-all">
+                            <span class="material-symbols-outlined text-base">add</span>
+                            新建第一个供应商
+                        </button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    {# ─── 创建/编辑弹窗 ─── #}
+    <div x-show="dialog.open" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+         @click.self="closeDialog()">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-border">
+                <h3 class="text-lg font-bold text-body" x-text="dialog.editing ? ('编辑供应商：' + form.label) : '新建供应商'"></h3>
+                <button @click="closeDialog()" class="text-muted hover:text-body">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+
+            <div class="px-6 py-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+                {# 左栏：基础配置 #}
+                <div class="space-y-4">
+                    <p class="text-[11px] font-label text-primary uppercase tracking-wider border-b border-primary/20 pb-1">基础配置</p>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">标签 *</label>
+                        <input type="text" x-model="form.label" :disabled="dialog.editing"
+                               class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none disabled:bg-subtle disabled:text-muted"
+                               placeholder="例如：1024 美国住宅">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">类型 *</label>
+                        <select x-model="form.kind" @change="onKindChange()" :disabled="dialog.editing"
+                                class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none disabled:bg-subtle disabled:text-muted">
+                            <option value="1024proxy">1024Proxy（IP 白名单）</option>
+                            <option value="generic_http">通用 HTTP API</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">URL 模板 *</label>
+                        <textarea x-model="form.api_url_template" rows="3"
+                                  class="w-full px-3 py-2 border border-border rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                  placeholder="https://...?region={country}&num={num}&session={session}"></textarea>
+                        <p class="text-xs text-muted mt-1">可用占位符：<code class="font-mono" x-text="placeholderHint()"></code></p>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">响应格式</label>
+                            <select x-model="form.response_format"
+                                    class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                                <option value="txt_line">txt 单行</option>
+                                <option value="json_array_host_port">json 数组</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">默认国家</label>
+                            <input type="text" x-model="form.default_country"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                   placeholder="US / Rand">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">备注</label>
+                        <textarea x-model="form.notes" rows="2"
+                                  class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                  placeholder="可选"></textarea>
+                    </div>
+                </div>
+
+                {# 右栏：鉴权与轮换 #}
+                <div class="space-y-4">
+                    <p class="text-[11px] font-label text-primary uppercase tracking-wider border-b border-primary/20 pb-1">鉴权与轮换</p>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">鉴权方式</label>
+                        <select x-model="form.auth_kind"
+                                :disabled="form.kind === '1024proxy'"
+                                class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none disabled:bg-subtle disabled:text-muted">
+                            <template x-if="form.kind === '1024proxy'">
+                                <option value="ip_whitelist">IP 白名单</option>
+                            </template>
+                            <template x-if="form.kind !== '1024proxy'">
+                                <optgroup label="通用 HTTP">
+                                    <option value="api_key">API Key</option>
+                                    <option value="basic_auth">Basic Auth</option>
+                                    <option value="none">无鉴权</option>
+                                </optgroup>
+                            </template>
+                        </select>
+                    </div>
+
+                    {# ip_whitelist #}
+                    <div x-show="form.auth_kind === 'ip_whitelist'" class="p-3 bg-subtle rounded-lg border border-border space-y-2">
+                        <div class="flex justify-between items-center">
+                            <label class="text-sm font-medium text-body">白名单 IP</label>
+                            <button type="button" @click="fillLocalIp()" class="text-primary text-xs font-bold hover:underline">使用本机 IP</button>
+                        </div>
+                        <input type="text" x-model="form.cred_whitelisted_ip"
+                               class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                               placeholder="47.251.25.143">
+                        <div class="flex gap-2 p-2 bg-info-50 rounded border border-info-200">
+                            <span class="material-symbols-outlined text-info-600 text-sm">info</span>
+                            <p class="text-[11px] text-info-600 leading-tight">请前往 1024 后台 → 白名单设置 → 添加这个 IP，否则拉取会被 403 拒绝。</p>
+                        </div>
+                    </div>
+
+                    {# api_key #}
+                    <div x-show="form.auth_kind === 'api_key'" class="space-y-2">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">Header 名称</label>
+                            <input type="text" x-model="form.cred_header_name"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                   placeholder="X-API-Key">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">Key 值</label>
+                            <input type="password" x-model="form.cred_key"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                   placeholder="编辑时留空表示不修改">
+                        </div>
+                    </div>
+
+                    {# basic_auth #}
+                    <div x-show="form.auth_kind === 'basic_auth'" class="space-y-2">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">用户名</label>
+                            <input type="text" x-model="form.cred_username"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">密码</label>
+                            <input type="password" x-model="form.cred_password"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                   placeholder="编辑时留空表示不修改">
+                        </div>
+                    </div>
+
+                    <hr class="border-border">
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">轮换阈值</label>
+                            <input type="number" min="1" x-model.number="form.rotation_per_n_requests"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                            <p class="text-[11px] text-muted mt-1">每扫 N 条码换一次 IP</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">Sticky 秒数</label>
+                            <input type="number" min="0" x-model.number="form.sticky_seconds"
+                                   class="w-full px-3 py-2 border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                            <p class="text-[11px] text-muted mt-1">供应商保持同 IP 的最长时间</p>
+                        </div>
+                    </div>
+
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" x-model="form.is_active" class="rounded border-border text-primary focus:ring-primary/20">
+                        <span class="text-sm text-body">启用</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-2 px-6 py-4 border-t border-border">
+                <button @click="closeDialog()" class="px-4 py-2 text-sm text-muted hover:text-body transition-colors">取消</button>
+                <button @click="testFromForm()" :disabled="testing"
+                        class="px-4 py-2 border border-border text-body rounded-lg text-sm font-medium hover:bg-subtle disabled:opacity-50 transition-all flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-base">bolt</span>
+                    <span x-text="testing ? '测试中...' : '测试连通性'"></span>
+                </button>
+                <button @click="save()" :disabled="saving"
+                        class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-all">
+                    <span x-text="saving ? '保存中...' : '保存'"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ─── 测试连通性结果弹窗 ─── #}
+    <div x-show="testResult.open" x-cloak
+         class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+         @click.self="testResult.open = false">
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md">
+            <div class="px-6 py-6 text-center">
+                <span class="material-symbols-outlined text-5xl mb-2 block"
+                      :class="testResult.success ? 'text-success-600' : 'text-danger'"
+                      x-text="testResult.success ? 'check_circle' : 'cancel'"></span>
+                <h3 class="text-lg font-bold text-body mb-4" x-text="testResult.success ? '连通成功' : '连通失败'"></h3>
+
+                <template x-if="testResult.success">
+                    <div class="text-left space-y-2 text-sm">
+                        <div class="flex justify-between"><span class="text-muted">拉到 IP</span><span class="font-mono text-body" x-text="testResult.ip"></span></div>
+                        <div class="flex justify-between"><span class="text-muted">出口国家</span>
+                            <span class="font-medium" :class="testResult.country_match ? 'text-success-600' : 'text-warning-600'">
+                                <span x-text="testResult.country || '未知'"></span>
+                                <span x-text="testResult.country_match ? ' ✓ 匹配' : ' ⚠ 不匹配'"></span>
+                            </span>
+                        </div>
+                        <div class="flex justify-between"><span class="text-muted">耗时</span><span class="text-body" x-text="testResult.latency_ms + ' ms'"></span></div>
+                    </div>
+                </template>
+                <template x-if="!testResult.success">
+                    <div class="text-left">
+                        <p class="text-sm text-danger bg-danger/5 rounded-lg p-3" x-text="testResult.error"></p>
+                    </div>
+                </template>
+            </div>
+            <div class="flex justify-end px-6 py-4 border-t border-border">
+                <button @click="testResult.open = false" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-all">关闭</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+    function proxyProvidersData() {
+        return {
+            providers: [],
+            dialog: { open: false, editing: false },
+            saving: false,
+            testing: false,
+            form: {},
+            testResult: { open: false, success: false, ip: '', country: '', country_match: false, latency_ms: 0, error: '' },
+
+            _emptyForm() {
+                return {
+                    id: null, label: '', kind: '1024proxy',
+                    api_url_template: 'https://white.1024proxy.com/white/api?region={country}&num={num}&time=10&format=1&type=txt&session={session}',
+                    auth_kind: 'ip_whitelist', response_format: 'txt_line',
+                    default_country: 'US', notes: '',
+                    rotation_per_n_requests: 50, sticky_seconds: 600, is_active: true,
+                    cred_whitelisted_ip: '', cred_header_name: 'X-API-Key', cred_key: '',
+                    cred_username: '', cred_password: '',
+                };
+            },
+
+            async init() { await this.refresh(); },
+
+            async refresh() {
+                this.providers = await fetchJson('/api/proxy-providers');
+            },
+
+            kindLabel(k) { return k === '1024proxy' ? '1024Proxy' : '通用HTTP'; },
+            authLabel(a) {
+                return { ip_whitelist: 'IP 白名单', api_key: 'API Key', basic_auth: 'Basic Auth', none: '无鉴权' }[a] || a;
+            },
+            rotationLabel(p) {
+                const sticky = p.sticky_seconds > 0 ? `${Math.round(p.sticky_seconds / 60)} 分钟` : '直接换';
+                return `${p.rotation_per_n_requests} 条 / ${sticky}`;
+            },
+            placeholderHint() {
+                return this.form.kind === '1024proxy' ? '{country} {num} {format} {session}' : '{country} {num} {format}';
+            },
+
+            onKindChange() {
+                // 切到 1024 强制 ip_whitelist + 建议 sticky 600；切到 generic 默认 api_key
+                if (this.form.kind === '1024proxy') {
+                    this.form.auth_kind = 'ip_whitelist';
+                    if (!this.form.sticky_seconds) this.form.sticky_seconds = 600;
+                } else if (this.form.auth_kind === 'ip_whitelist') {
+                    this.form.auth_kind = 'api_key';
+                    this.form.sticky_seconds = 0;
+                }
+            },
+
+            async fillLocalIp() {
+                try {
+                    const r = await fetch('https://ipapi.co/ip/');
+                    this.form.cred_whitelisted_ip = (await r.text()).trim();
+                } catch (e) { alert('获取本机 IP 失败，请手动填写'); }
+            },
+
+            openCreate() {
+                this.form = this._emptyForm();
+                this.dialog = { open: true, editing: false };
+            },
+
+            openEdit(p) {
+                const f = this._emptyForm();
+                f.id = p.id; f.label = p.label; f.kind = p.kind;
+                f.auth_kind = p.auth_kind; f.response_format = p.response_format;
+                f.default_country = p.default_country; f.notes = p.notes;
+                f.rotation_per_n_requests = p.rotation_per_n_requests;
+                f.sticky_seconds = p.sticky_seconds; f.is_active = p.is_active;
+                f.api_url_template = '';  // 编辑时留空表示不改（脱敏不回传原文）
+                // 凭据脱敏不回填，留空表示不改
+                this.form = f;
+                this.dialog = { open: true, editing: true };
+            },
+
+            _buildCredentials() {
+                if (this.form.auth_kind === 'ip_whitelist') {
+                    return this.form.cred_whitelisted_ip ? { whitelisted_ip: this.form.cred_whitelisted_ip } : {};
+                }
+                if (this.form.auth_kind === 'api_key') {
+                    const c = { header_name: this.form.cred_header_name || 'X-API-Key' };
+                    if (this.form.cred_key) c.key = this.form.cred_key;
+                    return c;
+                }
+                if (this.form.auth_kind === 'basic_auth') {
+                    const c = {};
+                    if (this.form.cred_username) c.username = this.form.cred_username;
+                    if (this.form.cred_password) c.password = this.form.cred_password;
+                    return c;
+                }
+                return {};
+            },
+
+            async save() {
+                this.saving = true;
+                try {
+                    const creds = this._buildCredentials();
+                    let body, url, method;
+                    if (this.dialog.editing) {
+                        method = 'PATCH';
+                        url = `/api/proxy-providers/${this.form.id}`;
+                        body = {
+                            auth_kind: this.form.auth_kind,
+                            response_format: this.form.response_format,
+                            default_country: this.form.default_country,
+                            notes: this.form.notes,
+                            rotation_per_n_requests: this.form.rotation_per_n_requests,
+                            sticky_seconds: this.form.sticky_seconds,
+                            is_active: this.form.is_active,
+                        };
+                        if (this.form.api_url_template) body.api_url_template = this.form.api_url_template;
+                        if (Object.keys(creds).length) body.credentials = creds;
+                    } else {
+                        method = 'POST';
+                        url = '/api/proxy-providers';
+                        body = {
+                            label: this.form.label, kind: this.form.kind,
+                            api_url_template: this.form.api_url_template,
+                            auth_kind: this.form.auth_kind, credentials: creds,
+                            response_format: this.form.response_format,
+                            default_country: this.form.default_country, notes: this.form.notes,
+                            rotation_per_n_requests: this.form.rotation_per_n_requests,
+                            sticky_seconds: this.form.sticky_seconds, is_active: this.form.is_active,
+                        };
+                    }
+                    // 传 object body 时不要手动设 Content-Type：fetchJson 仅在无 Content-Type
+                    // 时才自动 JSON.stringify（base.html:632）。手动设会关掉 stringify 导致空 body。
+                    await fetchJson(url, { method, body });
+                    await this.refresh();
+                    this.closeDialog();
+                } catch (e) {
+                    showToast(e.message || '保存失败', 'error');
+                } finally {
+                    this.saving = false;
+                }
+            },
+
+            closeDialog() { this.dialog.open = false; },
+
+            async confirmDelete(p) {
+                if (!confirm(`确定删除供应商"${p.label}"？`)) return;
+                try {
+                    await fetchJson(`/api/proxy-providers/${p.id}`, { method: 'DELETE' });
+                    await this.refresh();
+                } catch (e) {
+                    showToast(e.message || '删除失败', 'error');
+                }
+            },
+
+            async toggleActive(p) {
+                try {
+                    await fetchJson(`/api/proxy-providers/${p.id}`, {
+                        method: 'PATCH',
+                        body: { is_active: !p.is_active },
+                    });
+                    await this.refresh();
+                } catch (e) {
+                    showToast(e.message || '切换状态失败', 'error');
+                }
+            },
+
+            async testProvider(p) {
+                this.testResult = { open: false, success: false, ip: '', country: '', country_match: false, latency_ms: 0, error: '' };
+                try {
+                    const data = await fetchJson(`/api/proxy-providers/${p.id}/test`, { method: 'POST' });
+                    this.testResult = { ...data, open: true };
+                } catch (e) {
+                    this.testResult = { open: true, success: false, ip: '', country: '', country_match: false, latency_ms: 0, error: e.message || '测试失败' };
+                }
+            },
+
+            async testFromForm() {
+                // 表单里测试需要先保存（test 端点按 id 调）；提示用户
+                if (!this.dialog.editing) {
+                    alert('请先保存供应商，再用列表里的「测试」按钮验证连通性');
+                    return;
+                }
+                this.testing = true;
+                try {
+                    await this.save();
+                    const p = this.providers.find(x => x.id === this.form.id);
+                    if (p) await this.testProvider(p);
+                } finally {
+                    this.testing = false;
+                }
+            },
+        };
+    }
+</script>
+{% endblock %}

@@ -112,13 +112,23 @@ def generate_synthetic_visa(
     card_number = "".join(str(d) for d in digits)
     bin_str = "".join(str(d) for d in chosen_prefix)
 
-    # 过期日期：当前年 +2 ~ +5 年（避免太短被 PayPal 视为预扣即将到期）
-    current_year = datetime.utcnow().year % 100  # 26 (= 2026)
-    expiry_year_offset = rng.randint(2, 5)
+    # 过期日期（B2）：当前年 +2 ~ +5 年，偏态分布贴近真实新发卡（+3/+4 年居多）
+    # 月份避开当月（"刚发即到期窗"是 PayPal 异常信号）
+    current_now = datetime.utcnow()
+    current_year = current_now.year % 100  # 26 (= 2026)
+    current_month = current_now.month
+    expiry_year_offset = rng.choices(
+        [2, 3, 4, 5],
+        weights=[20, 30, 30, 20],
+        k=1,
+    )[0]
     expiry_year = f"{(current_year + expiry_year_offset) % 100:02d}"
-    expiry_month = f"{rng.randint(1, 12):02d}"
+    # 月份 1-12 随机，避开当月（"刚发即到期窗"信号）
+    month_choices = [m for m in range(1, 13) if m != current_month]
+    expiry_month = f"{rng.choice(month_choices):02d}"
 
-    cvv = f"{rng.randint(100, 999):03d}"
+    # CVV（B1）：000-999 全空间（原 100-999 漏 0XX = 10% 统计指纹漏洞）
+    cvv = f"{rng.randint(0, 999):03d}"
 
     return SyntheticCard(
         card_number=card_number,
@@ -175,6 +185,8 @@ def generate_synthetic_visa_kit(
     bin_prefix: tuple[int, ...] | None = None,
     seed: str | int | None = None,
     gender: str | None = None,
+    override_first_name: str | None = None,
+    override_last_name: str | None = None,
 ) -> SyntheticCardKit:
     """一次性生成 PayPal 表单完整套件（卡 + 地址 + 姓名 + 电话）。
 
@@ -182,23 +194,45 @@ def generate_synthetic_visa_kit(
         bin_prefix: 卡 BIN 段（None 走默认 4147/4100 随机）
         seed: 确定性种子（同 seed 永远生成同一套件，跨字段一致性自动保证）
         gender: 'm' / 'f' / None（影响姓名生成）
+        override_first_name: A3 注入：对齐 OpenAI 账户姓名（None 走随机姓名池）
+        override_last_name: A3 注入：对齐 OpenAI 账户姓名（None 走随机姓名池）
 
     Returns:
         SyntheticCardKit 实例，所有字段互相一致
+
+    Note:
+        override_first_name / override_last_name 必须**同时**传入或同时为 None；
+        只传其一时另一个回退到随机姓名，会破坏 first/last 同源一致性。
     """
     # 延迟 import 避免 fintech 包内循环依赖（如果有）
-    from src.fintech.billing_addresses import generate_us_phone, pick_random_address
+    from src.fintech.billing_addresses import (
+        generate_us_phone,
+        pick_address_with_cooldown,
+        pick_random_address,
+    )
     from src.services.identity_generator import generate_identity
 
     # 1. 生成卡
     card = generate_synthetic_visa(bin_prefix=bin_prefix, seed=seed)
 
-    # 2. 生成姓名（identity_generator 复用主注册流的姓名池）
-    identity = generate_identity(gender=gender)
+    # 2. 生成姓名：A3 优先用注入姓名（对齐 OpenAI 账户），未注入则走随机池
+    if override_first_name and override_last_name:
+        first_name = override_first_name.strip()
+        last_name = override_last_name.strip()
+        full_name = f"{first_name} {last_name}"
+    else:
+        identity = generate_identity(gender=gender)
+        first_name = identity.first_name
+        last_name = identity.last_name
+        full_name = identity.full_name
 
-    # 3. 选地址（用 seed 保证同 seed 同卡同地址；卡是 seed 主导，地址用 card_number 子种子）
-    address_seed = seed if seed is not None else card.card_number
-    address = pick_random_address(seed=f"{address_seed}-addr")
+    # 3. 选地址：
+    #    - seed 模式：确定性映射（同 seed 同卡同地址，A2 审计追踪用），走 pick_random_address
+    #    - 无 seed：启用 24h cooldown，单地址 24h 内最多 3 次（A1 风控护栏）
+    if seed is not None:
+        address = pick_random_address(seed=f"{seed}-addr")
+    else:
+        address = pick_address_with_cooldown(used_within_hours=24.0, max_uses=3)
 
     # 4. 生成电话（区号跟地址 state 匹配）
     phone_seed = seed if seed is not None else card.card_number
@@ -206,9 +240,9 @@ def generate_synthetic_visa_kit(
 
     return SyntheticCardKit(
         card=card,
-        first_name=identity.first_name,
-        last_name=identity.last_name,
-        full_name=identity.full_name,
+        first_name=first_name,
+        last_name=last_name,
+        full_name=full_name,
         address_line1=address.line1,
         address_city=address.city,
         address_state=address.state,

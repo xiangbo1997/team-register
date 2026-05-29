@@ -130,6 +130,9 @@ class AppConfig:
     default_browser_provider: str = "browser-default"
     default_card_provider: str = "card-default"
     default_mail_provider: str = "mail-default"
+    default_sms_provider: str = "sms-default"
+    default_captcha_provider: str = "captcha-default"
+    default_llm_provider: str = "llm-default"
     default_mail_account_id: str = ""
 
     # LLM 决策器配置
@@ -238,6 +241,15 @@ class AppConfig:
     identity_last_name: str = ""
     identity_email_local: str = ""
     identity_birthdate: str = ""
+
+    # 三模式注册（feat/mode-phone-registration 2026-05-27 引入）。
+    # registration_kind: "email" / "phone"，由 worker._resolve_runtime_config 从 Run.config_snapshot 注入；
+    # automation/runtime.py 用它判断 PHONE state 是放行（phone 模式走 handler）还是 fail（email 模式默认行为）。
+    # requested_phone: 经 SMS-Activate 申领或用户手填的完整手机号（含国家码），传给 PHONE handler 填入表单。
+    # sms_order_id: 对应的 SMS-Activate 订单号，handler 用它轮询 OTP。
+    registration_kind: str = "email"
+    requested_phone: str = ""
+    sms_order_id: str = ""
 
     def validate(self, required_modules: Optional[list[str]] = None) -> list[str]:
         """
@@ -398,6 +410,9 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         default_browser_provider=os.getenv("DEFAULT_BROWSER_PROVIDER", "browser-default").strip() or "browser-default",
         default_card_provider=os.getenv("DEFAULT_CARD_PROVIDER", "card-default").strip() or "card-default",
         default_mail_provider=os.getenv("DEFAULT_MAIL_PROVIDER", "mail-default").strip() or "mail-default",
+        default_sms_provider=os.getenv("DEFAULT_SMS_PROVIDER", "sms-default").strip() or "sms-default",
+        default_captcha_provider=os.getenv("DEFAULT_CAPTCHA_PROVIDER", "captcha-default").strip() or "captcha-default",
+        default_llm_provider=os.getenv("DEFAULT_LLM_PROVIDER", "llm-default").strip() or "llm-default",
         default_mail_account_id=os.getenv("DEFAULT_MAIL_ACCOUNT_ID", "").strip(),
         llm_enabled=_read_bool("LLM_ENABLED", False),
         llm_base_url=os.getenv("LLM_BASE_URL", "").rstrip("/"),
@@ -470,6 +485,11 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
     # 撞 422。详见 docs/architecture/mail-provider-contract.md
     _warn_if_mail_config_incomplete(config)
 
+    # A 类 provider 字段 deprecation warning（feat/registration-profile 2026-05-27）：
+    # 检测 .env 显式设置了 provider 凭据/选择器字段时打一次性 warning，
+    # 引导运维改去 /providers + /registration-profiles 页面管理。
+    _warn_deprecated_provider_fields()
+
     return config
 
 
@@ -493,3 +513,58 @@ def _warn_if_mail_config_incomplete(config: AppConfig) -> None:
         "或通过 admin UI /providers 配置 mail-default。",
         config.email_provider_name,
     )
+
+
+# A 类 provider 字段 deprecation：feat/registration-profile 2026-05-27 引入。
+# 这些 .env 字段已迁移到 ProviderConfig + RegistrationProfile，但仍保留作兼容护栏；
+# 显式设置时打一次性 warning，引导运维改去 admin UI。
+# 同进程内只 warn 一次，避免日志噪音。
+_DEPRECATED_ENV_VARS = (
+    "DEFAULT_BROWSER_PROVIDER",
+    "DEFAULT_CARD_PROVIDER",
+    "DEFAULT_MAIL_PROVIDER",
+    "DEFAULT_MAIL_ACCOUNT_ID",
+    "CARD_PROVIDER",
+    "EFUNCARD_TOKEN",
+    "NODECARD_API_URL",
+    "NODECARD_MERCHANT_ID",
+    "NODECARD_PLATFORM_ID",
+    "X988CARD_API_BASE",
+    "X988CARD_REQUEST_TIMEOUT",
+    "ADS_API",
+    "ADS_API_KEY",
+    "EMAIL_PROVIDER_BASE_URL",
+    "EMAIL_PROVIDER_API_KEY",
+    "EMAIL_PROVIDER_NAME",
+    "MAIL_CONFIG_NAME",
+    "OUTLOOK_CONFIG_NAME",
+    "CFWORKER_CONFIG_NAME",
+    "KNOWN_MAIL_ACCOUNTS_JSON",
+    "SMS_API_KEY",
+    "SMS_COUNTRY",
+)
+
+_deprecation_warned = False
+
+
+def _warn_deprecated_provider_fields() -> None:
+    """检测 .env 显式设置了 A 类 provider 字段，打一次性 deprecation warning。
+
+    判断"显式设置"的依据：环境变量存在（os.environ 里有 key，不论值是否为默认）。
+    一次性：同进程多次 load_config 只 warn 一次。
+    """
+    global _deprecation_warned
+    if _deprecation_warned:
+        return
+    set_vars = [v for v in _DEPRECATED_ENV_VARS if v in os.environ]
+    if not set_vars:
+        _deprecation_warned = True
+        return
+    logger.warning(
+        "检测到 .env 显式设置了 A 类 provider 字段（%d 个）: %s。"
+        "这些字段已迁移到 admin UI 管理（凭据→/providers，组合→/registration-profiles），"
+        ".env 中的值仅作老部署兼容护栏。建议：① 通过 admin UI 配同名 ProviderConfig 并核对，"
+        "② 删除 .env 中的对应字段，③ 后续从 admin UI 维护。详见 /registration-profiles 页提示。",
+        len(set_vars), set_vars,
+    )
+    _deprecation_warned = True

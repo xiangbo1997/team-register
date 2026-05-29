@@ -1,94 +1,202 @@
 {% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
 {% block title %}{{ _('providers.title') }} - Team Register{% endblock %}
-{% block nav_providers %}bg-gray-800 text-white{% endblock %}
+{% block nav_providers %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('providers.title') }}{% endblock %}
 
 {% block content %}
-<div x-data="providerData()" x-init="fetchProviders()">
-    <!-- Add Provider -->
-    <div class="flex items-center justify-between mb-4">
-        <h3 class="text-sm text-gray-500" x-text="i18n('providers.subtitle')"></h3>
-        <button @click="showForm = !showForm" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700">
-            <span x-text="showForm ? i18n('providers.cancel') : '+ ' + i18n('providers.add_provider')"></span>
-        </button>
-    </div>
+<div x-data="providerData()" x-init="fetchProviders(); fetchAvailableKinds()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
 
-    <!-- Add/Edit Form -->
-    <div x-show="showForm" x-cloak class="bg-white rounded-lg shadow-sm border p-6 mb-6 fade-in">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.type')"></label>
-                <select x-model="form.provider_type" class="w-full text-sm border rounded-md px-3 py-2">
-                    <option value="browser" x-text="i18n('providers.types.browser')"></option>
-                    <option value="card" x-text="i18n('providers.types.card')"></option>
-                    <option value="mail" x-text="i18n('providers.types.mail')"></option>
-                </select>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.name')"></label>
-                <input type="text" x-model="form.provider_name" class="w-full text-sm border rounded-md px-3 py-2"
-                       :placeholder="i18n('providers.placeholders.name')">
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.active')"></label>
-                <select x-model="form.is_active" class="w-full text-sm border rounded-md px-3 py-2">
-                    <option :value="true" x-text="i18n('common.yes')"></option>
-                    <option :value="false" x-text="i18n('common.no')"></option>
-                </select>
-            </div>
-        </div>
-        <div class="mt-4">
-            <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('providers.config_json')"></label>
-            <textarea x-model="form.config_json" rows="4"
-                      class="w-full text-xs font-mono border rounded-md px-3 py-2"
-                      :placeholder="i18n('providers.placeholders.config_json')"></textarea>
-        </div>
-        <div class="flex justify-end gap-2 mt-4">
-            <button @click="testProvider()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('providers.test')"></button>
-            <button @click="saveProvider()" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700" x-text="i18n('providers.save')"></button>
+    {# ─── Toolbar ─── #}
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-sm text-muted" x-text="i18n('providers.subtitle')"></p>
+        <div class="flex items-center gap-2">
+            <button @click="showForm = !showForm"
+                    class="flex items-center space-x-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg shadow-token-sm transition-transform active:scale-95">
+                <span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;"
+                      x-text="showForm ? 'close' : 'add_circle'"></span>
+                <span class="text-sm font-semibold" x-text="showForm ? i18n('providers.cancel') : i18n('providers.add_provider')"></span>
+            </button>
         </div>
     </div>
 
-    <!-- Provider List -->
-    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
-                <tr>
-                    <th class="px-4 py-3 text-left" x-text="i18n('providers.type')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('providers.name')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('providers.active')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('providers.config_json')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('common.updated')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('common.actions')"></th>
-                </tr>
-            </thead>
-            <tbody class="divide-y">
-                <template x-for="p in providers" :key="p.provider_type + '/' + p.provider_name">
-                    <tr class="hover:bg-gray-50">
-                        <td class="px-4 py-3">
-                            <span class="px-2 py-0.5 rounded text-xs font-medium"
-                                  :class="{'bg-purple-100 text-purple-700': p.provider_type === 'browser', 'bg-orange-100 text-orange-700': p.provider_type === 'card', 'bg-cyan-100 text-cyan-700': p.provider_type === 'mail'}"
-                                  x-text="translateEnum('providers.types', p.provider_type, p.provider_type)"></span>
-                        </td>
-                        <td class="px-4 py-3 font-mono text-xs" x-text="p.provider_name"></td>
-                        <td class="px-4 py-3">
-                            <span class="w-2 h-2 rounded-full inline-block" :class="p.is_active ? 'bg-green-500' : 'bg-gray-300'"></span>
-                        </td>
-                        <td class="px-4 py-3 font-mono text-xs text-gray-400 truncate max-w-[200px]" x-text="JSON.stringify(p.config)"></td>
-                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="p.updated_at ? new Date(p.updated_at).toLocaleString(window._locale) : '-'"></td>
-                        <td class="px-4 py-3">
-                            <div class="flex gap-1">
-                                <button @click="editProvider(p)" class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded" x-text="i18n('providers.edit')"></button>
-                                <button @click="deleteProvider(p)" class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded" x-text="i18n('providers.delete')"></button>
+    {# ─── Expanded Add/Edit Form (Inset Panel) ─── #}
+    <div x-show="showForm" x-cloak class="overflow-hidden fade-in">
+        <div class="bg-subtle/50 border border-border rounded-xl p-1 mb-2">
+            <button @click="showForm = false" class="w-full flex items-center gap-2 px-4 py-2 text-xs font-bold text-muted uppercase tracking-widest hover:text-body transition-colors">
+                <span class="material-symbols-outlined text-sm">arrow_drop_down</span>
+                <span>新增 / 编辑 Provider 表单</span>
+            </button>
+        </div>
+        <div class="bg-slate-50 border border-border rounded-xl p-6 shadow-token-sm ring-1 ring-white/50">
+
+            {# 4-col field grid (含 driver kind 下拉) #}
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                <div class="space-y-1.5">
+                    <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider" x-text="i18n('providers.type')"></label>
+                    <select x-model="form.provider_type" @change="onTypeChange()"
+                            class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                        <option value="browser">浏览器 (Browser)</option>
+                        <option value="card">卡片 (Card)</option>
+                        <option value="mail">邮箱 (Mail)</option>
+                        <option value="sms">短信 (SMS)</option>
+                        <option value="captcha">打码 (Captcha)</option>
+                        <option value="llm">LLM</option>
+                    </select>
+                </div>
+                <div class="space-y-1.5">
+                    <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">驱动 (Kind)</label>
+                    <select x-model="form.kind" @change="onKindChange()"
+                            class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                        <option value="">— 请选择已注册的 driver —</option>
+                        <template x-for="k in availableKinds" :key="k.kind">
+                            <option :value="k.kind" x-text="k.kind + ' — ' + k.display_name"></option>
+                        </template>
+                    </select>
+                    <p class="text-[10px] text-muted" x-show="form.kind && currentSchema">
+                        <span x-text="currentSchema.description"></span>
+                    </p>
+                </div>
+                <div class="space-y-1.5">
+                    <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider" x-text="i18n('providers.name')"></label>
+                    <input type="text" x-model="form.provider_name"
+                           class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                           :placeholder="i18n('providers.placeholders.name')">
+                </div>
+                <div class="flex flex-col justify-end pb-1.5">
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" x-model="form.is_active" class="sr-only peer">
+                        <div class="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-success"></div>
+                        <span class="ml-3 text-sm font-medium text-body">启用该提供商</span>
+                    </label>
+                </div>
+            </div>
+
+            {# JSON config textarea #}
+            <div class="mb-6">
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-[11px] font-label font-bold text-muted uppercase tracking-wider" x-text="i18n('providers.config_json')"></label>
+                    <span x-show="jsonValid" class="text-[10px] text-primary font-mono bg-primary/10 px-2 py-0.5 rounded">VALID JSON</span>
+                    <span x-show="!jsonValid" class="text-[10px] text-danger font-mono bg-danger/10 px-2 py-0.5 rounded">INVALID JSON</span>
+                </div>
+                <textarea x-model="form.config_json" @input="validateJson"
+                          class="w-full h-32 bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
+                          :placeholder="i18n('providers.placeholders.config_json')"></textarea>
+            </div>
+
+            {# Footer actions #}
+            <div class="flex justify-end items-center gap-3 border-t border-border pt-6">
+                <button @click="showForm = false" class="px-4 py-2 text-sm font-semibold text-muted hover:text-body transition-colors">取消</button>
+                <button @click="testProvider()" class="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-secondary border border-secondary/30 rounded-lg hover:bg-secondary/5 transition-all">
+                    <span class="material-symbols-outlined text-base">science</span>
+                    <span x-text="i18n('providers.test')"></span>
+                </button>
+                <button @click="saveProvider()" :disabled="!jsonValid"
+                        class="flex items-center gap-1.5 px-6 py-2 text-sm font-bold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-token-md transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;">save</span>
+                    <span x-text="i18n('providers.save')"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ─── Data Grid ─── #}
+    <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+
+        {# Filter chips + 密度切换 + 列设置 popover #}
+        <div class="p-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center space-x-1 flex-wrap gap-y-2">
+                <template x-for="chip in filterChips" :key="chip.value">
+                    <button @click="typeFilter = chip.value"
+                            :class="typeFilter === chip.value
+                                ? 'bg-primary/10 text-primary font-semibold border border-primary/20'
+                                : 'text-muted hover:bg-subtle border border-transparent'"
+                            class="px-4 py-1.5 text-sm rounded-full flex items-center transition-colors">
+                        <span x-text="chip.label"></span>
+                        <span class="ml-1.5 px-1.5 text-[10px] rounded-full bg-subtle text-muted mono-text tabular-nums"
+                              x-text="chip.count"></span>
+                    </button>
+                </template>
+            </div>
+
+            <div class="flex items-center space-x-2">
+                {{ ui.grid_search(placeholder='搜索 Provider 名 / 类型...') }}
+                <button @click="density = density === 'medium' ? 'small' : 'medium'"
+                        class="p-2 text-muted hover:text-body hover:bg-subtle rounded-lg transition-all"
+                        :title="i18n('providers.density_toggle')">
+                    <span class="material-symbols-outlined"
+                          x-text="density === 'medium' ? 'density_medium' : 'density_small'"></span>
+                </button>
+                {{ ui.grid_columns_settings() }}
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full border-collapse">
+                <thead class="sticky top-0 z-10 bg-neutral-50">
+                    <tr class="border-b border-border">
+                        <th class="w-12 px-4 py-3 text-left">
+                            <input type="checkbox" class="w-4 h-4 rounded border-border text-primary focus:ring-primary/20">
+                        </th>
+                        <th x-show="visibleColumns.includes('type')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('providers.type')"></th>
+                        <th x-show="visibleColumns.includes('name')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('providers.name')"></th>
+                        <th x-show="visibleColumns.includes('active')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('providers.active')"></th>
+                        <th x-show="visibleColumns.includes('config_preview')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('providers.config_preview')"></th>
+                        <th x-show="visibleColumns.includes('updated_at')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('common.updated')"></th>
+                        <th class="px-4 py-3 text-right text-[11px] font-label font-bold text-muted uppercase tracking-widest" x-text="i18n('common.actions')"></th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-neutral-100">
+                    <template x-for="(p, idx) in filteredProviders" :key="p.provider_type + '/' + p.provider_name">
+                        <tr :class="idx % 2 === 1 ? 'bg-neutral-100/30' : ''"
+                            class="hover:bg-primary/[0.04] transition-colors">
+                            <td :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'" @click.stop>
+                                <input type="checkbox" class="w-4 h-4 rounded border-border text-primary focus:ring-primary/20">
+                            </td>
+                            <td x-show="visibleColumns.includes('type')" :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'">
+                                <span :class="typeBadgeClass(p.provider_type)"
+                                      class="px-2.5 py-1 text-[10px] font-label font-bold rounded-full uppercase tracking-wider"
+                                      x-text="translateEnum('providers.types', p.provider_type, p.provider_type)"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('name')" :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'" class="font-mono text-xs font-medium" x-text="p.provider_name"></td>
+                            <td x-show="visibleColumns.includes('active')" :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'">
+                                <div class="flex items-center gap-1.5 text-xs font-medium"
+                                     :class="p.is_active ? 'text-success' : 'text-muted'">
+                                    <span class="w-1.5 h-1.5 rounded-full"
+                                          :class="p.is_active ? 'bg-success' : 'bg-border'"></span>
+                                    <span x-text="p.is_active ? '已启用' : '已禁用'"></span>
+                                </div>
+                            </td>
+                            <td x-show="visibleColumns.includes('config_preview')" :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'">
+                                <code class="text-[11px] font-mono text-muted truncate max-w-[200px] block"
+                                      :title="JSON.stringify(p.config)"
+                                      x-text="JSON.stringify(p.config)"></code>
+                            </td>
+                            <td x-show="visibleColumns.includes('updated_at')" :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'" class="text-xs text-muted font-mono tabular-nums"
+                                x-text="p.updated_at ? new Date(p.updated_at).toLocaleString(window._locale, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'"></td>
+                            <td :class="density === 'small' ? 'py-2 px-4' : 'py-3 px-4'" class="text-right">
+                                <div class="flex justify-end gap-2">
+                                    <button @click="editProvider(p)" class="p-1.5 text-secondary hover:bg-secondary/10 rounded transition-colors" title="编辑">
+                                        <span class="material-symbols-outlined text-sm">edit</span>
+                                    </button>
+                                    <button @click="deleteProvider(p)" class="p-1.5 text-danger hover:bg-danger/10 rounded transition-colors" title="删除">
+                                        <span class="material-symbols-outlined text-sm">delete</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="filteredProviders.length === 0">
+                        <td :colspan="visibleColumns.length + 2" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">layers_clear</span>
+                                <span class="text-sm" x-text="i18n('providers.no_providers')"></span>
                             </div>
                         </td>
                     </tr>
-                </template>
-                <tr x-show="providers.length === 0">
-                    <td colspan="6" class="px-4 py-8 text-center text-gray-400" x-text="i18n('providers.no_providers')"></td>
-                </tr>
-            </tbody>
-        </table>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -97,38 +205,172 @@ function providerData() {
     return {
         providers: [],
         showForm: false,
-        form: { provider_type: 'browser', provider_name: '', is_active: true, config_json: '{}' },
         editing: null,
+        jsonValid: true,
+        form: { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}' },
+        availableKinds: [],   // 当前 provider_type 下已注册的 kind 列表（来自 /api/providers/kinds）
+        currentSchema: null,  // 当前 kind 的字段 schema（来自 /api/providers/schemas/{t}/{k}）
 
-        async fetchProviders() {
-            this.providers = await fetchJson('/api/providers');
+        // 类型筛选：'' = 全部；否则取 ProviderConfig.provider_type 之一
+        typeFilter: '',
+
+        // 搜索 expand
+        searchTerm: '',
+        searchExpanded: false,
+
+        // 行密度切换：medium | small
+        density: 'medium',
+
+        // 列显隐：localStorage 持久化，默认全显（actions 列恒显，不进此数组）
+        visibleColumns: (() => {
+            try {
+                const raw = localStorage.getItem('providers.visibleColumns');
+                return raw ? JSON.parse(raw) : ['type', 'name', 'active', 'config_preview', 'updated_at'];
+            } catch (_) {
+                return ['type', 'name', 'active', 'config_preview', 'updated_at'];
+            }
+        })(),
+
+        get columnOptions() {
+            return [
+                { key: 'type',           label: i18n('providers.type') },
+                { key: 'name',           label: i18n('providers.name') },
+                { key: 'active',         label: i18n('providers.active') },
+                { key: 'config_preview', label: i18n('providers.config_preview') },
+                { key: 'updated_at',     label: i18n('common.updated') },
+            ];
         },
 
-        editProvider(p) {
+        toggleColumn(key) {
+            const idx = this.visibleColumns.indexOf(key);
+            if (idx >= 0) this.visibleColumns.splice(idx, 1);
+            else this.visibleColumns.push(key);
+            try { localStorage.setItem('providers.visibleColumns', JSON.stringify(this.visibleColumns)); } catch (_) {}
+        },
+
+        // 类型筛选 chip 列表 —— count 用 computed 实时统计当前 providers 各类数量
+        get filterChips() {
+            const counts = { browser: 0, card: 0, mail: 0, sms: 0, captcha: 0, llm: 0 };
+            for (const p of this.providers) {
+                if (counts[p.provider_type] !== undefined) counts[p.provider_type]++;
+            }
+            return [
+                { value: '',        label: i18n('providers.filter_all'),    count: this.providers.length },
+                { value: 'browser', label: i18n('providers.types.browser'), count: counts.browser },
+                { value: 'card',    label: i18n('providers.types.card'),    count: counts.card },
+                { value: 'mail',    label: i18n('providers.types.mail'),    count: counts.mail },
+                { value: 'sms',     label: i18n('providers.types.sms'),     count: counts.sms },
+                { value: 'captcha', label: i18n('providers.types.captcha'), count: counts.captcha },
+                { value: 'llm',     label: i18n('providers.types.llm'),     count: counts.llm },
+            ];
+        },
+
+        // 客户端过滤（providers 一次性全量拉取，无需服务端筛选）
+        get filteredProviders() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            let arr = this.typeFilter ? this.providers.filter(p => p.provider_type === this.typeFilter) : this.providers;
+            if (!q) return arr;
+            return arr.filter(p => `${p.provider_name || ''} ${p.provider_type || ''}`.toLowerCase().includes(q));
+        },
+
+        async fetchProviders() { this.providers = await fetchJson('/api/providers'); },
+
+        async fetchAvailableKinds() {
+            try {
+                this.availableKinds = await fetchJson(`/api/providers/kinds?provider_type=${this.form.provider_type}`);
+            } catch (_) { this.availableKinds = []; }
+        },
+
+        async fetchSchema(kind) {
+            if (!kind) { this.currentSchema = null; return; }
+            try {
+                this.currentSchema = await fetchJson(`/api/providers/schemas/${this.form.provider_type}/${kind}`);
+            } catch (_) { this.currentSchema = null; }
+        },
+
+        async onTypeChange() {
+            this.form.kind = '';
+            this.currentSchema = null;
+            await this.fetchAvailableKinds();
+        },
+
+        async onKindChange() {
+            await this.fetchSchema(this.form.kind);
+            this.applyKindTemplate();
+        },
+
+        // 选了 kind 后按 schema 生成 config_json 模板（带 driver/provider_name 路由 key + 各字段默认值）
+        applyKindTemplate() {
+            if (!this.currentSchema) return;
+            let cfg = {};
+            // 解析现有 config_json（保留编辑场景下用户已填的值）
+            try { cfg = JSON.parse(this.form.config_json) || {}; } catch (_) { cfg = {}; }
+            // 路由 key：card 类用 driver；其它类（mail/sms 等）用 provider_name 表示 kind
+            if (this.form.provider_type === 'card') {
+                cfg.driver = this.form.kind;
+            } else {
+                cfg.provider_name = this.form.kind;
+            }
+            // 把 schema 里有默认值的字段填进去（已存在的不覆盖）
+            for (const f of (this.currentSchema.schema || [])) {
+                if (cfg[f.name] === undefined && f.default !== null && f.default !== undefined) {
+                    cfg[f.name] = f.default;
+                }
+            }
+            this.form.config_json = JSON.stringify(cfg, null, 2);
+            this.validateJson();
+        },
+
+        typeBadgeClass(type) {
+            const map = {
+                browser: 'bg-purple-100 text-purple-700',
+                card:    'bg-warning/10 text-warning',
+                mail:    'bg-secondary/10 text-secondary',
+                sms:     'bg-info/10 text-info',
+                captcha: 'bg-danger/10 text-danger',
+                llm:     'bg-primary/10 text-primary',
+            };
+            return map[type] || 'bg-neutral-100 text-neutral-700';
+        },
+
+        validateJson() {
+            try { JSON.parse(this.form.config_json); this.jsonValid = true; }
+            catch { this.jsonValid = false; }
+        },
+
+        async editProvider(p) {
             this.editing = p;
+            // 从既有 config 里反向解析 kind（card 用 driver；其它用 provider_name）
+            const cfg = p.config || {};
+            const inferredKind = (p.provider_type === 'card' ? cfg.driver : cfg.provider_name) || '';
             this.form = {
                 provider_type: p.provider_type,
                 provider_name: p.provider_name,
+                kind: inferredKind,
                 is_active: p.is_active,
-                config_json: JSON.stringify(p.config, null, 2)
+                config_json: JSON.stringify(cfg, null, 2)
             };
+            this.validateJson();
             this.showForm = true;
+            await this.fetchAvailableKinds();
+            if (inferredKind) await this.fetchSchema(inferredKind);
         },
 
         async saveProvider() {
             let cfg;
             try { cfg = JSON.parse(this.form.config_json); }
             catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
-
             try {
                 await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}`, {
-                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ config: cfg, is_active: this.form.is_active })
                 });
                 showToast(i18n('providers.saved'), 'success');
                 this.showForm = false;
                 this.editing = null;
-                this.form = { provider_type: 'browser', provider_name: '', is_active: true, config_json: '{}' };
+                this.form = { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}' };
+                this.availableKinds = []; this.currentSchema = null;
                 await this.fetchProviders();
             } catch (_) { showToast(i18n('providers.save_failed'), 'error'); }
         },
@@ -140,12 +382,14 @@ function providerData() {
         },
 
         async testProvider() {
-            let cfg;
-            try { cfg = JSON.parse(this.form.config_json); }
+            try { JSON.parse(this.form.config_json); }
             catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
-
-            const data = await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}/test`, { method: 'POST' });
-            showToast(data.message || i18n('providers.test_complete'), data.ok ? 'success' : 'warning');
+            try {
+                const data = await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}/test`, { method: 'POST' });
+                showToast(data.message || i18n('providers.test_complete'), data.ok ? 'success' : 'warning');
+            } catch (e) {
+                showToast(e.message || i18n('providers.test_complete'), 'error');
+            }
         }
     }
 }

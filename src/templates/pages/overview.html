@@ -1,87 +1,236 @@
 {% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
 {% block title %}{{ _('overview.title') }} - Team Register{% endblock %}
-{% block nav_overview %}bg-gray-800 text-white{% endblock %}
+{% block nav_overview %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('overview.title') }}{% endblock %}
 
 {% block content %}
-<div x-data="overviewData()" x-init="fetchStats()">
-    <!-- Stats Cards -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        <div class="bg-white rounded-lg shadow-sm border p-4">
-            <p class="text-xs text-gray-500 uppercase tracking-wide" x-text="i18n('overview.total')"></p>
-            <p class="text-2xl font-bold mt-1" x-text="stats.total">-</p>
+<div x-data="overviewData()" x-init="fetchStats()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
+
+    {# ─── Row 1: KPI Stat Cards (5 cols, 严格按 Stitch 原型) ─── #}
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        {# Total #}
+        <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-transparent hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-medium uppercase text-muted tracking-wider mb-2" x-text="i18n('overview.total')"></p>
+            <div class="flex items-end justify-between">
+                <div>
+                    <h3 class="text-3xl font-bold text-body tabular-nums" x-text="stats.total ?? '–'">–</h3>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-success/10 text-success text-[11px] font-medium">
+                        <span class="material-symbols-outlined text-xs mr-0.5">trending_up</span>
+                        +{{ '{:.0f}'.format(0) }} 今日
+                    </div>
+                </div>
+                <div class="w-16 h-8 text-success opacity-50">
+                    <svg class="w-full h-full" viewBox="0 0 100 40">
+                        <path d="M0 35 L20 30 L40 32 L60 15 L80 18 L100 5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"></path>
+                    </svg>
+                </div>
+            </div>
         </div>
-        <div class="bg-white rounded-lg shadow-sm border p-4">
-            <p class="text-xs text-gray-500 uppercase tracking-wide" x-text="i18n('overview.running')"></p>
-            <p class="text-2xl font-bold mt-1 text-blue-600" x-text="stats.by_status?.running ?? 0">-</p>
+
+        {# Running #}
+        <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-transparent hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-medium uppercase text-muted tracking-wider mb-2" x-text="i18n('overview.running')"></p>
+            <div class="flex items-end justify-between">
+                <div>
+                    <h3 class="text-3xl font-bold text-body tabular-nums" x-text="stats.by_status?.running ?? 0">0</h3>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-secondary/10 text-secondary text-[11px] font-medium">
+                        <span x-text="(stats.by_status?.running ?? 0)"></span> 任务排队
+                    </div>
+                </div>
+                <div class="w-16 h-8 text-secondary opacity-30">
+                    <svg class="w-full h-full" viewBox="0 0 100 40">
+                        <line stroke="currentColor" stroke-linecap="round" stroke-width="3" x1="0" x2="100" y1="20" y2="20"></line>
+                    </svg>
+                </div>
+            </div>
         </div>
-        <div class="bg-white rounded-lg shadow-sm border p-4">
-            <p class="text-xs text-gray-500 uppercase tracking-wide" x-text="i18n('overview.success')"></p>
-            <p class="text-2xl font-bold mt-1 text-green-600" x-text="stats.by_status?.success ?? 0">-</p>
+
+        {# Success #}
+        <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-transparent hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-medium uppercase text-muted tracking-wider mb-2" x-text="i18n('overview.success')"></p>
+            <div class="flex items-end justify-between">
+                <div>
+                    <h3 class="text-3xl font-bold text-success tabular-nums" x-text="stats.by_status?.success ?? 0">0</h3>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-success/10 text-success text-[11px] font-medium"
+                         x-text="(stats.success_rate || '0%') + ' 通过'"></div>
+                </div>
+                <div class="w-16 h-8 text-success opacity-50">
+                    <svg class="w-full h-full" viewBox="0 0 100 40">
+                        <path d="M0 38 L30 30 L60 35 L100 5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"></path>
+                    </svg>
+                </div>
+            </div>
         </div>
-        <div class="bg-white rounded-lg shadow-sm border p-4">
-            <p class="text-xs text-gray-500 uppercase tracking-wide" x-text="i18n('overview.failed')"></p>
-            <p class="text-2xl font-bold mt-1 text-red-600" x-text="stats.by_status?.failed ?? 0">-</p>
+
+        {# Failed #}
+        <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-transparent hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-medium uppercase text-muted tracking-wider mb-2" x-text="i18n('overview.failed')"></p>
+            <div class="flex items-end justify-between">
+                <div>
+                    <h3 class="text-3xl font-bold text-danger tabular-nums" x-text="stats.by_status?.failed ?? 0">0</h3>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-danger/10 text-danger text-[11px] font-medium">
+                        <span class="material-symbols-outlined text-xs mr-0.5">trending_down</span>
+                        <span x-text="(stats.by_status?.failed ?? 0) > 0 ? '需关注' : '稳定'"></span>
+                    </div>
+                </div>
+                <div class="w-16 h-8 text-danger opacity-50">
+                    <svg class="w-full h-full" viewBox="0 0 100 40">
+                        <path d="M0 5 L30 15 L60 10 L100 38" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"></path>
+                    </svg>
+                </div>
+            </div>
         </div>
-        <div class="bg-white rounded-lg shadow-sm border p-4">
-            <p class="text-xs text-gray-500 uppercase tracking-wide" x-text="i18n('overview.success_rate')"></p>
-            <p class="text-2xl font-bold mt-1" x-text="stats.success_rate || '0%'">-</p>
+
+        {# Success Rate（含进度环） #}
+        <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-transparent hover:shadow-token-md transition-shadow">
+            <p class="text-[11px] font-label font-medium uppercase text-muted tracking-wider mb-2" x-text="i18n('overview.success_rate')"></p>
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-3xl font-bold text-primary tabular-nums" x-text="stats.success_rate || '0%'">0%</h3>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium">目标 85%</div>
+                </div>
+                <div class="relative w-12 h-12 flex items-center justify-center">
+                    <svg class="w-full h-full transform -rotate-90">
+                        <circle class="text-border" cx="24" cy="24" fill="transparent" r="20" stroke="currentColor" stroke-width="4"></circle>
+                        <circle class="text-primary" cx="24" cy="24" fill="transparent" r="20" stroke="currentColor"
+                                stroke-dasharray="125.6"
+                                :stroke-dashoffset="125.6 - 125.6 * (parseFloat(stats.success_rate || '0') / 100)"
+                                stroke-width="4"
+                                stroke-linecap="round"></circle>
+                    </svg>
+                    <span class="absolute text-[10px] font-bold text-primary tabular-nums"
+                          x-text="Math.round(parseFloat(stats.success_rate || '0'))"></span>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- Quick Actions -->
-    <div class="bg-white rounded-lg shadow-sm border p-6 mb-8">
-        <h3 class="text-sm font-semibold text-gray-700 mb-4" x-text="i18n('overview.quick_actions')"></h3>
-        <div class="flex flex-wrap gap-3">
-            <a href="/tasks/create" class="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
-               x-text="'+ ' + i18n('overview.new_task')"></a>
-            <a href="/api/export/csv" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition"
-               x-text="i18n('overview.export_csv')"></a>
-            <button @click="fetchStats()" class="px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-lg hover:bg-gray-200 transition"
-                    x-text="i18n('overview.refresh')"></button>
+    {# ─── Row 2: Quick Actions ─── #}
+    <div class="bg-surface p-6 rounded-lg shadow-token-sm border border-border">
+        <div class="flex items-center justify-between">
+            <div>
+                <h3 class="text-lg font-semibold text-body" x-text="i18n('overview.quick_actions')"></h3>
+                <p class="text-sm text-muted">常用操作快速入口</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="/tasks/create"
+                   class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-all font-medium shadow-token-sm active:scale-95">
+                    <span class="material-symbols-outlined text-sm">add</span>
+                    <span x-text="i18n('overview.new_task')"></span>
+                </a>
+                <a href="/api/export/csv"
+                   class="flex items-center gap-2 px-4 py-2 border border-border text-body rounded-lg hover:bg-subtle transition-all font-medium active:scale-95">
+                    <span class="material-symbols-outlined text-sm">download</span>
+                    <span x-text="i18n('overview.export_csv')"></span>
+                </a>
+                <button @click="fetchStats()"
+                        class="flex items-center gap-2 px-4 py-2 text-muted hover:text-body hover:bg-subtle rounded-lg transition-all font-medium active:scale-95">
+                    <span class="material-symbols-outlined text-sm">refresh</span>
+                    <span x-text="i18n('overview.refresh')"></span>
+                </button>
+            </div>
         </div>
     </div>
 
-    <!-- Recent Tasks -->
-    <div class="bg-white rounded-lg shadow-sm border">
-        <div class="px-6 py-4 border-b flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-gray-700" x-text="i18n('overview.recent_tasks')"></h3>
-            <a href="/tasks" class="text-xs text-blue-600 hover:underline" x-text="i18n('overview.view_all') + ' →'"></a>
+    {# ─── Row 3: Recent Tasks Data Grid ─── #}
+    <div class="bg-surface rounded-lg shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+        <div class="px-6 py-4 flex items-center justify-between border-b border-border">
+            <div class="flex items-center gap-3">
+                <h3 class="text-lg font-semibold text-body" x-text="i18n('overview.recent_tasks')"></h3>
+                <span class="bg-subtle text-muted text-xs px-2 py-0.5 rounded-full font-label tabular-nums"
+                      x-text="stats.total || 0"></span>
+            </div>
+            <a href="/tasks" class="text-primary text-sm font-medium hover:underline flex items-center gap-1">
+                <span x-text="i18n('overview.view_all')"></span>
+                <span class="material-symbols-outlined text-sm">arrow_forward</span>
+            </a>
         </div>
-        <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-                <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+
+        {# Inline filter chips + density/settings #}
+        <div class="px-6 py-3 bg-subtle/30 flex items-center gap-4">
+            <button @click="filterChip = ''" :class="filterChip === '' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">全部</button>
+            <button @click="filterChip = 'running'" :class="filterChip === 'running' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">running</button>
+            <button @click="filterChip = 'success'" :class="filterChip === 'success' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">success</button>
+            <button @click="filterChip = 'failed'" :class="filterChip === 'failed' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">failed</button>
+            <div class="ml-auto flex items-center gap-3">
+                {{ ui.grid_search(placeholder='搜索 邮箱 / Run ID / 阶段...') }}
+                <span class="material-symbols-outlined text-lg text-muted cursor-default" title="密度">density_medium</span>
+                {{ ui.grid_columns_settings() }}
+            </div>
+        </div>
+
+        {# Data Grid Table — 概览只读看板：仅展示，不支持选择/写操作 #}
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-subtle text-[11px] font-label font-medium uppercase text-muted tracking-wider">
                     <tr>
-                        <th class="px-6 py-3 text-left" x-text="i18n('overview.table.email')"></th>
-                        <th class="px-6 py-3 text-left" x-text="i18n('overview.table.status')"></th>
-                        <th class="px-6 py-3 text-left" x-text="i18n('overview.table.phase')"></th>
-                        <th class="px-6 py-3 text-left" x-text="i18n('overview.table.created')"></th>
+                        <th x-show="visibleColumns.includes('email')" class="px-6 py-3" x-text="i18n('overview.table.email')"></th>
+                        <th x-show="visibleColumns.includes('status')" class="px-6 py-3" x-text="i18n('overview.table.status')"></th>
+                        <th x-show="visibleColumns.includes('phase')" class="px-6 py-3" x-text="i18n('overview.table.phase')"></th>
+                        <th x-show="visibleColumns.includes('created_at')" class="px-6 py-3 cursor-pointer hover:text-body transition-colors">
+                            <div class="flex items-center gap-1">
+                                <span x-text="i18n('overview.table.created')"></span>
+                                <span class="material-symbols-outlined text-sm">arrow_upward</span>
+                            </div>
+                        </th>
                     </tr>
                 </thead>
-                <tbody class="divide-y">
-                    <template x-for="task in recentTasks" :key="task.id">
-                        <tr class="hover:bg-gray-50 cursor-pointer" @click="window.location='/tasks/' + task.id">
-                            <td class="px-6 py-3 font-mono text-xs" x-text="task.email"></td>
-                            <td class="px-6 py-3">
-                                <span class="px-2 py-0.5 rounded-full text-xs font-medium"
-                                      :class="{
-                                          'bg-green-100 text-green-700': task.status === 'success',
-                                          'bg-red-100 text-red-700': task.status === 'failed',
-                                          'bg-blue-100 text-blue-700': task.status === 'running',
-                                          'bg-yellow-100 text-yellow-700': task.status === 'pending',
-                                          'bg-gray-100 text-gray-700': task.status === 'cancelled'
-                                      }"
+                <tbody class="divide-y divide-border">
+                    <template x-for="(task, idx) in filteredTasks" :key="task.id">
+                        <tr :class="idx % 2 === 1 ? 'bg-subtle/50' : ''"
+                            class="hover:bg-primary/5 transition-colors h-[48px] cursor-pointer"
+                            @click="window.location = '/tasks/' + task.id">
+                            <td x-show="visibleColumns.includes('email')" class="px-6">
+                                <span x-show="task.email" class="mono-text text-sm" x-text="task.email"></span>
+                                <span x-show="!task.email" class="text-muted italic text-sm">(空邮箱)</span>
+                            </td>
+                            <td x-show="visibleColumns.includes('status')" class="px-6">
+                                <span :class="statusBadgeClass(task.status)"
+                                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-label font-medium uppercase"
                                       x-text="translateEnum('status', task.status, task.status)"></span>
                             </td>
-                            <td class="px-6 py-3 text-gray-500" x-text="translateEnum('phase', task.phase, task.phase)"></td>
-                            <td class="px-6 py-3 text-gray-400 text-xs" x-text="new Date(task.created_at).toLocaleString(window._locale)"></td>
+                            <td x-show="visibleColumns.includes('phase')" class="px-6 text-sm text-muted" x-text="translateEnum('phase', task.phase, task.phase) || '—'"></td>
+                            <td x-show="visibleColumns.includes('created_at')" class="px-6 mono-text text-xs text-muted" x-text="new Date(task.created_at).toLocaleString(window._locale)"></td>
                         </tr>
                     </template>
-                    <tr x-show="recentTasks.length === 0">
-                        <td colspan="4" class="px-6 py-8 text-center text-gray-400" x-text="i18n('overview.no_tasks')"></td>
+                    <tr x-show="filteredTasks.length === 0">
+                        <td :colspan="visibleColumns.length || 1" class="px-6 py-12 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-4xl text-border">inbox</span>
+                                <span class="text-sm" x-text="i18n('overview.no_tasks')"></span>
+                            </div>
+                        </td>
                     </tr>
                 </tbody>
             </table>
+        </div>
+
+        {# Pagination footer #}
+        <div class="px-6 py-4 flex items-center justify-between border-t border-border bg-subtle/10 text-sm">
+            <div class="text-muted tabular-nums">
+                <span x-text="filteredTasks.length"></span> of <span x-text="stats.total || 0"></span> rows ·
+                <span class="text-body font-medium ml-1">25 / page</span>
+            </div>
+            <div class="flex items-center gap-4">
+                <button disabled class="text-muted hover:text-body disabled:opacity-50 flex items-center gap-1">
+                    <span class="material-symbols-outlined text-lg">chevron_left</span>
+                    Prev
+                </button>
+                <div class="flex items-center gap-1">
+                    <button class="w-8 h-8 rounded bg-primary text-white font-medium shadow-token-sm tabular-nums">1</button>
+                    <button class="w-8 h-8 rounded hover:bg-subtle transition-colors text-muted hover:text-body tabular-nums">2</button>
+                    <button class="w-8 h-8 rounded hover:bg-subtle transition-colors text-muted hover:text-body tabular-nums">3</button>
+                </div>
+                <a href="/tasks" class="text-body hover:text-primary flex items-center gap-1">
+                    Next
+                    <span class="material-symbols-outlined text-lg">chevron_right</span>
+                </a>
+            </div>
         </div>
     </div>
 </div>
@@ -91,6 +240,47 @@ function overviewData() {
     return {
         stats: {},
         recentTasks: [],
+        filterChip: '',
+
+        // 搜索 expand
+        searchTerm: '',
+        searchExpanded: false,
+
+        // 列显隐：从 localStorage 读，默认全显（与 /tasks 用不同 key 隔离）
+        visibleColumns: (() => {
+            try {
+                const raw = localStorage.getItem('overview.visibleColumns');
+                return raw ? JSON.parse(raw) : ['email', 'status', 'phase', 'created_at'];
+            } catch (_) {
+                return ['email', 'status', 'phase', 'created_at'];
+            }
+        })(),
+
+        get columnOptions() {
+            return [
+                { key: 'email',      label: i18n('overview.table.email') },
+                { key: 'status',     label: i18n('overview.table.status') },
+                { key: 'phase',      label: i18n('overview.table.phase') },
+                { key: 'created_at', label: i18n('overview.table.created') },
+            ];
+        },
+
+        toggleColumn(key) {
+            const idx = this.visibleColumns.indexOf(key);
+            if (idx >= 0) this.visibleColumns.splice(idx, 1);
+            else this.visibleColumns.push(key);
+            try { localStorage.setItem('overview.visibleColumns', JSON.stringify(this.visibleColumns)); } catch (_) {}
+        },
+
+        get filteredTasks() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            let arr = this.filterChip
+                ? this.recentTasks.filter(t => t.status === this.filterChip)
+                : this.recentTasks;
+            if (!q) return arr;
+            return arr.filter(t => `${t.email || ''} ${t.id || ''} ${t.phase || ''}`.toLowerCase().includes(q));
+        },
+
         async fetchStats() {
             const [statsRes, tasksRes] = await Promise.all([
                 fetch('/api/stats').then(r => r.json()),
@@ -98,7 +288,19 @@ function overviewData() {
             ]);
             this.stats = statsRes;
             this.recentTasks = tasksRes.items || [];
-        }
+        },
+
+        statusBadgeClass(status) {
+            // Stitch 原型严格对齐：用 success/12 这种透明度修饰
+            const map = {
+                success:   'bg-success/12 text-success',
+                failed:    'bg-danger/12 text-danger',
+                running:   'bg-secondary/12 text-secondary',
+                pending:   'bg-warning/12 text-warning',
+                cancelled: 'bg-neutral-200 text-neutral-700',
+            };
+            return map[status] || map.cancelled;
+        },
     }
 }
 </script>

@@ -21,7 +21,11 @@
 from __future__ import annotations
 
 import secrets
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass
+from typing import Deque, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -129,3 +133,110 @@ def generate_us_phone(area_code: str, seed: str | None = None) -> str:
     central = f"{central_first}{central_rest:02d}"
     last_four = rng.randint(0, 9999)
     return f"({area_code}) {central}-{last_four:04d}"
+
+
+# ── 地址冷却（A1）─────────────────────────────────────────────────
+#
+# 问题：24 个静态地址，规模化使用同地址会被 PayPal address velocity rule 标记
+#       （`200 Hudson St` / `1455 Market St` 已被本系统多次复用，注释自证）。
+# 方案：内存窗口计数 — 24h 内同地址 ≥ max_uses 次时从可用池剔除，
+#       超出窗口的旧时间戳自动淘汰，进程重启清零（数据少时够用）。
+# 线程安全：用模块级 lock 保护 deque/dict，FastAPI 多线程下不会脏读。
+_USAGE_LOCK = threading.Lock()
+_USAGE_LOG: Dict[str, Deque[float]] = {}
+
+
+def _address_key(addr: "BillingAddress") -> str:
+    """地址唯一键 = line1 + zip（line1 单独可能重名，zip 单独跨城重复）。"""
+    return f"{addr.line1}|{addr.zip_code}"
+
+
+def _prune_usage(key: str, window_seconds: float, now: Optional[float] = None) -> int:
+    """淘汰窗口外的时间戳，返回剩余次数（**调用方需持锁**）。"""
+    now = now if now is not None else time.time()
+    dq = _USAGE_LOG.get(key)
+    if dq is None:
+        return 0
+    cutoff = now - window_seconds
+    while dq and dq[0] < cutoff:
+        dq.popleft()
+    if not dq:
+        _USAGE_LOG.pop(key, None)
+        return 0
+    return len(dq)
+
+
+def _record_usage(key: str, now: Optional[float] = None) -> None:
+    """记录一次使用（**调用方需持锁**）。"""
+    now = now if now is not None else time.time()
+    dq = _USAGE_LOG.setdefault(key, deque())
+    dq.append(now)
+
+
+def pick_address_with_cooldown(
+    *,
+    used_within_hours: float = 24.0,
+    max_uses: int = 3,
+    seed: Optional[str] = None,
+) -> BillingAddress:
+    """从地址池选地址，自动剔除"冷却窗口内已用过 ≥ max_uses 次"的地址。
+
+    Args:
+        used_within_hours: 冷却窗口（小时），默认 24h
+        max_uses: 单地址在窗口内最多用几次，默认 3
+        seed: 同 `pick_random_address` 的 seed 语义；**注意**：seed 会绕过 cooldown
+              过滤（确定性优先），仅当 seed=None 时启用冷却
+
+    Returns:
+        BillingAddress，并在内部记录一次使用计数
+
+    Raises:
+        无；池被全冷却时降级返回真随机（避免阻塞业务），并写 warning 日志
+    """
+    # seed 模式优先确定性，跳过 cooldown 过滤
+    if seed is not None:
+        addr = pick_random_address(seed=seed)
+        with _USAGE_LOCK:
+            _record_usage(_address_key(addr))
+        return addr
+
+    window_seconds = float(used_within_hours) * 3600.0
+    pool = _ADDRESS_POOL
+
+    with _USAGE_LOCK:
+        now = time.time()
+        available: Tuple[BillingAddress, ...] = tuple(
+            addr for addr in pool
+            if _prune_usage(_address_key(addr), window_seconds, now=now) < max_uses
+        )
+        # 全池冷却时降级到真随机（不阻塞业务）
+        if not available:
+            import logging
+            logging.getLogger(__name__).warning(
+                "billing_addresses: 全池 %d 个地址都已 cooldown，降级真随机",
+                len(pool),
+            )
+            chosen = secrets.choice(pool)
+        else:
+            chosen = secrets.choice(available)
+        _record_usage(_address_key(chosen), now=now)
+        return chosen
+
+
+def address_usage_snapshot(used_within_hours: float = 24.0) -> Dict[str, int]:
+    """运维查询用：返回当前窗口内每个地址 key 的使用次数（淘汰过期后）。"""
+    window_seconds = float(used_within_hours) * 3600.0
+    snapshot: Dict[str, int] = {}
+    with _USAGE_LOCK:
+        now = time.time()
+        for key in list(_USAGE_LOG.keys()):
+            count = _prune_usage(key, window_seconds, now=now)
+            if count > 0:
+                snapshot[key] = count
+    return snapshot
+
+
+def reset_usage_log() -> None:
+    """单测用：清空使用日志（生产代码不要调）。"""
+    with _USAGE_LOCK:
+        _USAGE_LOG.clear()

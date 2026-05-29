@@ -405,6 +405,26 @@ class HttpMailProvider(MailProvider):
             raise MailRuntimeIncompatibleError(
                 f"{operation}失败：email-provider 返回 {status_code}，当前运行态可能异常；请先确认 {self._base_url} 已重启到最新版本后重试。"
             ) from exc
+        # 400 是上游 provider（CF Worker / Stripe / Apple Mail backend）的客户端语义错误，
+        # 不是 email-provider 本身的运行态问题。归为 ProviderUpstreamError 让 triage
+        # 可以走"换邮箱/换 provider"的可恢复路径，而不是终止整个自动化任务。
+        # 远端契约升级后应改为返回 424 + 结构化 detail；当前临时兜底识别 raw body。
+        if status_code == 400:
+            raw_body = ""
+            try:
+                raw_body = response.text if response is not None else ""
+            except Exception:
+                raw_body = ""
+            human_message = (
+                server_message
+                or raw_body
+                or f"{operation}失败：上游 provider 返回 400 客户端错误"
+            )
+            raise ProviderUpstreamError(
+                f"{operation}失败：{human_message}",
+                error_code=code or "PROVIDER_UPSTREAM_4XX",
+                upstream_status=400,
+            ) from exc
         raise MailRuntimeIncompatibleError(
             f"{operation}失败：无法确认 {self._base_url} 的 email-provider 运行态，原始错误: {exc}"
         ) from exc
@@ -497,6 +517,77 @@ class HttpMailProvider(MailProvider):
             "health": health_payload,
             "provider_profile": provider_profile,
             "supported_session_modes": sorted(supported_modes),
+        }
+
+    def list_provider_domains(
+        self,
+        provider: str,
+        *,
+        config_id: Optional[int] = None,
+        config_name: str = "",
+    ) -> dict[str, Any]:
+        """查询远端 provider 当前启用的 mailbox 域名列表。
+
+        用途：批量注册时，本地客户端需要把 identity_email_local 拼成完整 email
+        （例如 ``william.harrison82@gitee.shop``）传给 ``create_session(email=...)``，
+        让远端走 base_mailbox.py 已有的"模式 B"路径生成有意义的邮箱（替代默认 tmpXXXXXX）。
+
+        返回 schema（与远端 GET /managed-providers/{provider}/domains 对齐）：
+            {
+                "provider": str,
+                "default_domain": str,
+                "enabled_domains": list[str],
+            }
+
+        失败语义：
+        - 4xx / 404：远端尚未部署该端点 → 返回空字典 ``{"enabled_domains": []}``
+          调用方据此降级回原 tmpXXXXXX 路径，不影响主流程。
+        - 5xx / 网络抖动：复用 ``_request_with_retry`` 的指数退避；最终失败仍降级。
+        """
+        provider_name = str(provider or "").strip().lower()
+        if not provider_name:
+            return {"provider": "", "default_domain": "", "enabled_domains": []}
+
+        endpoint_path = f"managed-providers/{provider_name}/domains"
+        params: dict[str, Any] = {}
+        if config_id is not None:
+            params["config_id"] = int(config_id)
+        if str(config_name or "").strip():
+            params["config_name"] = str(config_name).strip()
+
+        def _do_get() -> requests.Response:
+            r = requests.get(
+                self._endpoint_url(endpoint_path),
+                headers=self._headers(),
+                params=params or None,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            r.raise_for_status()
+            return r
+
+        try:
+            resp = self._request_with_retry(_do_get, operation=f"查询 provider 启用域名 /{endpoint_path}")
+        except requests.RequestException:
+            # 端点未部署 / 网络异常 → 静默降级。调用方拿到空列表会回到原 tmpXXXXXX 路径。
+            return {"provider": provider_name, "default_domain": "", "enabled_domains": []}
+
+        payload = self._load_json_dict(resp, endpoint=endpoint_path)
+        raw_domains = payload.get("enabled_domains") or []
+        if not isinstance(raw_domains, list):
+            raw_domains = []
+        domains: list[str] = []
+        seen: set[str] = set()
+        for item in raw_domains:
+            value = str(item or "").strip().lower()
+            if value.startswith("@"):
+                value = value[1:]
+            if value and value not in seen:
+                seen.add(value)
+                domains.append(value)
+        return {
+            "provider": str(payload.get("provider") or provider_name),
+            "default_domain": str(payload.get("default_domain") or "").strip().lower(),
+            "enabled_domains": domains,
         }
 
     def create_session(
