@@ -45,7 +45,10 @@
     "open": "打开",
     "required": "必填",
     "learn_more": "了解更多",
-    "try_again": "重试"
+    "try_again": "重试",
+    "input": "请输入",
+    "submit": "确定",
+    "processing": "处理中..."
   },
   "auth": {
     "login": "登录",

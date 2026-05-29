@@ -24,12 +24,14 @@
                         success:   '#10B981',
                         warning:   '#F59E0B',
                         danger:    '#EF4444',
-                        surface:   '#FFFFFF',
-                        app:       '#F8FAFC',
-                        subtle:    '#F1F5F9',
-                        border:    '#E2E8F0',
-                        muted:     '#64748B',
-                        body:      '#0F172A',
+                        // 语义色：通过 CSS 变量驱动，亮/暗模式各自映射（见下方 :root / html.dark CSS）
+                        // 注意：这些 token 不能用 / alpha 修饰（如 bg-app/50），需要 alpha 时用 white/black 系列
+                        surface:   'var(--color-surface)',
+                        app:       'var(--color-app)',
+                        subtle:    'var(--color-subtle)',
+                        border:    'var(--color-border)',
+                        muted:     'var(--color-muted)',
+                        body:      'var(--color-body)',
                         // 为了 Stitch 风格的 success/12 danger/12 等 alpha 修饰兼容
                         info:    { 50: '#f0f9ff', 100: '#e0f2fe', 500: '#0ea5e9', 600: '#0284c7', 700: '#0369a1' },
                     },
@@ -62,6 +64,35 @@
     <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
     <style>
+        /* ──── 主题语义色 CSS 变量：亮色（默认）+ 暗色（html.dark）──── */
+        /* 通过 Tailwind 中的 var(--color-*) 引用，所有 bg-app/text-body/bg-surface/border-border
+           等语义色自动响应主题切换，零页面改动。 */
+        :root {
+            --color-app:     #F8FAFC;
+            --color-surface: #FFFFFF;
+            --color-subtle:  #F1F5F9;
+            --color-border:  #E2E8F0;
+            --color-muted:   #64748B;
+            --color-body:    #0F172A;
+            /* 滚动条 thumb 色，配合 .custom-scrollbar */
+            --color-scrollbar-thumb: #E2E8F0;
+        }
+        html.dark {
+            --color-app:     #0B1120;   /* slate-950 偏冷，比 sidebar #0F172A 稍深做层次 */
+            --color-surface: #111827;   /* slate-900：卡片/topbar 底 */
+            --color-subtle:  #1E293B;   /* slate-800：subtle bg（如 chip、code 块）*/
+            --color-border:  #1F2937;   /* slate-800：边框（比 surface 微亮一点）*/
+            --color-muted:   #94A3B8;   /* slate-400：辅助文字 */
+            --color-body:    #F1F5F9;   /* slate-100：主体文字 */
+            --color-scrollbar-thumb: #334155;
+        }
+        /* 暗色模式下，亮色装饰背景的 dot grid 不显眼，进一步降透明度 */
+        html.dark .theme-decor-dotgrid { opacity: 0.05 !important; }
+        /* 颜色过渡，避免切换时硬切 */
+        html, body, header, main, aside, [class*="bg-surface"], [class*="bg-app"], [class*="bg-subtle"] {
+            transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+        }
+
         [x-cloak] { display: none !important; }
         body { font-feature-settings: 'cv02','cv03','cv04','cv11'; }
         .material-symbols-outlined {
@@ -98,7 +129,7 @@
         .pulse-dot { animation: pulse-white 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #E2E8F0; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 10px; }
         /* Sidebar collapse: 展开 240px / 收起 64px。
            关键：宽度由纯 CSS class 控制（不依赖 Alpine :class），首屏 IIFE 就把 .sidebar-collapsed 打到 <html>，
            跳页/刷新都是同步生效，零闪烁（FOUC-free）。 */
@@ -178,14 +209,18 @@
         }
     </style>
     <script>
-        // 零闪烁折叠：所有视觉态都由 <html>.sidebar-collapsed 这个 className 通过纯 CSS 驱动。
+        // 零闪烁折叠 + 主题：所有视觉态由 <html> 的 className 通过纯 CSS 驱动。
         // 1) 首屏 IIFE 在 Alpine 加载前同步注入 className（FOUC-free）；
         // 2) toggle 函数直接操作 className，不走 Alpine 响应式（避免页面跳转时的 re-init 闪烁）；
-        // 3) localStorage 持久化跨页一致。
+        // 3) localStorage 持久化跨页一致；默认主题为亮色（light）。
         (function () {
             try {
                 if (localStorage.getItem('tr.sidebarCollapsed') === '1') {
                     document.documentElement.classList.add('sidebar-collapsed');
+                }
+                // 主题：默认 light，仅当用户显式选择 dark 才切；不读系统偏好（按用户需求默认亮色）
+                if (localStorage.getItem('tr.theme') === 'dark') {
+                    document.documentElement.classList.add('dark');
                 }
             } catch (_) { /* localStorage 不可用时静默 */ }
         })();
@@ -195,13 +230,24 @@
             html.classList.toggle('sidebar-collapsed', next);
             try { localStorage.setItem('tr.sidebarCollapsed', next ? '1' : '0'); } catch (_) {}
         };
+        window.toggleTheme = function () {
+            var html = document.documentElement;
+            var next = !html.classList.contains('dark');
+            html.classList.toggle('dark', next);
+            try { localStorage.setItem('tr.theme', next ? 'dark' : 'light'); } catch (_) {}
+            // 派发自定义事件，供 Alpine 切换图标
+            window.dispatchEvent(new CustomEvent('tr:theme', { detail: { dark: next } }));
+        };
+        window.getCurrentTheme = function () {
+            return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+        };
     </script>
     {% block head %}{% endblock %}
 </head>
 <body class="bg-app text-body font-body antialiased min-h-screen">
 
-{# ─────────────── 装饰背景：subtle indigo dot grid ─────────────── #}
-<div class="fixed inset-0 pointer-events-none -z-10 opacity-[0.03]" style="background-image: radial-gradient(#4F46E5 1px, transparent 1px); background-size: 24px 24px;"></div>
+{# ─────────────── 装饰背景：subtle indigo dot grid（暗色模式自动降透明）─────────────── #}
+<div class="theme-decor-dotgrid fixed inset-0 pointer-events-none -z-10 opacity-[0.03]" style="background-image: radial-gradient(#4F46E5 1px, transparent 1px); background-size: 24px 24px;"></div>
 
 {# ─────────────── Sidebar （Stitch 高保真重构）─────────────── #}
 {# 设计要点：Brand 简化为 icon+单行标题 / Nav 分两组（工作流·资源管理）/ Active 用 white/10 底 + 3px Indigo 左条 + filled icon / 收起态留 rail 64px / Toggle 按钮浮贴右边缘 #}
@@ -344,6 +390,18 @@
         <h2 class="text-lg font-semibold text-body">{% block page_title %}Dashboard{% endblock %}</h2>
     </div>
     <div class="flex items-center gap-6">
+        {# Theme toggle：sun（亮色态显示，点击切到暗）/ moon（暗色态显示，点击切到亮）#}
+        <button
+            x-data="{ dark: window.getCurrentTheme() === 'dark' }"
+            x-init="window.addEventListener('tr:theme', e => dark = e.detail.dark)"
+            @click="window.toggleTheme()"
+            class="w-8 h-8 flex items-center justify-center rounded-full bg-subtle text-muted hover:text-primary hover:scale-105 active:scale-95 transition-all"
+            :aria-label="dark ? '切换到亮色主题' : '切换到暗色主题'"
+            :title="dark ? '切换到亮色主题' : '切换到暗色主题'"
+        >
+            <span class="material-symbols-outlined text-[18px]" x-text="dark ? 'light_mode' : 'dark_mode'"></span>
+        </button>
+
         {# ZH/EN toggle #}
         <div x-data="langSwitcher()" class="flex items-center gap-2 px-3 py-1 bg-subtle rounded-full text-xs font-medium" role="group" aria-label="Language">
             <span @click="setLang('zh-CN')" :class="currentLang === 'zh-CN' ? 'text-primary cursor-pointer' : 'text-neutral-500 cursor-pointer hover:text-primary'">ZH</span>
@@ -392,12 +450,14 @@
 <div
     x-data="assistantWidget({ enabled: {{ 'true' if assistant_enabled else 'false' }}, backendReady: {{ 'true' if assistant_backend_ready else 'false' }} })"
     x-init="init()"
-    class="fixed bottom-8 right-8 z-50"
+    @keydown.escape.window="open = false"
+    class="fixed bottom-8 right-8 z-[70]"
     x-cloak
 >
     <button
         x-show="!open"
         @click="open = true"
+        type="button"
         class="bg-primary text-white flex items-center gap-3 px-5 py-3 rounded-full shadow-token-lg hover:bg-primary-hover hover:scale-105 active:scale-95 transition-all"
     >
         <div class="relative">
@@ -407,14 +467,22 @@
         <span class="font-semibold text-sm">{{ _('assistant.launcher') }}</span>
     </button>
 
-    <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-token-lg fade-in">
+    <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-token-lg fade-in relative z-[71]">
         <div class="flex items-start justify-between border-b border-border px-4 py-3">
             <div>
                 <h3 class="text-sm font-semibold text-body">{{ _('assistant.title') }}</h3>
                 <p class="mt-1 text-xs text-muted" x-text="ready ? i18n('assistant.status_ready') : i18n('assistant.status_fallback')"></p>
             </div>
-            <button @click="open = false" class="rounded-md p-1 text-muted hover:bg-subtle hover:text-body">
-                <span class="material-symbols-outlined text-base">close</span>
+            {# Close 按钮：type=button 防止隐含 submit；@click.stop 防止冒泡到父 widget；
+               z-[72] + relative 保证按钮永远在最顶层不被任何透明覆盖层挡住（修复"× 点不掉"）#}
+            <button
+                @click.stop="open = false"
+                type="button"
+                aria-label="关闭 AI 助手"
+                title="关闭 (Esc)"
+                class="relative z-[72] rounded-md p-1 text-muted hover:bg-subtle hover:text-body cursor-pointer pointer-events-auto"
+            >
+                <span class="material-symbols-outlined text-base pointer-events-none">close</span>
             </button>
         </div>
 
@@ -574,7 +642,9 @@
 </div>
 {% endif %}
 
-<div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+<div id="toast-container" class="fixed bottom-4 right-4 z-[100] space-y-2"></div>
+<!-- 全局弹窗单例宿主：confirmDialog / promptDialog 复用，feedback.js 接管显隐 -->
+<div id="feedback-modal-root" class="hidden"></div>
 
 <script>
 window._translations = {{ _translations() | tojson }};
@@ -608,19 +678,6 @@ function langSwitcher() {
             window.location.reload();
         }
     }
-}
-
-function showToast(msg, type = 'info') {
-    const container = document.getElementById('toast-container');
-    const colors = {
-        success: 'bg-success', error: 'bg-danger',
-        warning: 'bg-warning', info: 'bg-body'
-    };
-    const el = document.createElement('div');
-    el.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-lg shadow-token-md fade-in`;
-    el.textContent = msg;
-    container.appendChild(el);
-    setTimeout(() => el.remove(), 4000);
 }
 
 async function fetchJson(url, options = {}) {
@@ -858,6 +915,9 @@ function assistantWidget({ enabled, backendReady }) {
     }
 }
 </script>
+
+<!-- 全局统一反馈系统：增强 showToast + notify + confirmDialog + promptDialog -->
+<script src="/static/js/feedback.js"></script>
 
 {% block scripts %}{% endblock %}
 </body>

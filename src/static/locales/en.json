@@ -45,7 +45,10 @@
     "open": "Open",
     "required": "Required",
     "learn_more": "Learn more",
-    "try_again": "Try again"
+    "try_again": "Try again",
+    "input": "Enter a value",
+    "submit": "Submit",
+    "processing": "Processing..."
   },
   "auth": {
     "login": "Login",
