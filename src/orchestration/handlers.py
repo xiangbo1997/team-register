@@ -386,7 +386,10 @@ def handle_email_verification_step(page: Page, mail_api, email: str, *, runtime:
     """处理邮箱验证码提交。"""
     logger.info("发现邮箱验证页面，开始拉取验证码...")
     try:
-        mail_code = mail_api.get_verification_code_via_browser(email=email, page=page, wait_timeout=120)
+        # [fix 2026-05-29] wait_timeout 180s（原 120s 太短）：远端到
+        # login.microsoftonline.com TLS handshake 不稳，单轮 cache miss 30-90s。
+        # 180s 足够 6-8 轮 cache miss/hit 混合重试拿到验证码邮件。
+        mail_code = mail_api.get_verification_code_via_browser(email=email, page=page, wait_timeout=180)
         if mail_code:
             logger.info("拉取成功: %s，正在填入...", mail_code)
             code_selector = 'input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"]'
