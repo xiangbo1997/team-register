@@ -663,10 +663,15 @@ class TestMainHelpers(unittest.TestCase):
 class TestMainOrchestration(unittest.TestCase):
     """main() 编排测试"""
 
-    @patch("src.providers.card.EfunCardProvider")
+    @patch("src.providers.cards.efuncard.EfunCardProvider")
+    @patch("src.providers.get_registry")
     @patch("main.SMSManager")
     @patch("main.MailManager")
-    def test_build_runtime_clients(self, mock_mail, mock_sms, mock_card):
+    def test_build_runtime_clients(self, mock_mail, mock_sms, mock_get_registry, mock_card_cls):
+        # 强制 registry 路径返回 None，让 _build_card_client 走 env fallback。
+        # 这样测试就和宿主机 team_register.db 是否有 active card provider 解耦。
+        mock_get_registry.return_value.build_active.return_value = None
+
         config = AppConfig(
             efuncard_token="card-token",
             sms_api_key="sms-key",
@@ -682,11 +687,11 @@ class TestMainOrchestration(unittest.TestCase):
 
         card_api, sms_api, mail_api = main._build_runtime_clients(config)
 
-        # 现在 _build_card_client 走 EfunCardProvider 包装层（带 audit 写入）
-        self.assertIs(card_api, mock_card.return_value)
+        # env fallback 路径会实例化 EfunCardProvider(token=...)
+        self.assertIs(card_api, mock_card_cls.return_value)
         self.assertIs(sms_api, mock_sms.return_value)
         self.assertIs(mail_api, mock_mail.return_value)
-        mock_card.assert_called_once_with(token="card-token")
+        mock_card_cls.assert_called_once_with(token="card-token")
         mock_sms.assert_called_once_with(
             api_key="sms-key",
             country="12",
@@ -712,10 +717,14 @@ class TestMainOrchestration(unittest.TestCase):
             config_name="",
         )
 
-    @patch("main.EfunCard")
+    @patch("src.providers.cards.efuncard.EfunCardProvider")
+    @patch("src.providers.get_registry")
     @patch("main.SMSManager")
     @patch("main.MailManager")
-    def test_build_runtime_clients_allows_missing_card_token(self, mock_mail, mock_sms, mock_card):
+    def test_build_runtime_clients_allows_missing_card_token(self, mock_mail, mock_sms, mock_get_registry, mock_card_cls):
+        # registry 不命中 + token 为空 → card_api 应为 None
+        mock_get_registry.return_value.build_active.return_value = None
+
         config = AppConfig(
             efuncard_token="",
             sms_api_key="sms-key",
@@ -731,7 +740,7 @@ class TestMainOrchestration(unittest.TestCase):
         self.assertIsNone(card_api)
         self.assertIs(sms_api, mock_sms.return_value)
         self.assertIs(mail_api, mock_mail.return_value)
-        mock_card.assert_not_called()
+        mock_card_cls.assert_not_called()
         mock_mail.assert_called_once_with(
             base_url="http://127.0.0.1:8000",
             api_key="test-key",

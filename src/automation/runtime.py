@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 from curl_cffi import requests as curl_requests
 
 from src.automation.artifacts import ArtifactRecorder
+from src.automation.captcha_solver import try_solve_captcha
 from src.automation.experience import ExperienceStore
 from src.automation.llm import LLMDecisionProvider
 from src.automation.models import (
@@ -48,6 +49,9 @@ class AutomationRuntime:
     mail_api: Any
     logger: Any
     handlers: dict[str, Callable[["AutomationRuntime", Action], Any]]
+    # SMSManager 注入：phone 模式 handler `submit_phone_and_code` 用它申领 / 轮询 OTP；
+    # email 模式 handler 不读这个字段。默认 None 让大部分单测 / 历史调用站不必传。
+    sms_api: Any = None
     artifact_recorder: Optional[ArtifactRecorder] = None
     run_id: str = ""
     llm_provider: Optional[LLMDecisionProvider] = None
@@ -59,6 +63,7 @@ class AutomationRuntime:
     llm_uncertain_counters: dict[str, int] = field(default_factory=dict)
     manual_handoff_used: bool = False
     triage_provider: Optional[Any] = None
+    captcha_solver: Optional[Any] = None
     recent_log_buffer: list[str] = field(default_factory=list)
 
 
@@ -532,7 +537,10 @@ class RegistrationStateMachine:
             if state == AutomationState.HOME:
                 return MachineResult(success=True, final_state=state, manual_handoff_used=runtime.manual_handoff_used)
 
-            if state in {AutomationState.BLOCKED, AutomationState.PHONE}:
+            if state == AutomationState.BLOCKED:
+                # BLOCKED 前先给一次自愈机会
+                if try_solve_captcha(runtime, evidence):
+                    continue
                 _run_triage(runtime, evidence, state.value)
                 if self._try_manual_handoff(runtime, evidence, state.value):
                     continue
@@ -542,6 +550,22 @@ class RegistrationStateMachine:
                     failure_reason=state.value,
                     manual_handoff_used=runtime.manual_handoff_used,
                 )
+
+            if state == AutomationState.PHONE:
+                # 仅 registration_kind="phone" 模式才进入 PHONE handler（_build_actions 注入 submit_phone_and_code）；
+                # 默认 email 模式仍然走原来的硬失败 → triage → manual_handoff 路径，避免破坏既有行为。
+                registration_kind = str(getattr(runtime.config, "registration_kind", "email") or "email").strip().lower()
+                if registration_kind != "phone":
+                    _run_triage(runtime, evidence, state.value)
+                    if self._try_manual_handoff(runtime, evidence, state.value):
+                        continue
+                    return MachineResult(
+                        success=False,
+                        final_state=state,
+                        failure_reason=state.value,
+                        manual_handoff_used=runtime.manual_handoff_used,
+                    )
+                # phone 模式：放行让下面 _build_actions 拿到 PHONE 的 submit_phone_and_code 候选
 
             candidates = self._build_actions(runtime, evidence)
             decision_source = "rule"
@@ -557,6 +581,28 @@ class RegistrationStateMachine:
                         reason_code="EXPERIENCE_MATCH",
                     )
                     decision_source = "experience"
+
+            # 规则升级：onboarding 卡住时（retry_count >= 1）自动切换到 skip_onboarding，
+            # 不依赖 LLM 是否启用——LLM 未配置时这是唯一兜底。
+            if (
+                state == AutomationState.ABOUT_YOU
+                and retry_count >= 1
+                and evidence.signals.get("has_onboarding_prompt")
+                and any(c.action_id == "skip_onboarding" for c in candidates)
+                and decision.kind == DecisionKind.CHOOSE_ACTION
+                and decision.action_id == "fill_about_you"
+            ):
+                runtime.logger.warning(
+                    "ABOUT_YOU 卡住 retry=%d 且存在 onboarding 信号，规则升级为 skip_onboarding。",
+                    retry_count,
+                )
+                decision = Decision(
+                    kind=DecisionKind.CHOOSE_ACTION,
+                    action_id="skip_onboarding",
+                    confidence=0.9,
+                    reason_code="RULE_UPGRADE_ONBOARDING_SKIP",
+                )
+                decision_source = "rule_upgrade"
 
             if runtime.llm_provider and (state in {AutomationState.UNKNOWN, AutomationState.ERROR} or retry_count >= 1):
                 llm_decision = runtime.llm_provider.decide(evidence=evidence, candidates=candidates)
@@ -703,8 +749,25 @@ class RegistrationStateMachine:
                 )
             ]
 
-        if state == AutomationState.ABOUT_YOU:
+        if state == AutomationState.PHONE:
+            # 仅 phone 模式才会到这里（上面 PHONE state 处理已 gate）；
+            # handler 见 src/orchestration/handlers.py:submit_phone_and_code
             return [
+                Action(
+                    action_id="submit_phone_and_code",
+                    kind=ActionKind.FILL,
+                    description="填写手机号 → 等待 SMS OTP → 填验证码 → 提交",
+                    params={"handler": "submit_phone_and_code"},
+                    expected_outcomes=[
+                        AutomationState.HOME,
+                        AutomationState.ABOUT_YOU,
+                        AutomationState.VERIFY_EMAIL,
+                    ],
+                )
+            ]
+
+        if state == AutomationState.ABOUT_YOU:
+            actions: list[Action] = [
                 Action(
                     action_id="fill_about_you",
                     kind=ActionKind.FILL,
@@ -712,6 +775,21 @@ class RegistrationStateMachine:
                     params={"handler": "fill_about_you"},
                     expected_outcomes=[AutomationState.HOME, AutomationState.PHONE],
                 ),
+            ]
+            # 仅当检测到注册后 onboarding 问卷信号时才暴露 skip_onboarding 候选，
+            # 作为 LLM 兜底的有效选项（点底部最后一个按钮 = 跳过/Skip，绕开
+            # primary 按钮可能 disabled 的情况）。
+            if evidence.signals.get("has_onboarding_prompt"):
+                actions.append(
+                    Action(
+                        action_id="skip_onboarding",
+                        kind=ActionKind.CLICK,
+                        description="强制点击 onboarding 问卷的跳过/最后一个底部按钮",
+                        params={"handler": "skip_onboarding"},
+                        expected_outcomes=[AutomationState.HOME, AutomationState.PHONE],
+                    )
+                )
+            actions.append(
                 Action(
                     action_id="wait_short",
                     kind=ActionKind.WAIT,
@@ -722,8 +800,9 @@ class RegistrationStateMachine:
                         AutomationState.HOME,
                         AutomationState.PHONE,
                     ],
-                ),
-            ]
+                )
+            )
+            return actions
 
         if state == AutomationState.ERROR:
             actions: list[Action] = []

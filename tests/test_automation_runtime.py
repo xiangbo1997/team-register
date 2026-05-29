@@ -148,6 +148,26 @@ class TestAutomationStateInference(unittest.TestCase):
         # 兜底动作仍保留
         self.assertEqual(actions[-1].action_id, "recover_from_error")
 
+    def test_phone_state_emits_submit_phone_and_code_action(self):
+        """PHONE 状态：_build_actions 应返回 submit_phone_and_code 单 action。
+
+        runtime/config 的 registration_kind 在 RegistrationStateMachine.run() 里 gate；
+        _build_actions 本身无视 registration_kind 直接产出 phone action，由上层判断是否消费。
+        """
+        machine = RegistrationStateMachine()
+        evidence = Evidence(
+            url="https://auth.openai.com/onboarding/phone",
+            title="Verify your phone - OpenAI",
+            step_name="step_phone",
+            state_candidates=[AutomationState.PHONE],
+            signals={"has_phone_input": True},
+        )
+        actions = machine._build_actions(runtime=None, evidence=evidence)  # noqa: SLF001
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action_id, "submit_phone_and_code")
+        self.assertEqual(actions[0].params.get("handler"), "submit_phone_and_code")
+        self.assertIn(AutomationState.HOME, actions[0].expected_outcomes)
+
 
 class TestLLMDecisionProvider(unittest.TestCase):
     """LLM 受限决策测试"""
@@ -374,6 +394,140 @@ class TestExperienceMemory(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(runtime.last_actions[0]["action_id"], "wait_short")
+
+    def test_about_you_onboarding_stuck_upgrades_to_skip(self):
+        """ABOUT_YOU 反复卡在 onboarding 时，规则升级应自动切到 skip_onboarding。
+
+        模拟 brucecox00@cloudsentryai.com 的现实场景：
+          step 1: fill_about_you 返回 False（点击了但没跳转）→ retry_count 递增
+          step 2: 同状态 + 同信号 → 规则升级触发 → 选 skip_onboarding → 成功跳到 HOME
+        """
+        call_log: list[str] = []
+
+        class StubCollector:
+            def __init__(self):
+                self.calls = 0
+
+            def collect(self, runtime, *, step_name):
+                self.calls += 1
+                # 在 skip_onboarding 执行后才回到 HOME
+                if "skip_onboarding" in call_log:
+                    return Evidence(
+                        url="https://chatgpt.com/",
+                        step_name=step_name,
+                        state_candidates=[AutomationState.HOME],
+                        signals={"has_app_shell": True},
+                    )
+                return Evidence(
+                    url="https://chatgpt.com/",
+                    step_name=step_name,
+                    state_candidates=[AutomationState.ABOUT_YOU],
+                    signals={"has_onboarding_prompt": True},
+                )
+
+        def fill_about_you_handler(runtime, action):
+            call_log.append("fill_about_you")
+            return False  # 点了但没跳转
+
+        def skip_onboarding_handler(runtime, action):
+            call_log.append("skip_onboarding")
+            return True
+
+        runtime = AutomationRuntime(
+            page=object(),
+            context=object(),
+            config=type(
+                "Cfg",
+                (),
+                {
+                    "max_email_attempts": 1,
+                    "max_navigation_retries": 5,
+                    "max_manual_handoffs": 0,
+                    "llm_max_consecutive_uncertain": 1,
+                },
+            )(),
+            email="user@example.com",
+            password="Password123!",
+            mail_api=None,
+            logger=type(
+                "Log",
+                (),
+                {
+                    "error": lambda *args, **kwargs: None,
+                    "warning": lambda *args, **kwargs: None,
+                    "info": lambda *args, **kwargs: None,
+                },
+            )(),
+            handlers={
+                "fill_about_you": fill_about_you_handler,
+                "skip_onboarding": skip_onboarding_handler,
+                "wait_short": lambda runtime, action: True,
+            },
+        )
+
+        machine = RegistrationStateMachine(collector=StubCollector(), max_steps=5)
+        result = machine.run(runtime)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.final_state, AutomationState.HOME)
+        self.assertEqual(call_log, ["fill_about_you", "skip_onboarding"])
+
+    def test_about_you_no_onboarding_no_skip_upgrade(self):
+        """ABOUT_YOU 卡住但没 onboarding 信号时不应升级到 skip_onboarding。
+
+        防御性测试：当真的是 about-you 表单（姓名/生日）卡住时，不能误升级。
+        """
+        call_log: list[str] = []
+
+        class StubCollector:
+            def collect(self, runtime, *, step_name):
+                return Evidence(
+                    url="https://auth.openai.com/about-you",
+                    step_name=step_name,
+                    state_candidates=[AutomationState.ABOUT_YOU],
+                    signals={},  # 没有 has_onboarding_prompt
+                )
+
+        def fill_about_you_handler(runtime, action):
+            call_log.append("fill_about_you")
+            return False
+
+        runtime = AutomationRuntime(
+            page=object(),
+            context=object(),
+            config=type(
+                "Cfg",
+                (),
+                {
+                    "max_email_attempts": 1,
+                    "max_navigation_retries": 2,
+                    "max_manual_handoffs": 0,
+                    "llm_max_consecutive_uncertain": 1,
+                },
+            )(),
+            email="user@example.com",
+            password="Password123!",
+            mail_api=None,
+            logger=type(
+                "Log",
+                (),
+                {
+                    "error": lambda *args, **kwargs: None,
+                    "warning": lambda *args, **kwargs: None,
+                    "info": lambda *args, **kwargs: None,
+                },
+            )(),
+            handlers={
+                "fill_about_you": fill_about_you_handler,
+                "skip_onboarding": lambda runtime, action: True,  # 不应被调用
+                "wait_short": lambda runtime, action: True,
+            },
+        )
+
+        machine = RegistrationStateMachine(collector=StubCollector(), max_steps=5)
+        machine.run(runtime)
+
+        self.assertNotIn("skip_onboarding", call_log)
 
 
 class TestRuntimeEvents(unittest.TestCase):

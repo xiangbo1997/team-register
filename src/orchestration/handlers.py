@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import random
+import re
 import string
 import logging
 import time
@@ -196,6 +197,7 @@ def is_chatgpt_logged_in(page: Page, *, timeout_ms: int = 3000) -> bool:
     """检查 ChatGPT 当前 page 是否处于已登录状态。
 
     判定方式（任一命中失败 → 视作未登录）：
+      0. 先等 networkidle 让 client-side redirect 跑完（避免 redirect 时序竞态）
       1. URL 不在 auth.openai.com 域（排除 ``"auth" in url AND "chatgpt.com" not in url``）
       2. page.locator(login/signup 按钮).count() == 0
 
@@ -210,10 +212,25 @@ def is_chatgpt_logged_in(page: Page, *, timeout_ms: int = 3000) -> bool:
         False = 未登录或登录态不明（应当走完整登录流程或降级处理）
 
     设计注意：
-      - 本函数**容忍异常** — locator 出错也按"未登录"处理，确保 caller 总能拿到布尔值。
+      - 本函数**容忍异常** — networkidle / locator 出错都按"未登录"处理，确保 caller 总能拿到布尔值。
       - 不修改 page 状态（不点击、不 goto、不 evaluate JS），纯只读。
       - 与 ``scripts/verify_warmup_account.py`` 共用同一份 selector 常量，避免双处实现漂移。
+
+    历史 bug 修复（2026-04-28）：
+      原版只看 page.url 一次。但 chatgpt.com 在用户未登录时会触发 client-side
+      redirect 到 auth.openai.com/log-in；如果 caller 用 ``wait_until="domcontentloaded"``
+      goto，本函数被调时 url 可能还是 chatgpt.com（redirect JS 还没执行），
+      DOM 又是空白（SPA 还没 render），两条检查都误判为"已登录"。
+      现在先等 networkidle 让 client redirect 完成再判 url。
     """
+    # 0) 先等 client-side redirect 完成（避免 page.goto wait_until=domcontentloaded
+    #    后立即调用本函数时，redirect 还没跑导致 url 误判）
+    try:
+        page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        # networkidle 超时不致命，继续走后续检查（可能页面有长连接持续刷新）
+        pass
+
     # 1) URL 检查：在 auth.openai.com 域且不在 chatgpt.com → 显然未登录（OAuth 跳转中）
     try:
         cur_url = str(page.url or "")
@@ -475,12 +492,35 @@ _MAIL_EXCEPTION_TYPE_HINTS: tuple[tuple[str, str], ...] = (
     ("MailServiceError", "MAILBOX_SERVICE_ERROR"),
 )
 
+# 业务错误码：号池竞争 / 邮箱被占用类（运维语义上是"等等再试"或"换号"，
+# 不是基础设施故障，前端用 amber chip 单独标出，便于一眼分辨）。
+_MAIL_POOL_CONTENTION_CODES = frozenset({
+    "ACCOUNT_NOT_AVAILABLE",
+    "POOL_EXHAUSTED",
+    "EMAIL_LOCKED",
+    "DEDUP_GATE_TRIGGERED",
+})
+
+# email-provider 抛 MailServiceError 时消息末尾形如 "... (ACCOUNT_NOT_AVAILABLE)"，
+# 这里抓取大写 + 下划线 + 数字的业务码（要求长度 >=4 防误匹配普通括号）。
+_MAIL_ERROR_CODE_RE = re.compile(r"\(([A-Z][A-Z0-9_]{3,})\)")
+
+
+def _extract_mail_error_code(msg: str) -> str:
+    """从异常消息里提取业务错误码（如 ACCOUNT_NOT_AVAILABLE）。"""
+    if not msg:
+        return ""
+    matches = _MAIL_ERROR_CODE_RE.findall(msg)
+    return matches[-1] if matches else ""
+
 
 def _summarize_mail_exception(exc: BaseException) -> str:
     """把 mail 异常摘要成一行，供失败 reason 透传。
 
-    格式：``<HINT> mailbox-service: <类名>: <message>``。
+    格式：``mailbox-service | <HINT> [| <ERROR_CODE>] | <类名>: <message>``。
     HINT 是 _classify_failure 能识别的关键词（mailbox-service / 5xx 等）。
+    对 MailServiceError 额外抽取业务码：命中号池竞争类时 hint 升级为
+    MAILBOX_POOL_CONTENTION，让前端可以独立分类显示（号池问题 vs 基础设施）。
     """
     type_name = type(exc).__name__
     hint = ""
@@ -489,11 +529,20 @@ def _summarize_mail_exception(exc: BaseException) -> str:
             hint = code
             break
     msg = str(exc)
+    # 仅对 MailServiceError 做业务码升级：其它异常类型已有更精确 hint，
+    # 不应被通用业务码逻辑覆盖（如 MissingProviderConfigError）。
+    error_code = ""
+    if hint == "MAILBOX_SERVICE_ERROR":
+        error_code = _extract_mail_error_code(msg)
+        if error_code in _MAIL_POOL_CONTENTION_CODES:
+            hint = "MAILBOX_POOL_CONTENTION"
     if len(msg) > 240:
         msg = msg[:237] + "..."
     parts = ["mailbox-service"]
     if hint:
         parts.append(hint)
+    if error_code:
+        parts.append(error_code)
     parts.append(f"{type_name}: {msg}")
     return " | ".join(parts)
 
@@ -590,8 +639,49 @@ def click_onboarding_footer_action(page: Page) -> str:
         return ""
 
 
-def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None) -> None:
-    """处理年龄/生日确认页。"""
+def click_onboarding_skip_button(page: Page) -> str:
+    """点击 onboarding 问卷的"跳过"按钮（多语言匹配 skip/スキップ/跳过 等）。
+
+    与 ``click_onboarding_footer_action`` 的区别：
+      - 优先文本/aria-label 匹配 skip/スキップ/跳过/saltar 等关键字（多语言）
+      - fallback：底部最下方的可点击元素（通常是"跳过"链接）
+      - 不要求 enabled（"跳过"通常恒可点）
+    """
+    try:
+        label = page.evaluate("""() => {
+            const root = document.querySelector('main') || document.body;
+            const isVisible = (node) => {
+                const rect = node.getBoundingClientRect();
+                const style = window.getComputedStyle(node);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const isDisabled = (node) => Boolean(node.disabled || node.getAttribute('aria-disabled') === 'true');
+            const SKIP_RE = /(skip|skip for now|saltar|スキップ|跳过|跳過|건너뛰|passer|überspringen|пропустить)/i;
+            const clickables = Array.from(root.querySelectorAll('button, [role="button"], a'))
+                .filter(isVisible)
+                .filter((node) => !isDisabled(node));
+            const byText = clickables.find((node) => {
+                const text = (node.innerText || node.getAttribute('aria-label') || '').trim();
+                return SKIP_RE.test(text);
+            });
+            const target = byText || clickables
+                .filter((node) => node.getBoundingClientRect().top >= window.innerHeight * 0.55)
+                .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+            if (!target) return '';
+            target.click();
+            return (target.innerText || target.getAttribute('aria-label') || '').trim();
+        }""")
+        return str(label or "")
+    except Exception:
+        return ""
+
+
+def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None) -> bool:
+    """处理年龄/生日确认页。
+
+    返回值：True 表示推进成功（含正常完成 about-you），False 表示 onboarding 问卷
+    点击后仍停在原页（让状态机递增 retry_count 并触发 LLM 兜底）。
+    """
     humanize_on = _humanize_enabled(runtime)
     metrics = read_onboarding_metrics(page)
     if metrics.get("prompt_present"):
@@ -605,12 +695,14 @@ def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None)
             footer = click_onboarding_footer_action(page)
             if footer:
                 logger.info("已点击 onboarding 底部动作: %s", footer)
-        _wait_for_profile_step_transition(page, prompt_name="onboarding")
-        return
+        progressed = _wait_for_profile_step_transition(page, prompt_name="onboarding")
+        if not progressed:
+            logger.warning("onboarding 问卷点击后仍停留在原页，交回状态机重试 / LLM 兜底。")
+        return progressed
 
     logger.info("检测到 '确认年龄' 页面，填写姓名和年龄/生日...")
     if "about-you" not in str(page.url or ""):
-        return
+        return True
 
     first_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 7))).capitalize()
     last_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 8))).capitalize()
@@ -629,7 +721,7 @@ def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None)
             logger.info("已填写姓名: %s", full_name)
     except Exception as exc:
         if "about-you" not in str(page.url or ""):
-            return
+            return True
         logger.warning("姓名填写失败: %s", exc)
 
     age_selector = 'input[name="age"]'
@@ -650,7 +742,7 @@ def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None)
             logger.info("已填写年龄: %s", age)
         except Exception as exc:
             if "about-you" not in str(page.url or ""):
-                return
+                return True
             logger.warning("年龄填写失败: %s", exc)
     else:
         birth_day = str(random.randint(1, 28))
@@ -674,7 +766,7 @@ def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None)
                 page.keyboard.type(formatted, delay=100)
         except Exception as exc:
             if "about-you" not in str(page.url or ""):
-                return
+                return True
             logger.warning("日期填写失败: %s", exc)
 
     human_delay(1, 2)
@@ -686,19 +778,19 @@ def fill_about_you_form(page: Page, *, runtime: AutomationRuntime | None = None)
                 _humanize.click_humanized(page, submit_selector)
             else:
                 submit_btn.click(timeout=5000)
-            _wait_for_profile_step_transition(page, prompt_name="about-you")
-            return
+            return _wait_for_profile_step_transition(page, prompt_name="about-you")
     except Exception as exc:
         if "about-you" not in str(page.url or ""):
-            return
+            return True
         logger.warning("about-you 提交按钮点击失败: %s", exc)
 
     try:
         if "about-you" in str(page.url or ""):
             page.keyboard.press("Enter")
-            _wait_for_profile_step_transition(page, prompt_name="about-you")
+            return _wait_for_profile_step_transition(page, prompt_name="about-you")
     except Exception:
         pass
+    return True
 
 
 def send_chat_message(page: Page, message: str, *, response_timeout_sec: int = 60) -> bool:
@@ -839,6 +931,69 @@ def manual_handoff(runtime: AutomationRuntime, payload: dict) -> bool:
 # ── Handler 构建工厂 ──────────────────────────────
 
 
+def submit_phone_and_code(runtime: AutomationRuntime, _action) -> bool:
+    """Mode B handler：填手机号 → 提交 → 轮询 SMS OTP → 填验证码 → 提交。
+
+    依赖：
+        runtime.config.requested_phone — worker._execute_task_inner 已申领或用户手填
+        runtime.config.sms_order_id    — SMS-Activate 订单 id，用于 get_code 轮询
+        runtime.sms_api                — SMSManager 实例
+
+    OTP code input 选择器是基于 OpenAI 历史 DOM 的推测（'input[name="code"]'），
+    实施 PR 第一次跑真机时必须用 AdsPower 截 DOM 校验；不匹配则 handler 会失败，
+    上层 _try_manual_handoff 会兜底成人工接管。
+    """
+    page = runtime.page
+    config = runtime.config
+    sms_api = runtime.sms_api
+    phone = str(getattr(config, "requested_phone", "") or "").strip()
+    order_id = str(getattr(config, "sms_order_id", "") or "").strip()
+
+    if not phone:
+        runtime.logger.error("phone 模式 handler 但 requested_phone 为空（worker 未注入？）")
+        return False
+    if sms_api is None:
+        runtime.logger.error("phone 模式 handler 但 runtime.sms_api 为空（构造期未注入？）")
+        return False
+
+    runtime.logger.info("Mode B handler: 填入手机号 %s", phone)
+    try:
+        page.fill('input[name="phoneNumber"]', phone)
+    except Exception as exc:
+        runtime.logger.error("填手机号失败（选择器 input[name=phoneNumber]）: %s", exc)
+        return False
+
+    try:
+        page.click('button[type="submit"]')
+    except Exception as exc:
+        runtime.logger.warning("点击提交手机号按钮失败（继续等待 OTP）: %s", exc)
+
+    if not order_id:
+        runtime.logger.error("没有 sms_order_id，无法轮询 OTP")
+        return False
+
+    runtime.logger.info("等待 SMS OTP（order=%s, 最多 ~150s）...", order_id)
+    code = sms_api.get_code(order_id, max_retries=30)
+    if not code:
+        runtime.logger.error("SMS OTP 等待超时（order=%s）", order_id)
+        return False
+
+    runtime.logger.info("Mode B handler: 收到 OTP=%s，填入验证码 input", code)
+    try:
+        # 注意：选择器待真机校验；现在用通用模式作为占位
+        page.fill('input[name="code"]', code)
+    except Exception as exc:
+        runtime.logger.error("填 OTP 失败（选择器 input[name=code]）: %s", exc)
+        return False
+
+    try:
+        page.click('button[type="submit"]')
+    except Exception as exc:
+        runtime.logger.warning("点击提交 OTP 按钮失败（页面可能已自动跳转）: %s", exc)
+
+    return True
+
+
 def build_runtime_handlers(
     *,
     email: str,
@@ -859,8 +1014,19 @@ def build_runtime_handlers(
         return handle_email_verification_step(runtime.page, runtime.mail_api, email, runtime=runtime)
 
     def _fill_about_you(runtime: AutomationRuntime, _action) -> bool:
-        fill_about_you_form(runtime.page, runtime=runtime)
-        return True
+        return fill_about_you_form(runtime.page, runtime=runtime)
+
+    def _skip_onboarding(runtime: AutomationRuntime, _action) -> bool:
+        """LLM 兜底专用：onboarding 卡住时绕开 primary 按钮直接点跳过。"""
+        page = runtime.page
+        label = click_onboarding_skip_button(page)
+        if label:
+            logger.info("已点击 onboarding 跳过按钮: %s", label)
+        else:
+            logger.warning("未找到 onboarding 跳过按钮。")
+            return False
+        progressed = _wait_for_profile_step_transition(page, prompt_name="onboarding")
+        return progressed
 
     def wait_short(runtime: AutomationRuntime, _action) -> bool:
         human_delay(2, 3)
@@ -871,9 +1037,11 @@ def build_runtime_handlers(
         "submit_password": _submit_password,
         "verify_email": verify_email,
         "fill_about_you": _fill_about_you,
+        "skip_onboarding": _skip_onboarding,
         "wait_short": wait_short,
-        "recover_error": recover_error,
+        "recover_error": recover_from_error_page,
         "manual_handoff": manual_handoff,
+        "submit_phone_and_code": submit_phone_and_code,
     }
 
 
@@ -893,6 +1061,183 @@ def wait_for_stripe_form(page: Page, timeout_sec: int = 30) -> bool:
             pass
         human_delay(1, 1.2)
     return False
+
+
+_DEFAULT_CHECKOUT_BILLING_PROFILE = {
+    "name": "John Doe",
+    "country": "US",
+    "line1": "350 5th Ave",
+    "line2": "",
+    "city": "New York",
+    "state": "NY",
+    "postal_code": "10118",
+}
+
+
+def _checkout_billing_profile_from_card(
+    card_info: Any,
+    *,
+    fallback_profile: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """从 CardInfo + 全局 BILLING_* 兜底构造 Stripe Billing 表单资料。"""
+    profile = dict(_DEFAULT_CHECKOUT_BILLING_PROFILE)
+    if fallback_profile:
+        profile.update({k: str(v) for k, v in fallback_profile.items() if v is not None})
+    profile["name"] = str(getattr(card_info, "name_on_card", "") or profile.get("name") or "").strip()
+    profile["country"] = str(getattr(card_info, "bin_country", "") or profile.get("country") or "US").strip().upper()
+
+    raw_address = str(getattr(card_info, "billing_address", "") or "").strip()
+    if raw_address:
+        parts = [p.strip() for p in raw_address.split(",") if p.strip()]
+        if parts:
+            profile["line1"] = parts[0]
+        if len(parts) >= 5:
+            profile["city"] = parts[1]
+            profile["state"] = parts[2].upper()
+            profile["postal_code"] = parts[3]
+            profile["country"] = parts[4].upper()
+        elif len(parts) >= 2:
+            tail = parts[-1].upper()
+            if len(tail) == 2:
+                profile["country"] = tail
+                city_state_zip = parts[-2]
+            else:
+                city_state_zip = parts[-1]
+            tokens = city_state_zip.split()
+            if tokens and any(ch.isdigit() for ch in tokens[-1]):
+                profile["postal_code"] = tokens[-1]
+                tokens = tokens[:-1]
+            if len(tokens) >= 2 and len(tokens[-1]) == 2:
+                profile["state"] = tokens[-1].upper()
+                tokens = tokens[:-1]
+            if tokens:
+                profile["city"] = " ".join(tokens)
+    for key in ("name", "country", "line1", "line2", "city", "state", "postal_code"):
+        profile[key] = str(profile.get(key, "") or "").strip()
+    return profile
+
+
+def _fill_checkout_plain_input(page: Page, selectors: tuple[str, ...], value: str, *, timeout_ms: int = 1000) -> bool:
+    if not value:
+        return False
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=timeout_ms):
+                locator.click(timeout=3000)
+                try:
+                    locator.fill("")
+                except Exception:
+                    pass
+                locator.fill(value)
+                logger.info("fill_checkout_billing_details: %s <= %s", selector, value[:24])
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _select_checkout_plain_option(page: Page, selectors: tuple[str, ...], value: str, *, timeout_ms: int = 1000) -> bool:
+    if not value:
+        return False
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=timeout_ms):
+                locator.select_option(value=value)
+                logger.info("fill_checkout_billing_details: %s <= %s", selector, value)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _uncheck_stripe_link_save_info(page: Page) -> None:
+    """关闭 Stripe Link 保存信息选项，避免额外要求 mobile number。"""
+    try:
+        page.evaluate(
+            """() => {
+              const labels = Array.from(document.querySelectorAll('label, div, span, p'));
+              const target = labels.find((el) =>
+                /save my information for faster checkout/i.test(el.innerText || '')
+              );
+              if (!target) return false;
+              const root = target.closest('label') || target.parentElement || document.body;
+              const box = root.querySelector('input[type="checkbox"], [role="checkbox"]')
+                || document.querySelector('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]');
+              if (!box) return false;
+              const checked = box.checked === true || box.getAttribute('aria-checked') === 'true';
+              if (checked) box.click();
+              return checked;
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("关闭 Stripe Link 保存信息选项失败（忽略）: %s", exc)
+
+
+def fill_checkout_billing_details(
+    page: Page,
+    card_info: Any,
+    *,
+    email: str = "",
+    fallback_profile: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """填写 Stripe hosted checkout 的账单资料，并关闭 Link 手机号收集。"""
+    profile = _checkout_billing_profile_from_card(card_info, fallback_profile=fallback_profile)
+    _uncheck_stripe_link_save_info(page)
+    if email:
+        _fill_checkout_plain_input(page, ('input[name="email"]', 'input[type="email"]'), email)
+    _fill_checkout_plain_input(
+        page,
+        (
+            'input[name="billingName"]',
+            'input[autocomplete="cc-name"]',
+            'input[autocomplete="name"]',
+            'input[placeholder="Full name"]',
+        ),
+        profile["name"],
+    )
+    _select_checkout_plain_option(page, ('select[name="billingCountry"]',), profile["country"])
+    _fill_checkout_plain_input(
+        page,
+        (
+            'input[name="billingAddressLine1"]',
+            'input[autocomplete="billing address-line1"]',
+            'input[placeholder="Address line 1"]',
+        ),
+        profile["line1"],
+    )
+    _fill_checkout_plain_input(
+        page,
+        (
+            'input[name="billingAddressLine2"]',
+            'input[autocomplete="billing address-line2"]',
+            'input[placeholder="Address line 2"]',
+        ),
+        profile["line2"],
+    )
+    _fill_checkout_plain_input(
+        page,
+        (
+            'input[name="billingLocality"]',
+            'input[autocomplete="billing address-level2"]',
+            'input[placeholder="City"]',
+        ),
+        profile["city"],
+    )
+    _select_checkout_plain_option(page, ('select[name="billingAdministrativeArea"]',), profile["state"])
+    _fill_checkout_plain_input(
+        page,
+        (
+            'input[name="billingPostalCode"]',
+            'input[autocomplete="billing postal-code"]',
+            'input[placeholder="ZIP code"]',
+            'input[placeholder="Postal code"]',
+        ),
+        profile["postal_code"],
+    )
+    _uncheck_stripe_link_save_info(page)
+    return profile
 
 
 def fill_checkout_card(page: Page, card_number: str, expiry: str, cvc: str) -> str:
@@ -1041,6 +1386,43 @@ def pro_account_login(
     Returns:
       True 表示成功登录到 chatgpt.com 主页（has_app_shell 信号）；False 则失败
     """
+    def _submit_password_flow() -> bool:
+        """提交密码并等待回到 ChatGPT 主页。"""
+        try:
+            page.locator(PASSWORD_SELECTOR).first.fill(password, timeout=5000)
+        except Exception as exc:
+            logger.warning("pro_account_login: 密码 fill 失败 %s，降级 keyboard", exc)
+            page.keyboard.type(password)
+        human_delay(0.6, 1.2)
+        page.keyboard.press("Enter")
+        click_first_visible(page, PRIMARY_SUBMIT_SELECTORS, description="点击密码继续按钮", timeout_ms=3000)
+        return _wait_for_chatgpt_home(page, timeout_sec, mail_api=mail_api, email=email)
+
+    def _switch_inbox_to_password() -> bool:
+        """OpenAI 强制 magic-link 但邮箱服务不可用时，尝试切回密码登录。"""
+        if not password:
+            return False
+        clicked = click_first_visible(
+            page,
+            (
+                'button:has-text("Continue with password")',
+                'a:has-text("Continue with password")',
+                'button:has-text("使用密码继续")',
+                'a:has-text("使用密码继续")',
+            ),
+            description="点击 Continue with password",
+            timeout_ms=5000,
+        )
+        if not clicked:
+            logger.error("pro_account_login: inbox 页未找到 Continue with password 兜底入口")
+            return False
+        try:
+            page.wait_for_selector(PASSWORD_SELECTOR, state="visible", timeout=10000)
+            return True
+        except Exception as exc:
+            logger.error("pro_account_login: Continue with password 后密码框未出现: %s", exc)
+            return False
+
     try:
         page.goto("https://chatgpt.com/auth/login", wait_until="domcontentloaded", timeout=30000)
     except Exception as exc:
@@ -1315,18 +1697,22 @@ def pro_account_login(
                 "pro_account_login: 命中 'Check your inbox' 页但未注入 mail_api，"
                 "无法自动拉验证码。caller 必须传入 mail_api。"
             )
-            return False
-        logger.info("pro_account_login: 命中 'Check your inbox' 页，复用 handle_email_verification_step 拉码")
-        try:
-            ok = handle_email_verification_step(page, mail_api, email)
-        except Exception as exc:
-            logger.error("pro_account_login: 邮箱验证码处理异常 %s", exc)
-            return False
-        if not ok:
+        else:
+            logger.info("pro_account_login: 命中 'Check your inbox' 页，复用 handle_email_verification_step 拉码")
+            try:
+                ok = handle_email_verification_step(page, mail_api, email)
+            except Exception as exc:
+                logger.error("pro_account_login: 邮箱验证码处理异常 %s", exc)
+                ok = False
+            if ok:
+                human_delay(1, 2)
+                return _wait_for_chatgpt_home(page, timeout_sec)
             logger.error("pro_account_login: 邮箱验证码处理失败")
-            return False
-        human_delay(1, 2)
-        return _wait_for_chatgpt_home(page, timeout_sec)
+        # 邮箱服务可能与账号域名不匹配；有密码时不要直接失败，回落到 OpenAI 的密码入口。
+        if _switch_inbox_to_password():
+            logger.info("pro_account_login: inbox 验证失败，已切回密码登录兜底")
+            return _submit_password_flow()
+        return False
 
     if not password_visible:
         logger.error(
@@ -1335,16 +1721,7 @@ def pro_account_login(
         )
         return False
     # 落到密码框 → 走密码流
-    try:
-        page.locator(PASSWORD_SELECTOR).first.fill(password, timeout=5000)
-    except Exception as exc:
-        logger.warning("pro_account_login: 密码 fill 失败 %s，降级 keyboard", exc)
-        page.keyboard.type(password)
-    human_delay(0.6, 1.2)
-    page.keyboard.press("Enter")
-    click_first_visible(page, PRIMARY_SUBMIT_SELECTORS, description="点击密码继续按钮", timeout_ms=3000)
-
-    return _wait_for_chatgpt_home(page, timeout_sec, mail_api=mail_api, email=email)
+    return _submit_password_flow()
 
 
 def _wait_for_chatgpt_home(
@@ -1454,6 +1831,17 @@ def navigate_to_pro_checkout(page: Page, *, timeout_sec: int = 30) -> None:
         # 并继续走第 1.5+2+3 步（Personal toggle / 点 Upgrade to Pro / 等 plan 页就绪）。
         # 否则之前 Business tab 显示的弹窗会被当成"已就绪"，select_pro_tier 找不到 Pro 卡。
     else:
+        # 主页可能先弹 memory / NUX 弹窗，覆盖左下角 Upgrade 按钮；先轻量关闭。
+        click_first_visible(
+            page,
+            (
+                'button[data-testid="close-button"]',
+                'button:has-text("Not now")',
+                'button[aria-label="Close"]',
+            ),
+            description="关闭主页干扰弹窗",
+            timeout_ms=1000,
+        )
         # 主页 Upgrade 入口
         # 实测真实 DOM：<button aria-label="Claim offer">Claim offer</button>（左下角侧栏底部）
         # 点击后 → 弹出 plan 选择 modal（Personal/Business toggle + Free/Go/Plus/Pro 卡）
@@ -1469,6 +1857,10 @@ def navigate_to_pro_checkout(page: Page, *, timeout_sec: int = 30) -> None:
             'button[aria-label="Upgrade plan"]',
             'button:has-text("Upgrade plan")',
             'a:has-text("Upgrade plan")',
+            # 3.5) 2026-04 新 UI：profile 区域只显示 "Upgrade"
+            'button[aria-label="Upgrade"]',
+            'button:text-is("Upgrade")',
+            'button:has-text("Upgrade")',
             # 4) 通用 fallback（aria-label 含 upgrade）
             'button[aria-label*="upgrade" i]',
             '[data-testid*="upgrade" i]',
@@ -1799,15 +2191,20 @@ def detect_checkout_error(page: Page) -> str:
 # ── 内部工具 ──────────────────────────────────────
 
 
-def _wait_for_profile_step_transition(page: Page, *, prompt_name: str) -> None:
-    """短等页面切换，避免状态机误判。"""
+def _wait_for_profile_step_transition(page: Page, *, prompt_name: str) -> bool:
+    """短等页面切换，避免状态机误判。
+
+    返回 True 表示成功离开当前 prompt（URL 跳走或 metrics 消失），
+    返回 False 表示 ~21s 内仍停留——交给上层让 retry_count 递增并触发 LLM 兜底。
+    """
     for _ in range(15):
         current_url = str(getattr(page, "url", "") or "")
         if prompt_name == "about-you" and "about-you" not in current_url:
-            return
+            return True
         if prompt_name == "onboarding" and not read_onboarding_metrics(page).get("prompt_present", False):
-            return
+            return True
         human_delay(1, 1.4)
+    return False
 
 
 def resolve_card_with_retry(
