@@ -20,7 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from src.api.deps import get_auth_service, get_knowledge_service
 from src.api.i18n import setup_i18n
-from src.api.routes import accounts, assistant, auth, cards, config, events, export, link_templates, promo_discovery, proxies, proxy_providers, registration_profiles, tasks
+from src.api.routes import accounts, assistant, auth, cards, config, events, export, link_templates, promo_discovery, proxies, proxy_providers, registration_profiles, tasks, workflows
 from src.api.security import (
     SESSION_COOKIE_NAME,
     get_or_create_csrf_token,
@@ -103,6 +103,7 @@ app.include_router(proxy_providers.router)
 app.include_router(registration_profiles.router)
 app.include_router(events.router)
 app.include_router(export.router)
+app.include_router(workflows.router)
 
 # 静态文件和模板
 if _STATIC_DIR.exists():
@@ -173,6 +174,14 @@ async def tasks_detail(request: Request, task_id: str):
     return HTMLResponse("<p>Template not found</p>", status_code=404)
 
 
+@app.get("/grok", response_class=HTMLResponse)
+async def grok_page(request: Request):
+    """Grok (x.ai) 注册页（feat/grok-register）。"""
+    if templates:
+        return _protected_template_response(request, "pages/grok/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
 @app.get("/config", response_class=HTMLResponse)
 async def config_page(request: Request):
     """配置管理页。"""
@@ -210,6 +219,14 @@ async def cards_page(request: Request):
     """虚拟卡缓存管理页（X988 已激活卡列表 + 手动作废）。"""
     if templates and (_TEMPLATES_DIR / "pages" / "cards" / "index.html").exists():
         return _protected_template_response(request, "pages/cards/index.html")
+    return HTMLResponse("<p>Template not found</p>", status_code=404)
+
+
+@app.get("/workflows", response_class=HTMLResponse)
+async def workflows_page(request: Request):
+    """自进化经验管理页（学到的工作流列表 + 成功率 + 启禁/删除）。"""
+    if templates and (_TEMPLATES_DIR / "pages" / "workflows" / "index.html").exists():
+        return _protected_template_response(request, "pages/workflows/index.html")
     return HTMLResponse("<p>Template not found</p>", status_code=404)
 
 

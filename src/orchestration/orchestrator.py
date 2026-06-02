@@ -283,9 +283,11 @@ class PhaseOrchestrator:
 
             recorder = ArtifactRecorder(self._config.run_artifacts_dir)
             art_run_id = recorder.start_run(email)
-            experience_store = ExperienceStore(
-                os.path.join(self._config.run_artifacts_dir, "experience-memory.jsonl")
-            )
+            # 经验库 + DB 双写（自进化可视化）；assist_store 仅在 assist_fallback_enabled 时非 None。
+            from src.orchestration.experience_factory import build_assist_store, build_experience_store
+
+            experience_store = build_experience_store(self._config)
+            assist_store = build_assist_store(self._config)
 
             runtime = AutomationRuntime(
                 page=page,
@@ -302,6 +304,8 @@ class PhaseOrchestrator:
                 llm_provider=llm_provider,
                 experience_store=experience_store,
                 captcha_solver=build_solver_from_config(self._config),
+                assist_enabled=bool(getattr(self._config, "assist_fallback_enabled", False)),
+                assist_experience=assist_store,
             )
 
             machine = RegistrationStateMachine()
@@ -618,4 +622,5 @@ class PhaseOrchestrator:
         return LLMDecisionProvider(
             client=client,
             confidence_threshold=self._config.llm_confidence_threshold,
+            vision_enabled=bool(getattr(self._config, "llm_vision_enabled", False)),
         )

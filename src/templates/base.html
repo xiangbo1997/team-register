@@ -286,7 +286,17 @@
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_tasks %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">assignment</span>
-            <span class="sidebar-label truncate">{{ _('nav.tasks') }}</span>
+            <span class="sidebar-label truncate flex items-center gap-1.5">{{ _('nav.tasks') }}
+                <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#10A37F] leading-none">openai</span>
+            </span>
+        </a>
+        <a href="/grok" data-tooltip="Grok 注册"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_grok %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">rocket_launch</span>
+            <span class="sidebar-label truncate flex items-center gap-1.5">Grok 注册
+                <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#0EA5E9] leading-none">x.ai</span>
+            </span>
         </a>
         <a href="/checkout-link" data-tooltip="生成 Checkout"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
@@ -329,6 +339,12 @@
                           {% block nav_cards %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">credit_card</span>
             <span class="sidebar-label truncate">卡池</span>
+        </a>
+        <a href="/workflows" data-tooltip="自进化经验"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_workflows %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">neurology</span>
+            <span class="sidebar-label truncate">自进化经验</span>
         </a>
         <a href="/proxies" data-tooltip="代理池"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
@@ -451,20 +467,25 @@
     x-data="assistantWidget({ enabled: {{ 'true' if assistant_enabled else 'false' }}, backendReady: {{ 'true' if assistant_backend_ready else 'false' }} })"
     x-init="init()"
     @keydown.escape.window="open = false"
+    data-assistant-root
     class="fixed bottom-8 right-8 z-[70]"
+    :style="widgetStyle()"
     x-cloak
 >
     <button
         x-show="!open"
-        @click="open = true"
+        @mousedown="startDrag($event)"
+        @touchstart="startDrag($event)"
+        @click="onLauncherClick()"
         type="button"
-        class="bg-primary text-white flex items-center gap-3 px-5 py-3 rounded-full shadow-token-lg hover:bg-primary-hover hover:scale-105 active:scale-95 transition-all"
+        title="可拖拽移动；单击打开"
+        class="bg-primary text-white flex items-center gap-3 px-5 py-3 rounded-full shadow-token-lg hover:bg-primary-hover active:scale-95 transition-all cursor-grab active:cursor-grabbing select-none"
     >
-        <div class="relative">
+        <div class="relative pointer-events-none">
             <span class="material-symbols-outlined">smart_toy</span>
             <span class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-white rounded-full border-2 border-primary pulse-dot"></span>
         </div>
-        <span class="font-semibold text-sm">{{ _('assistant.launcher') }}</span>
+        <span class="font-semibold text-sm pointer-events-none">{{ _('assistant.launcher') }}</span>
     </button>
 
     <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-token-lg fade-in relative z-[71]">
@@ -731,6 +752,11 @@ function assistantWidget({ enabled, backendReady }) {
         loading: false,
         enabled,
         backendReady,
+        // ── 浮窗拖拽（避免遮挡表格操作列）──
+        // pos=null 表示用默认右下角定位；拖拽后存绝对 left/top（px），记 localStorage。
+        pos: null,            // { left, top } 或 null
+        _drag: null,          // 拖拽过程中的临时状态
+        _moved: false,        // 区分点击 vs 拖拽（移动 > 4px 算拖拽，不触发 open）
         messageInput: '',
         draftActionText: '',
         intentMode: 'answer',
@@ -770,8 +796,78 @@ function assistantWidget({ enabled, backendReady }) {
             { role: 'assistant', content: i18n('assistant.welcome'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' }
         ],
 
+        // ── 拖拽方法 ──────────────────────────────
+        _restorePos() {
+            try {
+                const raw = localStorage.getItem('assistant_widget_pos');
+                if (raw) {
+                    const p = JSON.parse(raw);
+                    if (p && typeof p.left === 'number' && typeof p.top === 'number') {
+                        this.pos = this._clampPos(p.left, p.top);
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        },
+        _clampPos(left, top) {
+            // 保证浮窗不被拖出可视区（留 48px 余量便于抓回）
+            const maxLeft = Math.max(0, window.innerWidth - 80);
+            const maxTop = Math.max(0, window.innerHeight - 48);
+            return {
+                left: Math.min(Math.max(8, left), maxLeft),
+                top: Math.min(Math.max(8, top), maxTop),
+            };
+        },
+        widgetStyle() {
+            if (this.pos) {
+                return `left:${this.pos.left}px; top:${this.pos.top}px; right:auto; bottom:auto;`;
+            }
+            return '';  // 用 class 的 bottom-8 right-8 默认定位
+        },
+        startDrag(ev) {
+            // 只左键拖拽；触摸用 touchstart
+            const point = ev.touches ? ev.touches[0] : ev;
+            const rect = ev.currentTarget.closest('[data-assistant-root]').getBoundingClientRect();
+            this._moved = false;
+            this._drag = {
+                startX: point.clientX,
+                startY: point.clientY,
+                originLeft: rect.left,
+                originTop: rect.top,
+            };
+            const move = (e) => {
+                const p = e.touches ? e.touches[0] : e;
+                const dx = p.clientX - this._drag.startX;
+                const dy = p.clientY - this._drag.startY;
+                if (Math.abs(dx) > 4 || Math.abs(dy) > 4) this._moved = true;
+                this.pos = this._clampPos(this._drag.originLeft + dx, this._drag.originTop + dy);
+            };
+            const up = () => {
+                window.removeEventListener('mousemove', move);
+                window.removeEventListener('mouseup', up);
+                window.removeEventListener('touchmove', move);
+                window.removeEventListener('touchend', up);
+                if (this.pos) {
+                    try { localStorage.setItem('assistant_widget_pos', JSON.stringify(this.pos)); } catch (e) {}
+                }
+                this._drag = null;
+                // 拖拽结束后短暂保持 _moved，阻止 click 误触发 open
+                setTimeout(() => { this._moved = false; }, 50);
+            };
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+            window.addEventListener('touchmove', move, { passive: false });
+            window.addEventListener('touchend', up);
+        },
+        onLauncherClick() {
+            // 拖拽过的不触发打开（区分点击 vs 拖拽）
+            if (this._moved) return;
+            this.open = true;
+        },
+
         async init() {
             if (!this.enabled) return;
+            this._restorePos();
+            window.addEventListener('resize', () => { if (this.pos) this.pos = this._clampPos(this.pos.left, this.pos.top); });
             this._applyPageAwarePrompts();
             if (!this.backendReady) {
                 this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });

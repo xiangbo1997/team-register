@@ -129,6 +129,16 @@ _PRIMARY_SUBMIT_SELECTORS = (
     'button:has-text("Continuar")',
     'button:has-text("Siguiente")',
     'button:has-text("Finalizar")',
+    'button:has-text("続行")',  # 日语「继续」
+    'button:has-text("继续")',  # 中文
+)
+# 「电话号码继续」按钮 — chatgpt.com 登录/注册弹窗中触发 phone 注册分支
+# 覆盖多语言 accessible name；按钮通常带电话 icon + 文本
+# [已弃用主路径，保留作探测式的最后兜底] 多语言文案脆弱（换 IP 换语言枚举不完），
+# _open_phone_signup_entry 已改用语言无关的 _try_open_phone_by_probing（结构特征 + 探测式）。
+_PHONE_CONTINUE_SELECTORS = (
+    '[data-testid*="phone"]',
+    'a[href^="tel:"]',
 )
 _EMAIL_RESEND_SELECTORS = (
     'button:has-text("Resend email")',
@@ -461,14 +471,45 @@ def _build_card_client(config: AppConfig):
     return None
 
 
+def _build_sms_client(config: AppConfig):
+    """构造 SMS 客户端：异构 driver 走 registry.build，其余走 SMSManager。
+
+    返回对象只需鸭子兼容 ``get_number(service)`` / ``get_code(order_id, max_retries)``
+    —— SMSManager 与 SmsProvider 子类签名一致，调用点无需区分类型。
+    """
+    sms_driver = str(getattr(config, "sms_driver", "") or "").strip()
+    provider_config = dict(getattr(config, "sms_provider_config", None) or {})
+    # 异构协议 provider（five_sim 等）：worker 已透传完整 config dict + driver 名。
+    if sms_driver and provider_config:
+        from src.providers import get_registry
+        from src.providers.sms.sms_activate import SmsActivateProvider
+
+        reg = get_registry()
+        reg.discover()
+        sms_cls = reg.get_class("sms", sms_driver)
+        is_compat_family = isinstance(sms_cls, type) and issubclass(sms_cls, SmsActivateProvider)
+        if sms_cls is not None and not is_compat_family:
+            # proxy 透传：异构 provider schema 含 proxy 字段，config 没显式给则补 runtime proxy
+            provider_config.setdefault("proxy", config.proxy or "")
+            logger.info("使用异构 SMS provider: driver=%s", sms_driver)
+            return reg.build("sms", sms_driver, provider_config)
+
+    # 字符串协议族：api_url 仅在配置了 sms_base_url（如 HeroSMS 兼容端点）时传入；
+    # 留空则走 SMSManager 默认 sms-activate URL，保持向后兼容。
+    sms_kwargs = {
+        "api_key": config.sms_api_key,
+        "country": config.sms_country,
+        "proxy": config.proxy,
+    }
+    if getattr(config, "sms_base_url", ""):
+        sms_kwargs["api_url"] = config.sms_base_url
+    return SMSManager(**sms_kwargs)
+
+
 def _build_runtime_clients(config: AppConfig) -> tuple[Optional[EfunCard | NodeCard], SMSManager, MailManager]:
     """根据配置实例化运行时依赖。"""
     card_api = _build_card_client(config)
-    sms_api = SMSManager(
-        api_key=config.sms_api_key,
-        country=config.sms_country,
-        proxy=config.proxy,
-    )
+    sms_api = _build_sms_client(config)
     mail_api = MailManager(
         base_url=config.email_provider_base_url,
         api_key=config.email_provider_api_key,
@@ -586,6 +627,151 @@ def _open_signup_entry(page: Page, email: str) -> None:
         logger.error("未找到邮箱输入框。正在保存错误截图到 error_debug.png...")
         page.screenshot(path="error_debug.png")
         raise
+
+
+# 手机号输入框多重 fallback（与 src/orchestration/selectors.PHONE_INPUT_SELECTORS 对齐）。
+# 新版 OpenAI 弹窗把电话框直接内嵌在首页登录弹窗里（截图实证），无需先点「電話番号で続行」。
+_PHONE_INPUT_PROBE_SELECTORS = (
+    'input[name="phoneNumber"]',
+    'input[type="tel"]',
+    'input[autocomplete="tel"]',
+    'input[inputmode="tel"]',
+)
+
+
+def _phone_input_visible(page: Page) -> bool:
+    """探测页面是否已直接出现手机号输入框（内嵌弹窗场景）。"""
+    for sel in _PHONE_INPUT_PROBE_SELECTORS:
+        try:
+            if page.locator(sel).first.count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _open_phone_signup_entry(page: Page) -> None:
+    """phone 模式入口：打开 chatgpt.com 登录弹窗，进入手机号输入态。
+
+    与 _open_signup_entry 并列；后者填邮箱，本函数走手机号分支。
+
+    两种弹窗形态都兼容：
+    1. 新版（截图实证）：电话输入框直接内嵌在首页登录弹窗 → 探测到 input 即成功，
+       不再点「電話番号で続行」按钮（旧逻辑找不到该按钮会硬失败，正是卡住主因）。
+    2. 旧版：需先点「電話番号で続行」按钮跳转到独立手机号页。
+
+    成功后页面含 input[name="phoneNumber"]（或同义 tel input），
+    runtime infer_state 据 has_phone_input 信号识别为 PHONE 状态，
+    触发 submit_phone_and_code handler。
+    """
+    _ensure_task_active("open_phone_signup_entry:start")
+    _set_task_state("ENTRY")
+    logger.info("phone 模式：进入首页，准备进入手机号输入态...")
+    page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+    human_delay(5, 8)
+
+    try:
+        if _click_first_visible(page, _COOKIE_ACCEPT_SELECTORS, description="点击 Cookie 同意按钮"):
+            human_delay(1, 2)
+        # 先触发登录/注册弹窗（首页可能默认折叠）
+        if _click_first_visible(page, _SIGNUP_SELECTORS, description="点击首页注册入口"):
+            human_delay(3, 5)
+    except Exception as exc:
+        logger.warning("处理首页弹窗时发生非致命错误: %s", exc)
+
+    # ── 形态 1：电话输入框已内嵌可见 → 直接成功，跳过点按钮 ──
+    if _phone_input_visible(page):
+        logger.info("phone 模式：检测到内嵌手机号输入框，直接进入 PHONE 态（跳过『電話番号で続行』按钮）。")
+        human_delay(1, 2)
+        return
+
+    # ── 形态 2：折叠态，需先点「用电话继续」展开电话框 ──
+    # 语言无关方案（不枚举文案）：地区跟随 profile IP/locale 变化（日/印尼/英…无穷尽），
+    # 改用「探测式点击」——遍历弹窗候选入口按钮，点一个就探测电话框是否出现，
+    # 命中即成功；同时排除 Google/Apple OAuth 按钮（点了会跳转外部，破坏流程）。
+    logger.info("phone 模式：未见内嵌输入框，进入语言无关的探测式入口点击...")
+    if _try_open_phone_by_probing(page):
+        human_delay(2, 4)
+        return
+
+    # 兜底：再探一次内嵌输入框（延迟渲染）
+    human_delay(2, 3)
+    if _phone_input_visible(page):
+        logger.info("phone 模式：延迟渲染后检测到内嵌手机号输入框，进入 PHONE 态。")
+        return
+
+    logger.error("未找到手机号输入框或电话入口按钮，保存截图 phone_entry_debug.png")
+    try:
+        page.screenshot(path="phone_entry_debug.png")
+    except Exception:
+        pass
+    raise PlaywrightTimeoutError("phone_entry_not_found")
+
+
+# 会跳转外部 OAuth 的按钮特征（语言无关）：点了会离开页面破坏流程，必须排除。
+# 用 sprite icon href 片段 / aria-label 关键词 / provider 名识别。
+_OAUTH_EXCLUDE_MARKERS = ("google", "apple", "microsoft", "facebook")
+
+
+def _try_open_phone_by_probing(page: Page, max_attempts: int = 6) -> bool:
+    """语言无关地展开电话输入框：遍历弹窗候选按钮，点击后探测电话框是否出现。
+
+    策略（不依赖任何语言文案）：
+    1. 优先结构强信号：a[href^="tel:"]、带电话语义的 aria-label（icon 跨语言不变）。
+    2. 否则遍历弹窗内 type=button 的候选（排除 Google/Apple/email 提交等会跳转的）。
+    3. 每点一个候选后探测 phoneNumberInput；出现即成功返回；没出现继续下一个。
+
+    返回 True=电话框已出现；False=所有候选都试过仍无电话框。
+    """
+    # 在浏览器里一次性 JS 定位「用电话继续」按钮并返回其索引（语言无关，不卡死）：
+    #   - 收集弹窗 social 区所有可见 button（含文字的登录入口）
+    #   - 排除 Google/Apple/Microsoft/Facebook（按 svg sprite href 片段 + 可访问名）
+    #   - 排除 email 框提交按钮（关联 input[type=email] 的）
+    #   - 候选里挑「带 svg 图标 + 短文案」的非 OAuth 按钮（电话入口特征）
+    # JS 端只读不点击，避免 Python 逐个 locator + 点击触发 detach 卡死。
+    js_find = """
+    () => {
+        const oauth = ['google','apple','microsoft','facebook','メール','email','mail','correo'];
+        const btns = [...document.querySelectorAll('button, [role="button"]')];
+        const cands = [];
+        btns.forEach((b, idx) => {
+            const r = b.getBoundingClientRect();
+            if (r.width < 40 || r.height < 20) return;          // 不可见/太小
+            const txt = (b.innerText || '').trim().toLowerCase();
+            const html = (b.innerHTML || '').toLowerCase();
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const blob = txt + ' ' + aria + ' ' + html;
+            if (oauth.some(k => blob.includes(k))) return;       // 排除 OAuth/email
+            // 提交类按钮（type=submit 且无 svg）通常是 email 继续，跳过
+            const hasSvg = !!b.querySelector('svg');
+            cands.push({ idx, hasSvg, txtLen: txt.length, top: r.top });
+        });
+        // 电话入口特征：有 svg 图标 + 文案短（"用电话继续"），按位置排序取第一个
+        const phoneish = cands.filter(c => c.hasSvg && c.txtLen > 0 && c.txtLen < 40);
+        phoneish.sort((a, b) => a.top - b.top);
+        return phoneish.length ? phoneish.map(c => c.idx) : cands.map(c => c.idx);
+    }
+    """
+    try:
+        candidate_idxs = page.evaluate(js_find) or []
+    except Exception as exc:
+        logger.warning("JS 定位电话入口候选失败: %s", exc)
+        candidate_idxs = []
+
+    # 对候选索引逐个点击 + 短探测（最多试 4 个，每个总耗时 < 4s，绝不长时间卡死）
+    all_btns = page.locator('button, [role="button"]')
+    for rank, idx in enumerate(candidate_idxs[:4]):
+        try:
+            btn = all_btns.nth(idx)
+            btn.click(timeout=2500)
+            human_delay(1.0, 1.8)
+            if _phone_input_visible(page):
+                logger.info("phone 入口命中候选按钮 idx=%d（第 %d 个候选），电话框已出现。", idx, rank + 1)
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def _find_auth_page(context: BrowserContext, current_page: Page) -> Page | None:
@@ -1387,24 +1573,26 @@ def _complete_registration_flow(page: Page, mail_api: MailManager, email: str, p
 
 
 def _submit_password(page: Page, password: str) -> None:
-    """填写密码并提交。"""
+    """填写密码并提交。
+
+    [fix 2026-06-02 run 6f84ac59]「密码被叠加 n 次」根因修复：
+    旧实现用 human_typing（逐字符 type，**不清空**）→ 状态机重试 submit_password 时
+    每次在已有内容后追加 → 4 次重试把 `1qaz2wsx3edc` 叠成
+    `1qaz2wsx3edc1qaz2wsx3edc...`（乱序拼接）→ OpenAI 校验失败永远过不去。
+    `src/orchestration/handlers.py:submit_password` 早已用 React 原生 setter 幂等填充
+    （`_set_react_input_value`：已填对则跳过，否则先清空再设）修过这个 bug，但 worker →
+    main.run_task 路径走的是本函数（旧实现），两套实现导致修复没覆盖到这条路径。
+    现委托给 handlers.submit_password 单一实现，消除全局不一致。
+    """
+    from src.orchestration.handlers import submit_password as _handlers_submit_password
+
     _ensure_task_active("submit_password:start")
     _set_task_state("AUTH")
-    logger.info("进入密码页，开始输入密码...")
+    logger.info("进入密码页，开始输入密码（委托 handlers React 幂等实现）...")
     try:
-        human_typing(page, _PASSWORD_SELECTOR, password)
-    except Exception as exc:
-        current_url = str(getattr(page, "url", "") or "")
-        if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
-            logger.info("密码输入控件已卸载/隐藏，页面状态已推进到 %s，按提交成功处理。", current_url)
-            return
-        raise
-
-    logger.info("密码已填写，准备提交并等待跳转...")
-    human_delay(1, 2)
-    try:
-        page.keyboard.press("Enter")
-    except Exception as exc:
+        _handlers_submit_password(page, password)
+    except Exception:
+        # 控件已卸载/页面已推进也算成功（与旧行为一致）：提交瞬间 DOM 重渲常触发异常。
         current_url = str(getattr(page, "url", "") or "")
         if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
             logger.info("密码提交时页面已推进到 %s，按成功处理。", current_url)
@@ -1581,6 +1769,7 @@ def _build_llm_provider(config: AppConfig) -> LLMDecisionProvider | None:
     return LLMDecisionProvider(
         client=client,
         confidence_threshold=config.llm_confidence_threshold,
+        vision_enabled=bool(getattr(config, "llm_vision_enabled", False)),
     )
 
 
@@ -1595,6 +1784,21 @@ def _build_runtime_handlers(
         _open_signup_entry(runtime.page, email)
         runtime.page = _wait_for_auth_page(runtime.context, runtime.page)
         return True
+
+    def enter_signup_phone(runtime: AutomationRuntime, _action) -> bool:
+        """phone 模式入口：点击「電話番号で続行」按钮进入手机号注册分支。
+
+        与 enter_signup（邮箱）并列；后续 PHONE state 由 submit_phone_and_code 接管。
+        """
+        _open_phone_signup_entry(runtime.page)
+        # phone 路径不一定立刻跳 auth.openai.com（可能直接 chatgpt.com 内填手机号），
+        # 因此用更宽松的等待：若已能看到 phoneNumber input 视为成功
+        return True
+
+    def submit_phone_and_code_handler(runtime: AutomationRuntime, _action) -> bool:
+        """复用 src/orchestration/handlers.submit_phone_and_code（main.py 路径之前缺失）。"""
+        from src.orchestration.handlers import submit_phone_and_code as _sp
+        return _sp(runtime, _action)
 
     def submit_password(runtime: AutomationRuntime, _action) -> bool:
         _submit_password(runtime.page, password)
@@ -1625,6 +1829,8 @@ def _build_runtime_handlers(
 
     return {
         "enter_signup": enter_signup,
+        "enter_signup_phone": enter_signup_phone,
+        "submit_phone_and_code": submit_phone_and_code_handler,
         "submit_password": submit_password,
         "verify_email": verify_email,
         "fill_about_you": fill_about_you,
@@ -2210,7 +2416,11 @@ def run_task(
 
                 recorder = ArtifactRecorder(config.run_artifacts_dir)
                 run_id = recorder.start_run(email)
-                experience_store = ExperienceStore(os.path.join(config.run_artifacts_dir, "experience-memory.jsonl"))
+                # 经验库 + DB 双写（自进化可视化）；assist_store 仅在 assist_fallback_enabled 时非 None。
+                from src.orchestration.experience_factory import build_assist_store, build_experience_store
+
+                experience_store = build_experience_store(config)
+                assist_store = build_assist_store(config)
 
                 def _runtime_emit(event_type: str, *, state: str | None = None, payload: Optional[dict] = None) -> None:
                     if state is not None:
@@ -2234,6 +2444,8 @@ def run_task(
                     emit_event=_runtime_emit,
                     cancel_check=_ensure_task_active,
                     captcha_solver=build_solver_from_config(config),
+                    assist_enabled=bool(getattr(config, "assist_fallback_enabled", False)),
+                    assist_experience=assist_store,
                 )
 
                 if initial_phase == "registration":

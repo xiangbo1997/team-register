@@ -103,6 +103,21 @@ class Run(SQLModel, table=True):
         default="registered",
         sa_column=Column(String(20), nullable=False, server_default="registered", index=True),
     )
+    # 注册平台（feat/grok-register 引入）：
+    #   openai — 默认，OpenAI/ChatGPT 注册（走 main.run_task）
+    #   grok   — Grok (x.ai) 注册（走 src.automation.grok_runtime.run_grok_task）
+    # worker._execute_task_inner 按此字段分叉调度；非加密，需参与号池按平台过滤查询。
+    platform: str = Field(
+        default="openai",
+        sa_column=Column(String(20), nullable=False, server_default="openai", index=True),
+    )
+    # Grok 注册产物 SSO token（platform="grok" 时 worker 在 extract_sso 成功后写入）。
+    # 加密列（仿 password/card_key）—— sso 是登录凭证，等同密码级敏感。
+    # server_default="" 保证旧库 ALTER 后 raw SQL INSERT 仍可省略此列。
+    sso_token: str = Field(
+        default="",
+        sa_column=Column(EncryptedString(2048), nullable=False, server_default=""),
+    )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 
@@ -322,6 +337,38 @@ class CardActivation(SQLModel, table=True):
         sa_column=Column(String(20), nullable=False, server_default="pending", index=True),
     )
     last_warmup_reason: Optional[str] = Field(default=None, max_length=200)
+
+
+# ── SmsActivation ────────────────────────────────
+
+
+class SmsActivation(SQLModel, table=True):
+    """SMS 号码复用持久化记录。
+
+    借鉴成熟项目 GuJumpgate（一个号最多收 3 次码，省接码费）：
+    申号成功后落库，后续任务申号前先查有没有「同 provider + 同 country 且未用满」
+    的活号，命中则调 setStatus(3) 复用该号继续收下一条 OTP，而非重新申一个新号。
+
+    主键 = order_id（接码平台订单号，跨 Run 唯一）。
+    与 [[card_activations]] 表同构（同样的 use_count / is_invalidated 调度模式）。
+    """
+
+    __tablename__ = "sms_activations"
+
+    order_id: str = Field(primary_key=True, max_length=64)
+    provider_name: str = Field(default="hero_sms", max_length=40, index=True)
+    country: str = Field(default="", max_length=16, index=True)
+    phone_number: str = Field(default="", max_length=40)
+    service: str = Field(default="dr", max_length=16)
+
+    # 复用计数：use_count 已用次数 / max_uses 上限（借鉴 GuJumpgate maxUses=3）
+    use_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    max_uses: int = Field(default=3, sa_column=Column(Integer, nullable=False, server_default="3"))
+
+    activated_at: datetime = Field(default_factory=_utc_now, index=True)
+    last_used_at: Optional[datetime] = Field(default=None)
+    is_invalidated: bool = Field(default=False, index=True)
+    invalidate_reason: Optional[str] = Field(default=None, max_length=200)
 
 
 # ── LinkTemplate ─────────────────────────────────
@@ -623,8 +670,14 @@ class SyntheticCardAudit(SQLModel, table=True):
     id: str = Field(default_factory=_uuid, primary_key=True, max_length=32)
     bin_prefix: str = Field(max_length=8, index=True)           # 4147 / 4100 等
     last_four: str = Field(max_length=4)                        # 卡号末 4 位
-    address_state: str = Field(default="", max_length=4, index=True)   # NY / CA / ...
-    address_zip: str = Field(default="", max_length=10)
+    # 发卡国 / 账单国（ISO alpha-2）：US / GB / CA / SG / HK
+    country: str = Field(
+        default="US",
+        sa_column=Column(String(4), nullable=False, server_default="US", index=True),
+    )
+    # NY / CA / ON ...（GB/SG/HK 为空）；JP 存都道府县全名（Kanagawa=8），故放宽到 16
+    address_state: str = Field(default="", max_length=16, index=True)
+    address_zip: str = Field(default="", max_length=10)         # ZIP / postcode / postal code
     first_name: str = Field(default="", max_length=60)
     last_name: str = Field(default="", max_length=60)
     # feedback_status: pending(刚生成) / success(绑卡通过) / declined(绑卡被拒)
@@ -637,3 +690,42 @@ class SyntheticCardAudit(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utc_now, index=True)
     feedback_at: Optional[datetime] = Field(default=None)
     created_by: Optional[str] = Field(default=None, max_length=32, index=True)
+
+
+# ── LearnedWorkflow ──────────────────────────────
+#
+# 自进化经验的 DB 镜像（与 artifacts/*.jsonl 双写）。
+# 状态机/兜底层「AI 决策成功 → 固化为可复用经验」时，除写 jsonl 外还 upsert 一条到此表，
+# 让控制台 /workflows 页能可视化「学到了哪些工作流」、看成功率、人工启禁/删除。
+#
+# 逻辑唯一键：(platform, state, location, signature_hash, action_id)。
+# signature_hash = md5(json.dumps(signal_signature, sort_keys=True))，
+# 因为 JSON 列不便直接做 WHERE 相等查重，用 hash 列加索引代替。
+
+
+class LearnedWorkflow(SQLModel, table=True):
+    """自进化固化经验的持久化记录（DB 镜像，供控制台可视化 + 人工管理）。"""
+
+    __tablename__ = "learned_workflows"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="openai", max_length=20, index=True)  # openai / grok
+    state: str = Field(default="", max_length=40, index=True)           # AutomationState.value
+    location: str = Field(default="", max_length=255, index=True)       # netloc+path(+#fragment)
+    # 信号签名（9 个匹配键的布尔映射）；JSON 列便于展示，查重靠 signature_hash。
+    signal_signature: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default="{}")
+    )
+    signature_hash: str = Field(default="", max_length=64, index=True)  # md5(signal_signature)
+    action_id: str = Field(default="", max_length=120, index=True)
+    source: str = Field(default="llm", max_length=20)                   # llm / experience
+    success_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    fail_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    is_enabled: bool = Field(default=True, index=True)                  # 人工启禁（禁用后 find 不返回）
+    # 执行细节（兜底层的 idx / locator 等）；可能含 fill 值，展示前需脱敏。
+    last_action_meta: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default="{}")
+    )
+    step_name: str = Field(default="", max_length=80)
+    created_at: datetime = Field(default_factory=_utc_now, index=True)
+    updated_at: datetime = Field(default_factory=_utc_now)

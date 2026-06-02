@@ -96,6 +96,14 @@ class AppConfig:
     # SMS-Activate 接码配置
     sms_api_key: str = ""
     sms_country: str = "6"
+    # SMS 端点 base URL（空=走 SMSManager 默认 sms-activate；HeroSMS 等兼容平台由 provider 配置注入）
+    sms_base_url: str = ""
+    # SMS driver 名（sms_activate / hero_sms / five_sim ...）；异构协议 provider（如 five_sim）
+    # 据此走 registry.build 直接构造，而非 SMSManager 标量管道。空=默认 sms-activate。
+    sms_driver: str = ""
+    # 异构 SMS provider 的原始 config dict（仅 five_sim 等非 SMSManager 协议使用）；
+    # 字符串协议族（sms_activate/hero_sms）保持空，走 sms_api_key/sms_country/sms_base_url 标量。
+    sms_provider_config: dict = field(default_factory=dict)
 
     # 邮件服务配置（通过 HTTP API 对接 email-provider）
     email_provider_base_url: str = "http://127.0.0.1:8000"
@@ -143,6 +151,15 @@ class AppConfig:
     llm_timeout_ms: int = 8000
     llm_confidence_threshold: float = 0.6
     llm_max_consecutive_uncertain: int = 2
+    # 卡顿升级（P0/P1）：同一 state 连续 N 步 DOM 指纹不变时提前触发 LLM 决策。
+    # 默认 2（保守，retry_count>=1 仍是主触发）；设很大值（如 99）可等价关闭卡顿触发。
+    llm_stall_threshold: int = 2
+    # 卡顿到 N 步且 llm_vision_enabled=True 时，给 LLM 附页面截图调多模态。默认 3。
+    llm_screenshot_on_stall_threshold: int = 3
+    # 多模态视觉决策开关（P1）：默认关。LLM_MODEL 可能非多模态，不能靠探测，必须显式开。
+    llm_vision_enabled: bool = False
+    # grok_assist 式枚举兜底开关（P2）：默认关。开启后作为状态机硬失败前的最后一层。
+    assist_fallback_enabled: bool = False
 
     # 分诊器（Vision LLM）配置
     triage_enabled: bool = False
@@ -390,6 +407,7 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         card_provider=os.getenv("CARD_PROVIDER", "efuncard").strip().lower() or "efuncard",
         sms_api_key=os.getenv("SMS_API_KEY", ""),
         sms_country=os.getenv("SMS_COUNTRY", "6"),
+        sms_base_url=os.getenv("SMS_BASE_URL", ""),
         email_provider_base_url=os.getenv("EMAIL_PROVIDER_BASE_URL", "http://127.0.0.1:8000"),
         email_provider_api_key=os.getenv("EMAIL_PROVIDER_API_KEY", ""),
         email_provider_name=os.getenv("EMAIL_PROVIDER_NAME", "applemail").strip().lower() or "applemail",
@@ -421,6 +439,10 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         llm_timeout_ms=_read_int("LLM_TIMEOUT_MS", 8000),
         llm_confidence_threshold=_read_float("LLM_CONFIDENCE_THRESHOLD", 0.6),
         llm_max_consecutive_uncertain=_read_int("LLM_MAX_CONSECUTIVE_UNCERTAIN", 2),
+        llm_stall_threshold=_read_int("LLM_STALL_THRESHOLD", 2),
+        llm_screenshot_on_stall_threshold=_read_int("LLM_SCREENSHOT_ON_STALL_THRESHOLD", 3),
+        llm_vision_enabled=_read_bool("LLM_VISION_ENABLED", False),
+        assist_fallback_enabled=_read_bool("ASSIST_FALLBACK_ENABLED", False),
         triage_enabled=_read_bool("TRIAGE_ENABLED", False),
         triage_base_url=os.getenv("TRIAGE_BASE_URL", "").rstrip("/"),
         triage_api_key=os.getenv("TRIAGE_API_KEY", ""),
