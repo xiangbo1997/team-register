@@ -41,6 +41,14 @@ SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 # 80s 留 20s 余量给 CF + 网络往返。总等待时长由 _wait_and_fill_code 外层循环累加。
 _CODE_POLL_SEGMENT = 80
 
+# Grok(x.ai) 验证码格式：`XXX-XXX` —— 两段各 3 位大写字母/数字混合，连字符分隔。
+# 实测两个样本：`810-XC2`（run ae34564d）、`E52-GXZ`（run 82b1a4f8）—— 前段既可能是
+# 纯数字也可能字母数字混合，故两段都用 [A-Z0-9]{3}（不能写死 \d{3}）。
+# email-provider 通用提取器只认 OpenAI 的纯 6 位数字，认不出 Grok 混合码，
+# 必须透传本 pattern 让 _safe_extract 优先用它（捕获组 1 = 验证码）。
+# 锚定 "code" 关键词 + 非贪婪 .{0,60}? 跨过 "below to validate..." 说明文字降低误匹配。
+_GROK_CODE_PATTERN = r"(?is)\bcode\b.{0,60}?([A-Z0-9]{3}-[A-Z0-9]{3})"
+
 # sso cookie 所属域（extract_sso 轮询时遍历）
 _SSO_ORIGINS = ("https://accounts.x.ai", "https://grok.com", "https://auth.x.ai", "https://x.ai")
 
@@ -620,7 +628,9 @@ def _wait_and_fill_code(page: Any, mail_api: Any, email: str, timeout: int, emit
         remaining = poll_deadline - time.time()
         segment = int(min(_CODE_POLL_SEGMENT, max(10, remaining)))
         try:
-            code = mail_api.get_verification_code(email, wait_timeout=segment)
+            code = mail_api.get_verification_code(
+                email, wait_timeout=segment, code_pattern=_GROK_CODE_PATTERN,
+            )
         except Exception as exc:
             # 单段失败（含偶发 524/网络抖动）→ 不立即 fail，继续下一段，给服务端恢复窗口
             logger.warning("Grok 收码单段失败（继续重试）: %s", exc)
@@ -630,12 +640,24 @@ def _wait_and_fill_code(page: Any, mail_api: Any, email: str, timeout: int, emit
     emit("action", "GROK_VERIFY_EMAIL", f"收到验证码 {code}", action_id="get_code", result="ok")
     _dismiss_cookie(page, emit)  # OTP 框常被 Cookie 弹窗遮挡，填码前先关掉
 
+    # Grok 码是 `Y8K-H6W` 这种带连字符的分组格式，但 x.ai 的 OTP 输入框（无论 6 格
+    # 分格还是单聚合框）只存字符本身、不含连字符——连字符只是邮件里给人看的视觉分组。
+    # 实测 run 58aad671：码 Y8K-H6W(7 字符) 填进 6 格框时 otpBoxes(6) < code.len(7) → not-ready
+    # 永远填不进。故填码用剥连字符版（Y8KH6W，6 字符对应 6 格）；若该版填不进再退回原始版。
+    fill_candidates = [code.replace("-", "").replace(" ", "")]
+    if code not in fill_candidates:
+        fill_candidates.append(code)  # 兜底：万一某场景输入框确实要带连字符的原始码
+
     deadline = time.time() + 60
     while time.time() < deadline:
         # 已经跳到资料页（部分场景自动跳转）→ 直接返回
         if page.evaluate(_JS_HAS_PROFILE_FORM):
             return
-        result = page.evaluate(_JS_FILL_CODE, code)
+        result = "not-ready"
+        for fill_code in fill_candidates:
+            result = page.evaluate(_JS_FILL_CODE, fill_code)
+            if result == "filled":
+                break
         if result == "filled":
             time.sleep(1.0)
             # 语言无关提交（OTP 框很多场景填满即自动提交，这里再补一次 submit 点击）
@@ -668,8 +690,13 @@ def _fill_profile(page: Any, password: str, solver_runtime: Any, try_solve: Call
     while time.time() < deadline:
         result = page.evaluate(_JS_FILL_PROFILE, {"given": first, "family": last, "password": password})
         if result == "filled":
-            # 过 Turnstile（提交前）
+            # 过 Turnstile（提交前）：先尝试 solver（pending 时），再轮询等 token 就绪。
+            # 关键（修 run 9da55807 "未提取到 sso token"）：Turnstile 是被动异步验证，
+            # 截图实证会自动 "成功しました!"，但旧逻辑 solver 失败就立刻点提交 → token
+            # 未就绪 → x.ai「登録を完了」提交空击 → 停在资料页 → 拿不到 sso。
+            # 故提交前轮询等 cf-turnstile-response 从 pending → ready（最多 ~20s）。
             _solve_turnstile_if_present(page, solver_runtime, try_solve, emit)
+            _wait_turnstile_ready(page, emit, timeout=20)
             # 语言无关提交（button[type=submit] 优先，Enter，再 AI 辅助点完成按钮）
             if not page.evaluate(_JS_CLICK_SUBMIT):
                 try:
@@ -706,6 +733,32 @@ def _solve_turnstile_if_present(page: Any, solver_runtime: Any, try_solve: Calla
     else:
         # 求解失败不立即 fail —— 服务端可能接受无 token 提交，由 extract_sso 判定最终结果
         emit("action", "GROK_PROFILE", "Turnstile 自动求解失败，继续尝试提交", action_id="turnstile", result="failed")
+
+
+def _wait_turnstile_ready(page: Any, emit: Callable, *, timeout: int = 20) -> bool:
+    """提交前轮询等 Turnstile token 就绪（被动验证会自动完成）。
+
+    x.ai 资料页的 Turnstile 是 managed/被动模式：页面加载后几秒内自动验证通过
+    （截图实证 "成功しました!"），cf-turnstile-response 隐藏 input 随后被填入 token。
+    旧逻辑 solver 失败就立刻点提交，此时 token 未就绪 →「登録を完了」提交无效。
+
+    Returns:
+        True = token 已就绪 / 无 Turnstile（可提交）；False = 超时仍 pending（仍放行提交，
+        由 extract_sso 判定最终结果，避免被动模式偶发慢导致硬失败）。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            state = page.evaluate(_JS_TURNSTILE_STATE)
+        except Exception:
+            state = "not-found"
+        if state in ("ready", "not-found"):
+            if state == "ready":
+                emit("action", "GROK_PROFILE", "Turnstile token 已就绪", action_id="turnstile", result="ok")
+            return True
+        time.sleep(0.5)
+    emit("action", "GROK_PROFILE", "Turnstile 等待超时（仍尝试提交）", action_id="turnstile", result="timeout")
+    return False
 
 
 def _extract_sso(page: Any, context: Any, timeout: int, emit: Callable) -> str:

@@ -101,8 +101,8 @@ class TestGrokSteps(unittest.TestCase):
             gr._wait_and_fill_code(page, mail, "user@hotmail.com", 10, _noop_emit)
 
     def test_fill_profile_happy_no_turnstile(self):
-        # fill_profile(filled) → turnstile state(not-found) → click_submit(True)
-        page = self._page(evaluate_side_effect=["filled", "not-found", True])
+        # fill_profile(filled) → solve 检测 state(not-found) → _wait_turnstile_ready state(not-found) → click_submit(True)
+        page = self._page(evaluate_side_effect=["filled", "not-found", "not-found", True])
         solver_rt = MagicMock()
         try_solve = MagicMock(return_value=True)
         with patch("time.sleep"):
@@ -110,8 +110,9 @@ class TestGrokSteps(unittest.TestCase):
         try_solve.assert_not_called()  # 无 turnstile 不调 solver
 
     def test_fill_profile_solves_turnstile(self):
-        # fill_profile(filled) → turnstile state(pending) → get token → sync token → click_submit(True)
-        page = self._page(evaluate_side_effect=["filled", "pending", "tok-abc", True, True])
+        # fill_profile(filled) → solve state(pending) → get token → sync token
+        # → _wait_turnstile_ready state(ready) → click_submit(True)
+        page = self._page(evaluate_side_effect=["filled", "pending", "tok-abc", True, "ready", True])
         solver_rt = MagicMock()
         try_solve = MagicMock(return_value=True)
         with patch("time.sleep"):
@@ -249,6 +250,49 @@ class TestWorkerGrokFork(unittest.TestCase):
             run = session.get(Run, run_id)
             self.assertEqual(run.status, "failed")
             self.assertIn("grok_mail_preflight_failed", run.error_reason or "")
+
+
+class TestGrokCodePattern(unittest.TestCase):
+    """Grok 验证码 pattern 正则正确性（防回归）。
+
+    根因：Grok(x.ai) 码是 `810-XC2`（数字-字母混合带连字符），email-provider
+    通用提取器只认 OpenAI 纯 6 位数字。team-register 透传 _GROK_CODE_PATTERN 修复。
+    用真实邮件正文片段（run ae34564d 实测）断言能提取出码。
+    """
+
+    def setUp(self):
+        import re
+        self.re = re
+        self.pat = gr._GROK_CODE_PATTERN
+
+    def _extract(self, text):
+        m = self.re.search(self.pat, text)
+        return m.group(1) if m else None
+
+    def test_extracts_numeric_prefix_code(self):
+        # 实测样本 1（run ae34564d 邮件 22609）：前段纯数字
+        text = "Please use the code below to validate your email address. 810-XC2 If you did not"
+        self.assertEqual(self._extract(text), "810-XC2")
+
+    def test_extracts_alpha_prefix_code(self):
+        # 实测样本 2（run 82b1a4f8 邮件 22610）：前段字母数字混合 —— pattern 不能写死 \d{3}
+        text = "Please use the code below to validate your email address. E52-GXZ If you did not"
+        self.assertEqual(self._extract(text), "E52-GXZ")
+
+    def test_extracts_with_html_noise_prefix(self):
+        # 正文前常有 CSS/HTML 噪声，pattern 应仍命中（code 锚定）
+        text = "#outlook a { padding: 0; } ... your code is 9X3-AB7 thanks"
+        self.assertEqual(self._extract(text), "9X3-AB7")
+
+    def test_no_false_match_on_pure_numeric(self):
+        # 不应把纯数字（OpenAI 6 位码 / 年份）误当 Grok 码
+        text = "your verification code is 482910 valid for 2026"
+        self.assertIsNone(self._extract(text))
+
+    def test_no_match_without_code_keyword(self):
+        # 无 code 锚定时不乱抓随机 数字-字母 串（如颜色/编号）
+        text = "ticket 100-AAA was created; ref 200-BBB"
+        self.assertIsNone(self._extract(text))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 
 _APPLEMAIL_PROVIDER = "applemail"
 _APPLEMAIL_PLACEHOLDER_PASSWORD = "unused"
+
+# otp_sent_at 余量（秒）：建会话前往前留这么多秒作为 OTP 触发时间戳，
+# 覆盖"提交邮箱发码 → 进入收码函数建会话"的间隔，确保 cfworker 时间窗
+# （cutoff = otp_sent_at - 2s）不会把刚到的验证码件切掉。
+# 修复 before_ids 脏快照竞态（线上 run 077421e6）。
+_OTP_SENT_AT_SLACK_SEC = 5.0
 
 # 跨端 contract（见 docs/architecture/mail-provider-contract.md）：
 # managed-session 必填字段约束按 provider 决定。这些 provider 在 managed
@@ -133,9 +140,18 @@ class MailManager:
         logger.warning("get_latest_mail() 已废弃，通过 email-provider HTTP API 轮询。")
         return None
 
-    def get_verification_code(self, email: str, wait_timeout: int = 60) -> Optional[str]:
-        """获取邮箱验证码"""
-        return self._poll_code_via_api(email, wait_timeout)
+    def get_verification_code(
+        self, email: str, wait_timeout: int = 60, *, code_pattern: Optional[str] = None,
+    ) -> Optional[str]:
+        """获取邮箱验证码。
+
+        Args:
+            code_pattern: 可选验证码正则。默认 None 走 email-provider 通用提取
+                （OpenAI 6 位纯数字）。Grok(x.ai) 的码是 `810-XC2` 这种
+                数字-字母混合带连字符格式，通用提取器认不出，必须由调用方
+                传专用 pattern（见 grok_runtime._GROK_CODE_PATTERN）。
+        """
+        return self._poll_code_via_api(email, wait_timeout, code_pattern=code_pattern)
 
     def get_verification_code_via_browser(self, email: str, page=None, wait_timeout: int = 120) -> Optional[str]:
         """
@@ -349,8 +365,15 @@ class MailManager:
             logger.debug("查询 MailAccount provider 覆盖失败（按全局 provider 处理）: %s", exc)
             return None
 
-    def _poll_code_via_api(self, email: str, wait_timeout: int) -> Optional[str]:
-        """通过 HTTP API 创建会话并轮询验证码"""
+    def _poll_code_via_api(
+        self, email: str, wait_timeout: int, *, code_pattern: Optional[str] = None,
+    ) -> Optional[str]:
+        """通过 HTTP API 创建会话并轮询验证码
+
+        Args:
+            code_pattern: 可选验证码正则，透传给 email-provider 的提取器。
+                传了则优先用它提取（Grok 混合码场景）；None 走通用提取（OpenAI）。
+        """
         session: Optional[MailSession] = None
         try:
             # 优先按 DB MailAccount 配置临时切 provider（per-email override），
@@ -392,6 +415,16 @@ class MailManager:
                 session_mode = self.ensure_runtime_ready(email)
                 existing_account = self._build_existing_account(email) if session_mode == "credentialed" else None
 
+            # OTP 触发时刻：记在建会话之前，并往前留余量。
+            # 修复 before_ids 脏快照竞态（线上 run 077421e6 实测）：
+            #   复用邮箱（reused=true）+ 验证码邮件在"提交邮箱→建会话"窗口内到达时，
+            #   会被算进 create_session 拍摄的 before_ids 基线，poll 把真验证码件当旧件
+            #   永远跳过 → CODE_TIMEOUT。
+            # email-provider 的 poll-code 支持 otp_sent_at：cfworker 用 (otp_sent_at - 2s)
+            #   做时间 cutoff 收件，绕开 before_ids 判断。这里再留 _OTP_SENT_AT_SLACK 秒余量，
+            #   覆盖"提交邮箱发码 → 进入本函数建会话"的间隔，确保刚到的码不被时间窗切掉。
+            otp_sent_at = time.time() - _OTP_SENT_AT_SLACK_SEC
+
             logger.info(
                 "创建邮箱会话: email=%s provider=%s session_mode=%s timeout=%ss",
                 _mask_email(email),
@@ -416,7 +449,10 @@ class MailManager:
                 session.session_mode,
             )
 
-            code = self._provider.poll_code(session, timeout_seconds=wait_timeout)
+            code = self._provider.poll_code(
+                session, timeout_seconds=wait_timeout, otp_sent_at=otp_sent_at,
+                code_pattern=code_pattern,
+            )
             if code:
                 logger.info("成功捕获邮件验证码: %s", code)
                 self._complete_session(session, "success")
