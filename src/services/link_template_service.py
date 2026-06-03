@@ -211,10 +211,43 @@ def delete_template(template_id: int) -> bool:
         return True
 
 
+def load_hit_history(country: str) -> set[str]:
+    """读某国家历史 ELIGIBLE/EXISTS 命中过的 promo_code 集合（小写）。
+
+    供 code_discovery_service 组装 promo_scoring.ScanHistory.hit_codes：
+    历史命中过的码下次发现任务里优先复扫（OpenAI 会下架/重新上架，值得复验），
+    其拆出的 base/suffix 还能给"兄弟码"加权（反馈环）。
+
+    复用 LinkTemplate 既有索引（aimizy_country / last_eligibility_status）。
+
+    Args:
+        country: ISO 国家码（大写或任意大小写，内部按大写匹配 aimizy_country）
+
+    Returns:
+        命中码小写集合；无命中或异常时空集。
+    """
+    cc = (country or "").strip().upper()
+    if not cc:
+        return set()
+    try:
+        with get_session() as session:
+            rows = session.exec(
+                select(LinkTemplate.promo_code).where(
+                    LinkTemplate.aimizy_country == cc,
+                    LinkTemplate.last_eligibility_status.in_(("eligible", "exists")),
+                )
+            ).all()
+        return {str(c).strip().lower() for c in rows if str(c or "").strip()}
+    except Exception as exc:  # noqa: BLE001 — 历史读失败降级为空集（不影响主流程）
+        logger.warning("load_hit_history 失败 country=%s err=%s", cc, exc)
+        return set()
+
+
 __all__ = [
     "list_templates",
     "list_presets",
     "get_template",
     "create_template",
     "delete_template",
+    "load_hit_history",
 ]

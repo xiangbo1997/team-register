@@ -153,6 +153,43 @@ def _load_companies_json(country: str, seeds_dir: Path) -> list[str]:
         return []
 
 
+def company_main_variants(
+    country: str,
+    *,
+    seeds_dir: Optional[Path] = None,
+) -> frozenset[str]:
+    """取某国家公司词典里每个公司的"主变体"（全名级，排除首字母缩写/单首词噪声）。
+
+    供 promo_scoring 的 exact_company 信号用：只奖励"码 == 公司全名"的强匹配，
+    不奖励 mt/kc 这类缩写（它们由 build_candidates 生成但属噪声，不该被捧高）。
+
+    主变体定义 = 全名去标点小写 base + 去 "the" 前缀 + 去公司类型后缀的全名版本；
+    显式排除 normalize() 产出的 initials（首字母缩写）和 words[0]（单首词）。
+
+    Args:
+        country: ISO 国家码（大写）
+        seeds_dir: 字典目录覆盖（测试注入）
+
+    Returns:
+        公司主变体小写 frozenset。
+    """
+    cc = (country or "").strip().upper()
+    base_dir = seeds_dir or _DEFAULT_SEEDS_DIR
+    mains: set[str] = set()
+    for company in _load_companies_json(cc, base_dir):
+        raw = company.strip()
+        full = re.sub(r"[\s\-_./,&+']", "", raw).lower()
+        if not full:
+            continue
+        mains.add(full)
+        if full.startswith("the") and len(full) > 3:
+            mains.add(full[3:])
+        for suffix in _COMPANY_TAIL_SUFFIXES:
+            if full.endswith(suffix) and len(full) > len(suffix):
+                mains.add(full[: -len(suffix)])
+    return frozenset(m for m in mains if len(m) >= 3)
+
+
 def list_supported_countries(seeds_dir: Optional[Path] = None) -> list[str]:
     """列出有字典文件的国家码（用于前端国家下拉的提示）。"""
     base = seeds_dir or _DEFAULT_SEEDS_DIR
@@ -254,6 +291,7 @@ __all__ = [
     "KNOWN_BASES",
     "COUNTRY_SUFFIXES",
     "normalize",
+    "company_main_variants",
     "list_supported_countries",
     "build_candidates",
     "build_cross_matrix",

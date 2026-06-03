@@ -30,16 +30,25 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from src.data.promo_scoring import (
+    ScanHistory,
+    prioritize_candidates,
+    score_candidate,
+    split_suffix,
+)
 from src.data.promo_seeds import (
     COUNTRY_SUFFIXES,
+    KNOWN_BASES,
     build_candidates,
     build_cross_matrix,
+    company_main_variants,
 )
 from src.db.models import EligibilityStatus
 from src.promo_eligibility import check_eligibility
 from src.proxy_clients.dynamic_pool import DynamicProxyPool
 from src.services.event_service import EventBroadcaster
-from src.services.link_template_service import create_template
+from src.services.link_template_service import create_template, load_hit_history
+from src.services.scanned_code_service import load_dead_codes, record_scan
 from src.services.promo_eligibility_service import (
     PROMO_VERIFY_LOCK,
     PromoVerifyError,
@@ -56,6 +65,18 @@ _DISCOVER_DELAY_SEC = 1.0
 
 # 任务上限：单次发现最多扫多少条；防止误传超大字典把账号 token 烧光
 _MAX_CANDIDATES = 5000
+
+# 单条码遇 403 时，最多换几个全新 IP 重试（dynamic_provider 模式）。
+# 动态住宅 IP 的 403 很常见（换到另一个被 CF 标记的脏 IP），单次重试不够；
+# 多换几个仍全 403 才说明 token/账号被标记（真该停），否则是 IP 偶发，跳过这条继续扫。
+_MAX_403_RETRY_PER_CODE = 3
+
+# 403 重试之间的退避（秒）：给 CF 限流冷却 + 等 1024 轮换出新鲜 IP。
+_RETRY_403_BACKOFF_SEC = 2.0
+
+# 整任务累计 403 阈值：跨多个码累计这么多次 403，判定 token/供应商当前被 CF 标记，
+# 提前停以免烧 token。0 表示不启用此闸。
+_MAX_TOTAL_403_ABORT = 15
 
 # 内存任务表（task_id -> _DiscoverState）；进程重启清空（与 bulk_verify 同口径）
 _RUNNING: dict[str, "_DiscoverState"] = {}
@@ -184,6 +205,73 @@ def _country_default_currency(country: str) -> str:
     return _COUNTRY_CURRENCY.get(country.upper(), "")
 
 
+# 反馈环：每命中 N 次重排一次未扫尾部（有界化，避免 O(n²)）
+_FEEDBACK_RESORT_EVERY_HITS = 3
+
+
+def _build_scan_history(country: str, fresh_within_days: int) -> ScanHistory:
+    """组装某国家的历史信号快照（喂 prioritize_candidates）。
+
+    - hit_codes: LinkTemplate 里 ELIGIBLE/EXISTS 命中过的码
+    - hit_bases / hit_suffixes: 对命中码跑 split_suffix 推出（反馈环：兄弟码加权）
+    - dead_codes: ScannedCode 里新鲜期内 NOT_FOUND 的码（默认沉底不删）
+
+    读 DB 失败时各信号降级为空集（prioritize 退化为字母序，安全）。
+    """
+    hit_codes = load_hit_history(country)
+    hit_bases: set[str] = set()
+    hit_suffixes: set[str] = set()
+    for code in hit_codes:
+        base, suffix = split_suffix(code, country)
+        if base:
+            hit_bases.add(base)
+        if suffix:
+            hit_suffixes.add(suffix)
+    dead_codes = load_dead_codes(country, fresh_within_days=fresh_within_days)
+    return ScanHistory(
+        hit_codes=frozenset(hit_codes),
+        dead_codes=frozenset(dead_codes),
+        hit_bases=frozenset(hit_bases),
+        hit_suffixes=frozenset(hit_suffixes),
+    )
+
+
+def _prioritize_pairs(
+    candidate_pairs: list[tuple[str, str]],
+    fresh_within_days: int,
+) -> list[tuple[str, str]]:
+    """按国家分组对 (country, code) 对做启发式重排序（高命中码先扫）。
+
+    seeds 模式所有 country 相同 → 整体一次排序；
+    cross_matrix 模式按 country 分块，块内各自排序再 concat（保持国家块边界，
+    每国高价值码在各自块内先扫）。
+    """
+    if not candidate_pairs:
+        return candidate_pairs
+
+    # 按出现顺序分组国家（保持 cross_matrix 的国家块顺序）
+    grouped: list[tuple[str, list[str]]] = []
+    index: dict[str, int] = {}
+    for country, code in candidate_pairs:
+        if country not in index:
+            index[country] = len(grouped)
+            grouped.append((country, []))
+        grouped[index[country]][1].append(code)
+
+    out: list[tuple[str, str]] = []
+    for country, codes in grouped:
+        history = _build_scan_history(country, fresh_within_days)
+        mains = company_main_variants(country)
+        ordered = prioritize_candidates(
+            codes,
+            country,
+            company_mains=mains,
+            history=history,
+        )
+        out.extend((country, code) for code in ordered)
+    return out
+
+
 def _run_discovery(
     task_id: str,
     candidate_pairs: list[tuple[str, str]],
@@ -193,6 +281,7 @@ def _run_discovery(
     proxy_source: str = "static_proxy",
     proxy_provider_id: Optional[int] = None,
     static_proxy_id: Optional[int] = None,
+    feedback_enabled: bool = True,
 ) -> None:
     """daemon 线程入口：串行扫描候选 + 实时落库 + SSE 推送。
 
@@ -309,7 +398,59 @@ def _run_discovery(
 
         last_country: Optional[str] = None
 
-        for country, code in candidate_pairs:
+        # 反馈环运行态：命中的 base/suffix 累积，命中达阈值时重排未扫尾部
+        live_hit_bases: set[str] = set()
+        live_hit_suffixes: set[str] = set()
+        hits_since_resort = 0
+        # 转成可变 list 以便 in-scan 重排未扫尾部（index 之后的切片）
+        pairs = list(candidate_pairs)
+
+        def _resort_tail(start: int, country_code: str) -> None:
+            """用累积的命中信号重排 [start:] 的未扫尾部（仅同 country 段，有界）。"""
+            # 只重排紧邻的同 country 连续块（cross_matrix 下不跨国家块）
+            end = start
+            while end < len(pairs) and pairs[end][0] == country_code:
+                end += 1
+            if end - start <= 1:
+                return
+            tail_codes = [c for _cc, c in pairs[start:end]]
+            hist = ScanHistory(
+                hit_bases=frozenset(live_hit_bases),
+                hit_suffixes=frozenset(live_hit_suffixes),
+            )
+            mains = company_main_variants(country_code)
+            ordered = sorted(
+                tail_codes,
+                key=lambda c: (
+                    -score_candidate(
+                        c, country_code,
+                        known_bases=frozenset(KNOWN_BASES),
+                        company_mains=mains, history=hist,
+                    ),
+                    c,
+                ),
+            )
+            pairs[start:end] = [(country_code, c) for c in ordered]
+
+        def _register_hit(hit_code: str, country_code: str) -> None:
+            """命中 ELIGIBLE/EXISTS 时累积其 base/suffix；达阈值触发尾部重排。"""
+            nonlocal hits_since_resort
+            if not feedback_enabled:
+                return
+            base, suffix = split_suffix(hit_code, country_code)
+            if base:
+                live_hit_bases.add(base)
+            if suffix:
+                live_hit_suffixes.add(suffix)
+            hits_since_resort += 1
+            if hits_since_resort >= _FEEDBACK_RESORT_EVERY_HITS:
+                hits_since_resort = 0
+                _resort_tail(i, country_code)  # i 已指向下一条未扫
+
+        i = 0
+        while i < len(pairs):
+            country, code = pairs[i]
+            i += 1
             if state.cancelled.is_set():
                 logger.info("discover 任务被取消 task=%s processed=%d/%d",
                             task_id, state.processed, state.total)
@@ -317,6 +458,19 @@ def _run_discovery(
                 break
 
             proxy_url = _acquire_proxy_url(country)
+
+            # 安全护栏：dynamic_provider 模式下拉不到 IP 时**绝不降级直连**
+            # （会用本机 IP 打 ChatGPT，污染本机 IP + 暴露身份）。直接中止让运维换供应商。
+            # 注：static_proxy 未指定 id 时允许 _resolve_proxy_url_for_country 返回 None
+            #     走旧 fallback 行为（历史兼容）；direct 模式本就是有意直连。
+            if proxy_source == "dynamic_provider" and not proxy_url:
+                state.final_status = "error"
+                state.error_message = (
+                    "动态供应商拉取代理失败（供应商不可用/白名单未配/线路异常），"
+                    "已中止以避免用本机 IP 直连 ChatGPT。请检查供应商配置后重试。"
+                )
+                _emit("discovery.error", reason="proxy_unavailable_abort", code=code)
+                break
 
             # 国家切换时推一个事件（cross_matrix 模式下有用）
             if last_country != country:
@@ -349,43 +503,70 @@ def _run_discovery(
                 break
 
             # ── 403: Cloudflare 拦截 ──
-            # dynamic_provider 模式：主动换 IP 再试 1 次；仍 403 才真停
-            # 其它模式：保持旧行为，立即停（无 IP 可换）
+            # dynamic_provider 模式：多换几个全新 IP 重试（每次退避），连续 N 个
+            #   不同 IP 都 403 才判定该码失败（不中止整任务，跳过这条继续扫）；
+            #   只有跨码累计 403 超阈值才中止（说明 token/供应商被标记）。
+            # 其它模式：无 IP 可换，保持旧行为立即停。
             if result.http_status == 403:
-                if proxy_source == "dynamic_provider":
-                    _force_rotate_current(country, reason="403")
-                    _emit("discovery.progress",
-                          code=code, status="error",
-                          error="403 已触发轮换重试")
-                    new_proxy_url = _acquire_proxy_url(country)
-                    try:
-                        retry = check_eligibility(
-                            access_token=token,
-                            code=code,
-                            proxy_url=new_proxy_url,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        retry = None
-                        logger.warning(
-                            "discover 403 重试异常 code=%s err=%s", code, exc,
-                        )
-                    if retry is None or retry.http_status == 403:
-                        state.final_status = "error"
-                        state.error_message = (
-                            "Cloudflare 持续拦截 (403)，轮换 IP 后仍失败；建议暂停或换供应商"
-                        )
-                        _emit("discovery.error",
-                              reason="cloudflare_blocked_persistent", code=code)
-                        break
-                    # 重试成功 → 用 retry 结果继续后续判定
-                    result = retry
-                else:
+                if proxy_source != "dynamic_provider":
                     state.final_status = "error"
                     state.error_message = (
                         "Cloudflare 拦截 (403)，已提前终止；建议换代理或等待"
                     )
                     _emit("discovery.error", reason="cloudflare_blocked", code=code)
                     break
+
+                # 累计 403 闸：跨码累计太多次 → token/供应商当前不可用，停。
+                # state.rotations_by_403 由 _force_rotate_current 从 pool stats 同步。
+                if _MAX_TOTAL_403_ABORT > 0 and state.rotations_by_403 >= _MAX_TOTAL_403_ABORT:
+                    state.final_status = "error"
+                    state.error_message = (
+                        f"累计 {state.rotations_by_403} 次 403，token 或供应商当前被 Cloudflare 标记，"
+                        "已提前终止；建议换 token / 供应商或等待冷却"
+                    )
+                    _emit("discovery.error", reason="cloudflare_blocked_quota", code=code)
+                    break
+
+                # 单条码：多换 IP 重试
+                retry = None
+                for attempt in range(1, _MAX_403_RETRY_PER_CODE + 1):
+                    _force_rotate_current(country, reason="403")
+                    _emit("discovery.progress", code=code, status="error",
+                          error=f"403 换 IP 重试 {attempt}/{_MAX_403_RETRY_PER_CODE}")
+                    time.sleep(_RETRY_403_BACKOFF_SEC)  # 退避：CF 冷却 + 等新鲜 IP
+                    new_proxy_url = _acquire_proxy_url(country)
+                    if not new_proxy_url:
+                        # 拉不到新 IP（供应商挂了）→ 不再硬试，跳出重试循环
+                        logger.warning("discover 403 重试拉不到新 IP code=%s attempt=%d", code, attempt)
+                        break
+                    try:
+                        retry = check_eligibility(
+                            access_token=token, code=code, proxy_url=new_proxy_url,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        retry = None
+                        logger.warning("discover 403 重试异常 code=%s attempt=%d err=%s",
+                                       code, attempt, exc)
+                        continue
+                    if retry.http_status != 403:
+                        break  # 换到干净 IP，成功
+
+                if retry is not None and retry.http_status != 403:
+                    # 重试成功 → 用 retry 结果继续后续判定
+                    result = retry
+                else:
+                    # N 个 IP 都 403：这条码跳过（不中止整任务），继续扫下一条
+                    state.error_count += 1
+                    logger.warning("discover 单码 %d 次换 IP 仍 403，跳过 code=%s", _MAX_403_RETRY_PER_CODE, code)
+                    _emit("discovery.progress", code=code, status="error",
+                          error=f"{_MAX_403_RETRY_PER_CODE} 次换 IP 仍 403，已跳过")
+                    if state.processed < state.total and delay_sec > 0:
+                        time.sleep(delay_sec)
+                    continue
+
+            # 落 ledger：每条终态都记一份（供下次发现任务剪枝/沉底）。
+            # 失败仅记 warning 不抛（record_scan 内部已兜底），不阻断扫描。
+            record_scan(country, code, result.status)
 
             if result.status == EligibilityStatus.ELIGIBLE:
                 state.eligible_found += 1
@@ -395,9 +576,11 @@ def _run_discovery(
                 )
                 _emit("discovery.eligible",
                       code=code, country=country, template_id=tpl_id)
+                _register_hit(code, country)
             elif result.status == EligibilityStatus.EXISTS:
                 state.exists_found += 1
                 _emit("discovery.progress", code=code, status="exists")
+                _register_hit(code, country)
             elif result.status == EligibilityStatus.NOT_FOUND:
                 state.not_found_count += 1
             else:
@@ -451,6 +634,8 @@ def start_discovery(
     proxy_source: str = "static_proxy",
     proxy_provider_id: Optional[int] = None,
     static_proxy_id: Optional[int] = None,
+    prioritize: bool = True,
+    fresh_within_days: int = 30,
 ) -> dict[str, Any]:
     """启动一次 promo 码发现任务。
 
@@ -464,6 +649,9 @@ def start_discovery(
         proxy_source: 代理来源 — dynamic_provider | static_proxy | direct
         proxy_provider_id: dynamic_provider 模式必填的 ProxyProvider id
         static_proxy_id: static_proxy 模式可选；None 时按国家自动选
+        prioritize: True（默认）按启发式重排候选，高命中码先扫（KNOWN_BASES /
+                    公司全名 / 历史命中码 / 历史死码沉底）；False 退回字母序（旧行为）
+        fresh_within_days: 历史死码新鲜窗口，超过这天数的 NOT_FOUND 不再沉底（值得重扫）
 
     Returns:
         {"task_id": ..., "total": ..., "country": ..., "mode": ...}
@@ -512,6 +700,11 @@ def start_discovery(
             f"候选码过多 {len(candidate_pairs)} > {_MAX_CANDIDATES}；请收窄国家/关键词"
         )
 
+    # 启发式重排：高命中码先扫（KNOWN_BASES / 公司全名 / 历史命中 / 死码沉底）。
+    # 读 DB 失败时各信号降级为空集，prioritize 退化为字母序（安全）。
+    if prioritize:
+        candidate_pairs = _prioritize_pairs(candidate_pairs, fresh_within_days)
+
     # 拿锁——daemon 启动后，锁所有权移交给 daemon 线程，由其 finally 释放。
     # 本函数返回前如果任何步骤失败（线程未真正启动），必须释放避免泄漏。
     _acquire_promo_lock_or_raise()
@@ -536,6 +729,7 @@ def start_discovery(
                 "proxy_source": safe_proxy_source,
                 "proxy_provider_id": proxy_provider_id,
                 "static_proxy_id": static_proxy_id,
+                "feedback_enabled": prioritize,
             },
             name=f"promo-discover-{task_id[:8]}",
             daemon=True,

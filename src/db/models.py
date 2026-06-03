@@ -371,6 +371,28 @@ class SmsActivation(SQLModel, table=True):
     invalidate_reason: Optional[str] = Field(default=None, max_length=200)
 
 
+class ScannedCode(SQLModel, table=True):
+    """促销码发现的扫描结果 ledger（跨任务剪枝用）。
+
+    code_discovery_service 每扫一条候选码就 upsert 一条进来，记录其终态
+    （not_found / exists / eligible / error）+ 扫描时间。下次发现任务启动时：
+      - 读新鲜期内 status='not_found' 的码 → 喂 promo_scoring.ScanHistory.dead_codes，
+        默认沉底（不删，防 OpenAI 重新上架旧码漏掉）；
+      - eligible/exists 的命中信号主要走 LinkTemplate（更结构化），这里冗余记一份便于审计。
+
+    主键 = 自增 id；(country, code) 业务唯一（scanned_code_service.record_scan 保证）。
+    不用 LinkTemplate 存死码——会污染模板下拉、灌几千垃圾行。
+    """
+
+    __tablename__ = "scanned_codes"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    country: str = Field(default="", max_length=8, index=True)
+    code: str = Field(default="", max_length=80, index=True)
+    status: str = Field(default="", max_length=20, index=True)   # not_found/exists/eligible/error
+    scanned_at: datetime = Field(default_factory=_utc_now, index=True)
+
+
 # ── LinkTemplate ─────────────────────────────────
 #
 # 用户保存的"checkout 链接生成器表单"快照，用于号池页生成 hosted checkout 链接时复用。

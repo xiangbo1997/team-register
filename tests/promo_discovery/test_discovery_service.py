@@ -331,5 +331,69 @@ class TestRegistryAndStatus(_DiscoveryTestBase):
         PROMO_VERIFY_LOCK.release()
 
 
+class TestPrioritization(_DiscoveryTestBase):
+    """启发式排序 + 历史命中前置 + 落 ledger + prioritize=False 回归。"""
+
+    def _run_recording_order(self, codes, *, prioritize=True, side_status=EligibilityStatus.NOT_FOUND):
+        """跑一个任务并按 check_eligibility 实际调用顺序记录 code。"""
+        scanned: list[str] = []
+
+        def fake_check(*, access_token, code, proxy_url=None):
+            scanned.append(code)
+            return EligibilityResult(code=code, status=side_status, http_status=200)
+
+        with get_session() as s:
+            _seed_run_with_token(s)
+        with mock.patch.object(discover_mod, "build_candidates", return_value=codes), \
+             mock.patch.object(discover_mod, "check_eligibility", side_effect=fake_check), \
+             mock.patch.object(discover_mod, "_resolve_proxy_url_for_country", return_value=(None, False)):
+            res = start_discovery("GB", mode="seeds", delay_sec=0.0, prioritize=prioritize)
+            _wait_until_terminal(res["task_id"], timeout=5.0)
+        return scanned
+
+    def test_known_bases_scanned_before_noise(self):
+        # codestone ∈ KNOWN_BASES，应排在字母序更靠前的噪声之前被扫
+        order = self._run_recording_order(["aaanoise", "codestone", "zzznoise"])
+        self.assertLess(order.index("codestone"), order.index("aaanoise"))
+        self.assertLess(order.index("codestone"), order.index("zzznoise"))
+
+    def test_history_hit_scanned_early(self):
+        # 历史 EXISTS 命中过的 datroaiuk 应被前置（即便字母序靠后）
+        with get_session() as s:
+            s.add(LinkTemplate(
+                name="promo-gb-datroaiuk", plan="team", promo_code="datroaiuk",
+                aimizy_country="GB", last_eligibility_status="exists",
+            ))
+            s.commit()
+        order = self._run_recording_order(["aaanoise", "datroaiuk", "zzznoise"])
+        self.assertEqual(order[0], "datroaiuk")
+
+    def test_scanned_codes_recorded_to_ledger(self):
+        from src.db.models import ScannedCode
+        from sqlmodel import select
+        self._run_recording_order(["foocode", "barcode"])
+        with get_session() as s:
+            rows = {r.code: r.status for r in s.exec(select(ScannedCode)).all()}
+        self.assertEqual(rows.get("foocode"), "not_found")
+        self.assertEqual(rows.get("barcode"), "not_found")
+
+    def test_dead_codes_sunk_to_bottom(self):
+        # 历史死码 deadone 应沉到扫描顺序最后（不删，沉底）
+        from src.db.models import ScannedCode
+        with get_session() as s:
+            s.add(ScannedCode(country="gb", code="deadone", status="not_found"))
+            s.commit()
+        order = self._run_recording_order(["deadone", "aaalive", "zzzlive"])
+        self.assertEqual(order[-1], "deadone")
+        self.assertEqual(len(order), 3)  # 沉底不删，仍扫 3 条
+
+    def test_prioritize_false_keeps_alpha_order(self):
+        order = self._run_recording_order(
+            ["zzznoise", "codestone", "aaanoise"], prioritize=False,
+        )
+        # prioritize=False → 保持 build_candidates 给的原顺序（这里 mock 返回的原序）
+        self.assertEqual(order, ["zzznoise", "codestone", "aaanoise"])
+
+
 if __name__ == "__main__":
     unittest.main()
