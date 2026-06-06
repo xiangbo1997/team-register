@@ -68,45 +68,69 @@ def _parse_country_chain(primary: str, fallback: str) -> list[str]:
     return chain
 
 
-@register_provider(
-    provider_type="sms",
-    kind="sms_activate",
-    display_name="SMS-Activate 接码平台",
-    description="对接 sms-activate.org，支持价格区间筛选 + 多国家降级",
-    schema=(
+def build_sms_activate_schema(
+    *,
+    api_key_desc: str = "SMS-Activate API key（去 sms-activate.org 后台获取）",
+    price_currency: str = "卢布 RUB",
+) -> tuple[FieldSpec, ...]:
+    """构造 SMS-Activate 协议兼容族的标准 9 字段 schema。
+
+    兼容族（hero_sms / grizzlysms / smsbower / sms-verification-number）的配置项
+    完全一致，仅 ``api_key`` 文案与价格货币单位不同。本工厂集中维护字段定义，
+    各子 provider 只传这两个差异参数，避免 schema 在多处重复。
+
+    Args:
+        api_key_desc: ``api_key`` 字段的描述（点明去哪个平台后台取密钥）
+        price_currency: ``max_price`` / ``min_price`` 的货币单位文案（如 '卢布 RUB' / 'USD'）
+
+    Returns:
+        与 ``SmsActivateProvider.__init__`` 形参一一对应的 FieldSpec 元组
+    """
+    return (
         FieldSpec(
             name="api_key",
             type="secret",
             required=True,
-            description="SMS-Activate API key（去 sms-activate.org 后台获取）",
+            description=api_key_desc,
         ),
         FieldSpec(
             name="country",
             type="str",
             required=True,
             default="6",
-            description="主国家代码（6=印尼, 0=俄罗斯, 12=英国, 187=美国, 22=印度）",
+            # 15 国表来自成熟项目 GuJumpgate 实测（sidepanel.js:782）；前端 parseChoiceLabels
+            # 从 description 抽 `id=label` 渲染下拉项中文标签，所以这里必须全量列出。
+            description=(
+                "主国家代码："
+                "4=菲律宾, 6=印尼, 8=肯尼亚, 10=越南, 15=波兰, 16=英国, "
+                "32=罗马尼亚, 33=哥伦比亚, 43=德国, 52=泰国, 73=巴西, "
+                "78=法国, 151=智利, 182=日本, 187=美国"
+            ),
+            choices=(
+                "4", "6", "8", "10", "15", "16", "32", "33", "43",
+                "52", "73", "78", "151", "182", "187",
+            ),
         ),
         FieldSpec(
             name="country_fallback",
             type="str",
             required=False,
             default="",
-            description="备选国家代码列表，逗号或分号分隔（如 '0;22;12'）；主国家无货时按序降级",
+            description="备选国家代码列表，逗号或分号分隔（如 '33;52;16'）；主国家无货时按序降级",
         ),
         FieldSpec(
             name="max_price",
             type="str",
             required=False,
             default="",
-            description="单号价格上限（卢布 RUB，留空不限）；超过则跳过该国家",
+            description=f"单号价格上限（{price_currency}，留空不限）；超过则跳过该国家",
         ),
         FieldSpec(
             name="min_price",
             type="str",
             required=False,
             default="",
-            description="单号价格下限（卢布 RUB，留空不限）；低于则视为可疑回收号跳过",
+            description=f"单号价格下限（{price_currency}，留空不限）；低于则视为可疑回收号跳过",
         ),
         FieldSpec(
             name="operator",
@@ -121,6 +145,21 @@ def _parse_country_chain(primary: str, fallback: str) -> list[str]:
             required=False,
             default="dr",
             description="服务代码（dr=OpenAI/ChatGPT, go=Google, tg=Telegram）",
+            choices=("dr", "go", "tg"),
+        ),
+        FieldSpec(
+            name="acquire_priority",
+            type="str",
+            required=False,
+            default="country",
+            # 借鉴 GuJumpgate sidepanel.js:778-781 的三种取号优先级。
+            description=(
+                "取号优先级："
+                "country=按国家链顺序申号（默认）, "
+                "price_low=整条国家链里选当前最低价的国家先申, "
+                "price_high=选最高价国家先申（高价号通常成功率更高）"
+            ),
+            choices=("country", "price_low", "price_high"),
         ),
         FieldSpec(
             name="max_retries",
@@ -136,10 +175,26 @@ def _parse_country_chain(primary: str, fallback: str) -> list[str]:
             default="",
             description="出口代理 URL，可选；如 socks5h://...",
         ),
-    ),
+    )
+
+
+@register_provider(
+    provider_type="sms",
+    kind="sms_activate",
+    display_name="SMS-Activate 接码平台",
+    description="对接 sms-activate.org，支持价格区间筛选 + 多国家降级",
+    schema=build_sms_activate_schema(),
 )
 class SmsActivateProvider(SmsProvider):
     """SMS-Activate 适配器：委托 SMSManager 做 HTTP，在外层加价格/国家降级。"""
+
+    # 端点 base URL —— 子类（如 HeroSmsProvider）覆写此值即可切换协议兼容平台
+    BASE_URL = _API_URL
+    # 余额自检文案的货币单位 —— 子类可覆写（如 HeroSMS 默认 USD）
+    CURRENCY_LABEL = "RUB"
+
+    # 取号优先级合法值（schema choices 同步）
+    _ACQUIRE_PRIORITIES = ("country", "price_low", "price_high")
 
     def __init__(
         self,
@@ -150,6 +205,7 @@ class SmsActivateProvider(SmsProvider):
         min_price: str = "",
         operator: str = "any",
         service: str = "dr",
+        acquire_priority: str = "country",
         max_retries: int = 30,
         proxy: str = "",
     ) -> None:
@@ -162,6 +218,8 @@ class SmsActivateProvider(SmsProvider):
         self._min_price = _parse_price(min_price)
         self._operator = str(operator or "any").strip().lower() or "any"
         self._service = str(service or "dr").strip() or "dr"
+        priority = str(acquire_priority or "country").strip().lower()
+        self._acquire_priority = priority if priority in self._ACQUIRE_PRIORITIES else "country"
         try:
             self._max_retries = int(max_retries) if max_retries else 30
         except (TypeError, ValueError):
@@ -176,8 +234,9 @@ class SmsActivateProvider(SmsProvider):
             )
 
         # 每个国家一个 SMSManager 实例（country 是 SMSManager 构造期参数）
+        # api_url 取 self.BASE_URL（实例属性查找，子类覆写后自动生效）
         self._managers: dict[str, SMSManager] = {
-            c: SMSManager(api_key=api_key, country=c, proxy=proxy)
+            c: SMSManager(api_key=api_key, country=c, api_url=self.BASE_URL, proxy=proxy)
             for c in self._country_chain
         }
 
@@ -187,30 +246,21 @@ class SmsActivateProvider(SmsProvider):
         return list(self._country_chain)
 
     def get_number(self, service: str = "") -> Optional[SMSOrder]:
-        """按国家链 + 价格区间逐级降级申号。"""
+        """按国家链 + 价格区间逐级降级申号。
+
+        国家遍历顺序由 ``acquire_priority`` 决定：
+        - ``country``（默认）：按 country_chain 配置顺序
+        - ``price_low`` / ``price_high``：先对整条链查价，按价升/降序重排后再申号
+        """
         svc = str(service or "").strip() or self._service
         need_price_check = self._max_price is not None or self._min_price is not None
 
-        for country in self._country_chain:
+        ordered_chain = self._order_chain_by_priority(svc)
+
+        for country in ordered_chain:
             if need_price_check:
                 price = self._query_current_price(country, svc)
-                if price is None:
-                    logger.warning(
-                        "sms_activate: country=%s service=%s 价格查询失败，降级",
-                        country, svc,
-                    )
-                    continue
-                if self._max_price is not None and price > self._max_price:
-                    logger.info(
-                        "sms_activate: country=%s 当前价 %.2f > max %.2f，降级",
-                        country, price, self._max_price,
-                    )
-                    continue
-                if self._min_price is not None and price < self._min_price:
-                    logger.info(
-                        "sms_activate: country=%s 当前价 %.2f < min %.2f，跳过",
-                        country, price, self._min_price,
-                    )
+                if not self._price_in_range(country, price):
                     continue
                 logger.info(
                     "sms_activate: country=%s 当前价 %.2f 符合区间，申号",
@@ -234,11 +284,76 @@ class SmsActivateProvider(SmsProvider):
         )
         return None
 
+    def _price_in_range(self, country: str, price: Optional[float]) -> bool:
+        """判断当前价是否落在 [min_price, max_price] 区间内。
+
+        查价失败（None）一律视为不符合（降级到下一国家）。
+        """
+        if price is None:
+            logger.warning(
+                "sms_activate: country=%s 价格查询失败，降级", country,
+            )
+            return False
+        if self._max_price is not None and price > self._max_price:
+            logger.info(
+                "sms_activate: country=%s 当前价 %.2f > max %.2f，降级",
+                country, price, self._max_price,
+            )
+            return False
+        if self._min_price is not None and price < self._min_price:
+            logger.info(
+                "sms_activate: country=%s 当前价 %.2f < min %.2f，跳过",
+                country, price, self._min_price,
+            )
+            return False
+        return True
+
+    def _order_chain_by_priority(self, service: str) -> list[str]:
+        """按 acquire_priority 决定国家遍历顺序。
+
+        - ``country``：原样返回（零额外请求，保持现状）
+        - ``price_low`` / ``price_high``：对整条链查价，按价排序；
+          查价失败的国家排到末尾（仍保留，让申号阶段兜底）。
+        """
+        if self._acquire_priority == "country":
+            return list(self._country_chain)
+
+        priced: list[tuple[str, float]] = []
+        unpriced: list[str] = []
+        for country in self._country_chain:
+            price = self._query_current_price(country, service)
+            if price is None:
+                unpriced.append(country)
+            else:
+                priced.append((country, price))
+
+        reverse = self._acquire_priority == "price_high"
+        priced.sort(key=lambda item: item[1], reverse=reverse)
+        ordered = [c for c, _ in priced] + unpriced
+        logger.info(
+            "sms_activate: acquire_priority=%s 重排国家链 %s → %s",
+            self._acquire_priority, self._country_chain, ordered,
+        )
+        return ordered
+
     def get_code(self, order_id: str, max_retries: int = 0) -> Optional[str]:
         """轮询验证码。SMSManager.get_code 不感知 country，复用首个 manager。"""
         retries = int(max_retries) if max_retries else self._max_retries
         first_manager = next(iter(self._managers.values()))
         return first_manager.get_code(order_id, max_retries=retries)
+
+    def request_additional_sms(self, order_id: str) -> bool:
+        """请求该号码重新发码以复用（setStatus=3）。
+
+        SMSManager.request_retry 不感知 country，复用首个 manager（与 get_code 同模式）。
+        """
+        first_manager = next(iter(self._managers.values()))
+        return first_manager.request_retry(order_id)
+
+    def cancel_number(self, order_id: str) -> bool:
+        """取消号码激活（setStatus=8）。号被 OpenAI 拒/收不到码时释放，避免计费。"""
+        first_manager = next(iter(self._managers.values()))
+        return first_manager.cancel_number(order_id)
 
     def test_connection(self) -> dict:
         """调 getBalance 验证 api_key 有效性。
@@ -251,7 +366,7 @@ class SmsActivateProvider(SmsProvider):
         )
         try:
             resp = requests.get(
-                _API_URL,
+                self.BASE_URL,
                 params=params,
                 timeout=_BALANCE_QUERY_TIMEOUT,
                 proxies=proxies,
@@ -275,7 +390,7 @@ class SmsActivateProvider(SmsProvider):
                 }
             return {
                 "ok": True,
-                "message": f"连通正常，余额 {bal:.2f} RUB",
+                "message": f"连通正常，余额 {bal:.2f} {self.CURRENCY_LABEL}",
                 "balance": bal,
             }
 
@@ -302,7 +417,7 @@ class SmsActivateProvider(SmsProvider):
         )
         try:
             resp = requests.get(
-                _API_URL,
+                self.BASE_URL,
                 params=params,
                 timeout=_PRICE_QUERY_TIMEOUT,
                 proxies=proxies,
