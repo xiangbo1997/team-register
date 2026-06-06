@@ -22,6 +22,7 @@ from src.automation.sentinel import SentinelProvider, try_get_sentinel_token
 
 from .aimizy import generate_via_aimizy
 from .schemas import get_schema
+from .stripe_hop import fetch_hosted_url_via_stripe
 from .schemas._common import (
     APP_CHECKOUT_PREFIX,
     CHECKOUT_URL,
@@ -250,6 +251,26 @@ class PaymentLinkGenerator:
                     logger.debug("response keys: %s", list(response_data.keys()))
                     logger.debug("response sample: %s", _json.dumps(response_data, ensure_ascii=False)[:2000])
                 link = select_checkout_link(response_data, return_mode=return_mode)
+
+                # Stripe 二跳：OpenAI 改版后 custom session 的 `url` 恒为 null，
+                # select_checkout_link 只能退回站内短链。若调用方要长链（return_mode=long）
+                # 但 OpenAI 没给 hosted url，则用 session 凭证向 Stripe 换 pay.openai.com 长链。
+                # 详见 src/payment_link/stripe_hop.py 与 scripts/diag_stripe_second_hop.py
+                wants_long = str(return_mode or "long").strip().lower() == "long"
+                openai_url = str(response_data.get("url", "") or "")
+                if wants_long and not openai_url:
+                    cs_id = str(response_data.get("checkout_session_id", "") or "")
+                    pk = str(response_data.get("publishable_key", "") or "")
+                    if cs_id and pk:
+                        hosted = fetch_hosted_url_via_stripe(cs_id, pk, proxy=proxy)
+                        if hosted:
+                            logger.info("成功获取 %s 计划 hosted 长链（Stripe 二跳）。", normalized_plan)
+                            return True, apply_locale(hosted, url_locale)
+                        logger.warning(
+                            "%s 计划 Stripe 二跳未拿到长链，回退到 select_checkout_link 结果。",
+                            normalized_plan,
+                        )
+
                 if link:
                     logger.info("成功获取 %s 计划 checkout 链接。", normalized_plan)
                     return True, apply_locale(link, url_locale)
