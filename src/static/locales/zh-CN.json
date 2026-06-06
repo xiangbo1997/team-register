@@ -9,7 +9,7 @@
   },
   "nav": {
     "overview": "概览",
-    "tasks": "任务",
+    "tasks": "GPT 注册",
     "config": "配置",
     "providers": "服务提供商",
     "registration_profiles": "注册组合",
@@ -105,8 +105,11 @@
   },
   "tasks": {
     "list": {
-      "title": "任务列表",
+      "title": "GPT 注册",
       "filter_all": "全部状态",
+      "platform_all": "全部平台",
+      "platform_gpt": "GPT",
+      "platform_grok": "Grok",
       "retry": "重试",
       "retry_resume": "失败处重试",
       "retry_restart": "完整重跑",
@@ -115,6 +118,7 @@
       "table": {
         "id": "ID",
         "email": "邮箱",
+        "platform": "平台",
         "status": "状态",
         "phase": "阶段",
         "error": "错误",
@@ -146,7 +150,7 @@
       "column_settings_hint": "勾选要在表格中显示的列"
     },
     "detail": {
-      "title": "任务详情",
+      "title": "GPT 注册详情",
       "back": "返回任务列表",
       "retry": "重试",
       "retry_resume": "失败处重试",
@@ -180,18 +184,39 @@
         "orchestrator_complete": "编排完成",
         "orchestrator_error": "编排异常",
         "log": "日志",
-        "screenshot": "截图"
+        "screenshot": "截图",
+        "triage": "诊断"
       },
       "retry_resume_submitted": "已提交失败处重试，任务正在重新进入队列",
       "retry_restart_submitted": "已提交完整重跑，任务正在重新进入队列",
       "cancel_submitted": "已提交取消请求",
-      "clear_events_success": "日志已清空"
+      "clear_events_success": "日志已清空",
+      "triage": {
+        "title": "卡住诊断",
+        "where": "卡在哪",
+        "why": "为什么",
+        "fix": "建议怎么改",
+        "confidence": "置信度",
+        "categories": {
+          "ip_pollution": "IP 被标记",
+          "card_declined": "卡被拒付",
+          "captcha": "需要验证码",
+          "ui_change": "UI 调整",
+          "account_banned": "账号被封",
+          "rate_limited": "被限流",
+          "selector_stale": "选择器失效",
+          "handler_stuck": "逻辑卡死",
+          "dom_drift": "页面漂移",
+          "unknown": "无法判断"
+        }
+      }
     },
     "create": {
-      "title": "新建任务",
+      "title": "新建 GPT 注册",
       "create_registration_task": "创建注册任务",
       "email": "邮箱",
       "password": "密码",
+      "password_auto_hint": "留空则自动生成强密码",
       "profile_id": "Profile ID",
       "card_key": "卡密",
       "card_key_hint": "留空则跳过支付阶段",
@@ -322,6 +347,12 @@
     "name": "名称",
     "active": "启用",
     "config_json": "配置 (JSON)",
+    "config_title": "配置",
+    "advanced_json": "高级 / JSON",
+    "structured_form": "结构化表单",
+    "select_kind_first": "请先选择驱动 (Kind)",
+    "secret_keep_hint": "已配置，留空保持不变",
+    "extra_fields_kept": "已保留 {count} 个自定义字段",
     "save": "保存",
     "test": "测试",
     "edit": "编辑",

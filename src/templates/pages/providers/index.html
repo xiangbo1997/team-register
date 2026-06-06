@@ -21,7 +21,8 @@
     </div>
 
     {# ─── Expanded Add/Edit Form (Inset Panel) ─── #}
-    <div x-show="showForm" x-cloak class="overflow-hidden fade-in">
+    {# 字段多时（如 hero-sms 10+ 字段）面板会超出视口，需独立滚动否则底部保存按钮被裁掉看不见 #}
+    <div x-show="showForm" x-cloak class="overflow-y-auto max-h-[calc(100vh-160px)] fade-in shrink-0">
         <div class="bg-subtle/50 border border-border rounded-xl p-1 mb-2">
             <button @click="showForm = false" class="w-full flex items-center gap-2 px-4 py-2 text-xs font-bold text-muted uppercase tracking-widest hover:text-body transition-colors">
                 <span class="material-symbols-outlined text-sm">arrow_drop_down</span>
@@ -72,26 +73,99 @@
                 </div>
             </div>
 
-            {# JSON config textarea #}
+            {# 配置区：结构化表单（默认） / JSON 高级模式（可切换） #}
             <div class="mb-6">
                 <div class="flex items-center justify-between mb-2">
-                    <label class="text-[11px] font-label font-bold text-muted uppercase tracking-wider" x-text="i18n('providers.config_json')"></label>
-                    <span x-show="jsonValid" class="text-[10px] text-primary font-mono bg-primary/10 px-2 py-0.5 rounded">VALID JSON</span>
-                    <span x-show="!jsonValid" class="text-[10px] text-danger font-mono bg-danger/10 px-2 py-0.5 rounded">INVALID JSON</span>
+                    <label class="text-[11px] font-label font-bold text-muted uppercase tracking-wider" x-text="i18n('providers.config_title')"></label>
+                    <div class="flex items-center gap-2">
+                        <span x-show="viewMode === 'json' && jsonValid" class="text-[10px] text-primary font-mono bg-primary/10 px-2 py-0.5 rounded">VALID JSON</span>
+                        <span x-show="viewMode === 'json' && !jsonValid" class="text-[10px] text-danger font-mono bg-danger/10 px-2 py-0.5 rounded">INVALID JSON</span>
+                        <button type="button" @click="toggleViewMode()"
+                                class="flex items-center gap-1 text-[11px] font-semibold text-secondary border border-secondary/30 rounded px-2 py-1 hover:bg-secondary/5 transition-all">
+                            <span class="material-symbols-outlined text-sm" x-text="viewMode === 'form' ? 'code' : 'view_list'"></span>
+                            <span x-text="viewMode === 'form' ? i18n('providers.advanced_json') : i18n('providers.structured_form')"></span>
+                        </button>
+                    </div>
                 </div>
-                <textarea x-model="form.config_json" @input="validateJson"
-                          class="w-full h-32 bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
-                          :placeholder="i18n('providers.placeholders.config_json')"></textarea>
+
+                {# ── 结构化表单视图 ── #}
+                <div x-show="viewMode === 'form'" class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <p x-show="!currentSchema" class="text-xs text-muted col-span-full" x-text="i18n('providers.select_kind_first')"></p>
+                    <template x-for="field in (currentSchema ? currentSchema.schema : [])" :key="field.name">
+                        <div class="space-y-1">
+                            <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">
+                                <span x-text="fieldLabel(field)"></span>
+                                <span x-show="field.required" class="text-danger ml-0.5">*</span>
+                            </label>
+
+                            {# choices -> 下拉框 #}
+                            <template x-if="field.choices && field.choices.length">
+                                <select x-model="form.config_fields[field.name]"
+                                        class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                                    <template x-for="opt in field.choices" :key="opt">
+                                        <option :value="opt" x-text="choiceLabel(field, opt)"></option>
+                                    </template>
+                                </select>
+                            </template>
+
+                            {# secret -> 密码框（[REDACTED] 时提示留空保持不变，focus 自动清空便于重填） #}
+                            <template x-if="!(field.choices && field.choices.length) && field.type === 'secret'">
+                                <input type="password" x-model="form.config_fields[field.name]"
+                                       autocomplete="new-password"
+                                       :placeholder="isRedacted(form.config_fields[field.name]) ? i18n('providers.secret_keep_hint') : ''"
+                                       @focus="if (isRedacted(form.config_fields[field.name])) form.config_fields[field.name] = ''"
+                                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                            </template>
+
+                            {# int -> 数字框 #}
+                            <template x-if="!(field.choices && field.choices.length) && field.type === 'int'">
+                                <input type="number" x-model.number="form.config_fields[field.name]"
+                                       :placeholder="(field.default ?? '') + ''"
+                                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                            </template>
+
+                            {# bool -> toggle #}
+                            <template x-if="!(field.choices && field.choices.length) && field.type === 'bool'">
+                                <label class="relative inline-flex items-center cursor-pointer mt-1">
+                                    <input type="checkbox" x-model="form.config_fields[field.name]" class="sr-only peer">
+                                    <div class="w-11 h-6 bg-border rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-success"></div>
+                                </label>
+                            </template>
+
+                            {# 其它 -> 文本框 #}
+                            <template x-if="!(field.choices && field.choices.length) && !['secret', 'int', 'bool'].includes(field.type)">
+                                <input type="text" x-model="form.config_fields[field.name]"
+                                       :placeholder="(field.default ?? '') + ''"
+                                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                            </template>
+
+                            {# description 作为字段下方 hint #}
+                            <p x-show="field.description" class="text-[10px] text-muted leading-snug" x-text="field.description"></p>
+                        </div>
+                    </template>
+
+                    {# JSON 模式手填的额外字段提示（切回结构化不丢） #}
+                    <p x-show="Object.keys(form.extraFields).length"
+                       class="col-span-full text-[10px] text-info"
+                       x-text="i18n('providers.extra_fields_kept', { count: Object.keys(form.extraFields).length })"></p>
+                </div>
+
+                {# ── JSON 高级视图 ── #}
+                <div x-show="viewMode === 'json'">
+                    <textarea x-model="form.config_json" @input="validateJson"
+                              class="w-full h-40 bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
+                              :placeholder="i18n('providers.placeholders.config_json')"></textarea>
+                </div>
             </div>
 
-            {# Footer actions #}
-            <div class="flex justify-end items-center gap-3 border-t border-border pt-6">
+            {# Footer actions（sticky 保证长表单滚动时保存按钮始终可见） #}
+            <div class="sticky bottom-0 -mx-6 -mb-6 px-6 pb-6 pt-6 bg-slate-50 flex justify-end items-center gap-3 border-t border-border">
                 <button @click="showForm = false" class="px-4 py-2 text-sm font-semibold text-muted hover:text-body transition-colors">取消</button>
                 <button @click="testProvider()" class="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-secondary border border-secondary/30 rounded-lg hover:bg-secondary/5 transition-all">
                     <span class="material-symbols-outlined text-base">science</span>
                     <span x-text="i18n('providers.test')"></span>
                 </button>
-                <button @click="saveProvider()" :disabled="!jsonValid"
+                <button @click="saveProvider()" :disabled="viewMode === 'json' && !jsonValid"
                         class="flex items-center gap-1.5 px-6 py-2 text-sm font-bold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-token-md transition-all disabled:opacity-50 disabled:cursor-not-allowed">
                     <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;">save</span>
                     <span x-text="i18n('providers.save')"></span>
@@ -207,7 +281,10 @@ function providerData() {
         showForm: false,
         editing: null,
         jsonValid: true,
-        form: { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}' },
+        viewMode: 'form',     // 'form' = 结构化表单（默认）| 'json' = 高级原始 JSON
+        // config_fields = schema 声明字段的权威值；extraFields = schema 之外、JSON 模式手填的字段（保留不丢）
+        // config_json 退化为「json 模式下的编辑缓冲」，切换时与 config_fields/extraFields 双向同步
+        form: { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}', config_fields: {}, extraFields: {} },
         availableKinds: [],   // 当前 provider_type 下已注册的 kind 列表（来自 /api/providers/kinds）
         currentSchema: null,  // 当前 kind 的字段 schema（来自 /api/providers/schemas/{t}/{k}）
 
@@ -291,34 +368,108 @@ function providerData() {
         async onTypeChange() {
             this.form.kind = '';
             this.currentSchema = null;
+            this.form.config_fields = {};
+            this.form.extraFields = {};
             await this.fetchAvailableKinds();
         },
 
         async onKindChange() {
             await this.fetchSchema(this.form.kind);
-            this.applyKindTemplate();
+            this.initFieldsFromSchema({});   // 切 kind = 全新配置，用 schema default 初始化
         },
 
-        // 选了 kind 后按 schema 生成 config_json 模板（带 driver/provider_name 路由 key + 各字段默认值）
-        applyKindTemplate() {
-            if (!this.currentSchema) return;
-            let cfg = {};
-            // 解析现有 config_json（保留编辑场景下用户已填的值）
-            try { cfg = JSON.parse(this.form.config_json) || {}; } catch (_) { cfg = {}; }
-            // 路由 key：card 类用 driver；其它类（mail/sms 等）用 provider_name 表示 kind
-            if (this.form.provider_type === 'card') {
-                cfg.driver = this.form.kind;
-            } else {
-                cfg.provider_name = this.form.kind;
-            }
-            // 把 schema 里有默认值的字段填进去（已存在的不覆盖）
-            for (const f of (this.currentSchema.schema || [])) {
-                if (cfg[f.name] === undefined && f.default !== null && f.default !== undefined) {
-                    cfg[f.name] = f.default;
+        // ─── 结构化表单工具方法 ───
+
+        // 路由 key：card 类用 driver 表示 kind；其它类用 provider_name
+        routeKey() { return this.form.provider_type === 'card' ? 'driver' : 'provider_name'; },
+
+        // 后端返回的 secret 字段是脱敏占位符（[REDACTED] / [REDACTED_TOKEN] 等）
+        isRedacted(v) { return typeof v === 'string' && v.includes('[REDACTED'); },
+
+        // 字段名美化为 label：下划线转空格 + 每词首字母大写
+        fieldLabel(field) {
+            return field.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        },
+
+        // 从 description 解析 "6=印尼, 0=俄罗斯" 形式的 code->名称 映射（兼容 , ; ，、 分隔）
+        parseChoiceLabels(desc) {
+            const map = {};
+            if (!desc) return map;
+            const re = /([A-Za-z0-9_]+)\s*=\s*([^,;，、）)]+)/g;
+            let m;
+            while ((m = re.exec(desc)) !== null) { map[m[1].trim()] = m[2].trim(); }
+            return map;
+        },
+
+        // 下拉 option 显示文本：有映射显示 "6 — 印尼"，否则纯 value
+        choiceLabel(field, value) {
+            const map = this.parseChoiceLabels(field.description);
+            return map[value] ? `${value} — ${map[value]}` : value;
+        },
+
+        // 按 schema 预建 config_fields 的所有 key（Alpine x-model 要求 key 先存在），
+        // 并把既有 config（existing）里的值灌入；schema 之外的非路由 key 进 extraFields 保留不丢。
+        initFieldsFromSchema(existing) {
+            existing = existing || {};
+            const fields = {};
+            const known = new Set();
+            for (const f of (this.currentSchema?.schema || [])) {
+                known.add(f.name);
+                if (existing[f.name] !== undefined) {
+                    fields[f.name] = existing[f.name];                  // 编辑：灌既有值（secret 会是 [REDACTED]）
+                } else if (f.type === 'bool') {
+                    fields[f.name] = f.default ?? false;
+                } else if (f.default !== null && f.default !== undefined) {
+                    fields[f.name] = f.default;                          // 新建：用 default
+                } else {
+                    fields[f.name] = '';
                 }
             }
-            this.form.config_json = JSON.stringify(cfg, null, 2);
-            this.validateJson();
+            const extra = {};
+            for (const [k, v] of Object.entries(existing)) {
+                if (k === 'driver' || k === 'provider_name') continue;   // 路由 key 不进结构化字段
+                if (!known.has(k)) extra[k] = v;                         // schema 外的字段保留
+            }
+            this.form.config_fields = fields;
+            this.form.extraFields = extra;
+        },
+
+        // 从 config_fields + extraFields 组装最终 config dict（类型转换 + 空 secret 省略 + 加回路由 key）
+        buildConfigFromFields() {
+            const cfg = { ...this.form.extraFields };   // extra 字段铺底
+            for (const f of (this.currentSchema?.schema || [])) {
+                let v = this.form.config_fields[f.name];
+                if (f.type === 'int') {
+                    // 空 int 不写 0：回退 default 或省略
+                    if (v === '' || v === null || v === undefined) {
+                        if (f.default !== null && f.default !== undefined) v = f.default;
+                        else continue;
+                    } else { v = Number(v); }
+                } else if (f.type === 'secret') {
+                    // 空 secret 省略 -> 后端保留原值；[REDACTED] 原样回传 -> 后端 _merge_redacted_fields 还原
+                    if (v === '' || v === null || v === undefined) continue;
+                }
+                cfg[f.name] = v;
+            }
+            cfg[this.routeKey()] = this.form.kind;   // 加回路由 key
+            return cfg;
+        },
+
+        // form <-> json 双向切换：两视图共享同一份配置数据
+        toggleViewMode() {
+            if (this.viewMode === 'form') {
+                this.form.config_json = JSON.stringify(this.buildConfigFromFields(), null, 2);
+                this.validateJson();
+                this.viewMode = 'json';
+            } else {
+                let parsed;
+                try { parsed = JSON.parse(this.form.config_json); }
+                catch { showToast(i18n('providers.invalid_json'), 'error'); return; }   // 解析失败不切
+                const rk = this.routeKey();
+                if (parsed[rk]) this.form.kind = parsed[rk];
+                this.initFieldsFromSchema(parsed);
+                this.viewMode = 'form';
+            }
         },
 
         typeBadgeClass(type) {
@@ -340,6 +491,7 @@ function providerData() {
 
         async editProvider(p) {
             this.editing = p;
+            this.viewMode = 'form';
             // 从既有 config 里反向解析 kind（card 用 driver；其它用 provider_name）
             const cfg = p.config || {};
             const inferredKind = (p.provider_type === 'card' ? cfg.driver : cfg.provider_name) || '';
@@ -348,28 +500,38 @@ function providerData() {
                 provider_name: p.provider_name,
                 kind: inferredKind,
                 is_active: p.is_active,
-                config_json: JSON.stringify(cfg, null, 2)
+                config_json: JSON.stringify(cfg, null, 2),
+                config_fields: {},
+                extraFields: {}
             };
             this.validateJson();
             this.showForm = true;
             await this.fetchAvailableKinds();
-            if (inferredKind) await this.fetchSchema(inferredKind);
+            if (inferredKind) {
+                await this.fetchSchema(inferredKind);
+                this.initFieldsFromSchema(cfg);   // 灌既有值（secret 显示为 [REDACTED]）
+            }
         },
 
         async saveProvider() {
             let cfg;
-            try { cfg = JSON.parse(this.form.config_json); }
-            catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
+            if (this.viewMode === 'json') {
+                try { cfg = JSON.parse(this.form.config_json); }
+                catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
+            } else {
+                cfg = this.buildConfigFromFields();
+            }
             try {
                 await fetchJson(`/api/providers/${this.form.provider_type}/${this.form.provider_name}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ config: cfg, is_active: this.form.is_active })
+                    body: JSON.stringify({ config: cfg, is_active: this.form.is_active })   // body 格式不变
                 });
                 showToast(i18n('providers.saved'), 'success');
                 this.showForm = false;
                 this.editing = null;
-                this.form = { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}' };
+                this.viewMode = 'form';
+                this.form = { provider_type: 'browser', provider_name: '', kind: '', is_active: true, config_json: '{}', config_fields: {}, extraFields: {} };
                 this.availableKinds = []; this.currentSchema = null;
                 await this.fetchProviders();
             } catch (_) { showToast(i18n('providers.save_failed'), 'error'); }
@@ -387,6 +549,10 @@ function providerData() {
         },
 
         async testProvider() {
+            // form 模式下先把结构化字段同步成 config_json（测试端点按已保存配置执行，此处仅做格式校验）
+            if (this.viewMode === 'form') {
+                this.form.config_json = JSON.stringify(this.buildConfigFromFields());
+            }
             try { JSON.parse(this.form.config_json); }
             catch { showToast(i18n('providers.invalid_json'), 'error'); return; }
             try {

@@ -9,7 +9,7 @@
   },
   "nav": {
     "overview": "Overview",
-    "tasks": "Tasks",
+    "tasks": "GPT Register",
     "config": "Configuration",
     "providers": "Providers",
     "registration_profiles": "Registration Profiles",
@@ -105,8 +105,11 @@
   },
   "tasks": {
     "list": {
-      "title": "Tasks",
+      "title": "GPT Register",
       "filter_all": "All Status",
+      "platform_all": "All platforms",
+      "platform_gpt": "GPT",
+      "platform_grok": "Grok",
       "retry": "Retry",
       "retry_resume": "Retry from Failure",
       "retry_restart": "Restart Full Flow",
@@ -115,6 +118,7 @@
       "table": {
         "id": "ID",
         "email": "Email",
+        "platform": "Platform",
         "status": "Status",
         "phase": "Phase",
         "error": "Error",
@@ -146,7 +150,7 @@
       "column_settings_hint": "Check columns to show in the table"
     },
     "detail": {
-      "title": "Task Detail",
+      "title": "GPT Register Detail",
       "back": "Back to Tasks",
       "retry": "Retry",
       "retry_resume": "Retry from Failure",
@@ -180,18 +184,39 @@
         "orchestrator_complete": "Orchestrator Completed",
         "orchestrator_error": "Orchestrator Error",
         "log": "Log",
-        "screenshot": "Screenshot"
+        "screenshot": "Screenshot",
+        "triage": "Triage"
       },
       "retry_resume_submitted": "Retry from failure submitted. Task is queued again",
       "retry_restart_submitted": "Full restart submitted. Task is queued again",
       "cancel_submitted": "Cancellation request submitted",
-      "clear_events_success": "Logs cleared"
+      "clear_events_success": "Logs cleared",
+      "triage": {
+        "title": "Stuck Diagnosis",
+        "where": "Where",
+        "why": "Why",
+        "fix": "Suggested Fix",
+        "confidence": "Confidence",
+        "categories": {
+          "ip_pollution": "IP Flagged",
+          "card_declined": "Card Declined",
+          "captcha": "Captcha Required",
+          "ui_change": "UI Change",
+          "account_banned": "Account Banned",
+          "rate_limited": "Rate Limited",
+          "selector_stale": "Stale Selector",
+          "handler_stuck": "Logic Stuck",
+          "dom_drift": "DOM Drift",
+          "unknown": "Unknown"
+        }
+      }
     },
     "create": {
-      "title": "New Task",
+      "title": "New GPT Register",
       "create_registration_task": "Create Registration Task",
       "email": "Email",
       "password": "Password",
+      "password_auto_hint": "Leave blank to auto-generate a strong password",
       "profile_id": "Profile ID",
       "card_key": "Card Key",
       "card_key_hint": "Leave empty to skip payment phase",
@@ -322,6 +347,12 @@
     "name": "Name",
     "active": "Active",
     "config_json": "Config (JSON)",
+    "config_title": "Config",
+    "advanced_json": "Advanced / JSON",
+    "structured_form": "Structured form",
+    "select_kind_first": "Select a driver (Kind) first",
+    "secret_keep_hint": "Configured. Leave blank to keep",
+    "extra_fields_kept": "{count} custom field(s) kept",
     "save": "Save",
     "test": "Test",
     "edit": "Edit",

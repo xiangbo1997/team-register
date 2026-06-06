@@ -104,12 +104,13 @@ class AbandonRequest(BaseModel):
 @router.get("")
 def list_accounts(
     tier: str = Query(default=TIER_REGISTERED, description="registered / plus / team / abandoned"),
+    platform: Optional[str] = Query(default=None, description="openai / grok / all（不传=全部平台）"),
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(require_role("admin")),
 ):
-    """列出指定段位的账号。"""
+    """列出指定段位的账号，可选按注册平台（openai/grok）过滤。"""
     try:
-        return list_pool(tier=tier, limit=limit)
+        return list_pool(tier=tier, platform=platform, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -122,6 +123,7 @@ def export_accounts(
         default=None,
         description="可选：逗号分隔的 run_id 列表（仅导出选中行）；不传则导出整个 tier",
     ),
+    platform: Optional[str] = Query(default=None, description="openai / grok / all（不传=全部平台）"),
     user: User = Depends(require_role("admin")),
 ):
     """导出指定段位的号池（CSV / JSON 下载）。
@@ -134,7 +136,9 @@ def export_accounts(
     if run_ids is not None:
         ids_list = [s.strip() for s in run_ids.split(",") if s.strip()]
     try:
-        content, content_type, filename, skipped = svc_export_pool(tier, fmt, run_ids=ids_list)
+        content, content_type, filename, skipped = svc_export_pool(
+            tier, fmt, run_ids=ids_list, platform=platform
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

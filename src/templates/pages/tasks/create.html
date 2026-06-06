@@ -89,10 +89,11 @@
                             <p class="mt-1.5 text-xs text-muted" x-text="emailAutoHint()"></p>
                         </div>
                         <div class="floating-label-group">
-                            <input type="text" x-model="form.password" required
+                            <input type="text" x-model="form.password"
                                    class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
                                    placeholder=" ">
-                            <label class="text-sm" x-text="i18n('tasks.create.password') + ' *'"></label>
+                            <label class="text-sm" x-text="i18n('tasks.create.password')"></label>
+                            <p class="text-xs text-neutral-400 mt-1" x-text="i18n('tasks.create.password_auto_hint')"></p>
                         </div>
                     </div>
                     <div class="floating-label-group">
@@ -198,23 +199,35 @@
                         </div>
                         <div>
                             <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
-                                   x-text="i18n('tasks.create.sms_country') + ' *'"></label>
+                                   x-text="i18n('tasks.create.sms_country')"></label>
                             <select x-model="phoneForm.sms_country"
                                     class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
-                                <option value="">默认（沿用 .env SMS_COUNTRY）</option>
-                                <option value="6">Indonesia (6)</option>
-                                <option value="187">USA (187)</option>
-                                <option value="16">UK (16)</option>
-                                <option value="22">India (22)</option>
+                                <option value="">✓ 推荐：沿用 SMS provider 配置（当前=美国187）</option>
+                                <option value="4">菲律宾 Philippines (4)</option>
+                                <option value="6">印尼 Indonesia (6)</option>
+                                <option value="8">肯尼亚 Kenya (8)</option>
+                                <option value="10">越南 Vietnam (10)</option>
+                                <option value="15">波兰 Poland (15)</option>
+                                <option value="16">英国 UK (16)</option>
+                                <option value="32">罗马尼亚 Romania (32)</option>
+                                <option value="33">哥伦比亚 Colombia (33)</option>
+                                <option value="43">德国 Germany (43)</option>
+                                <option value="52">泰国 Thailand (52)</option>
+                                <option value="73">巴西 Brazil (73)</option>
+                                <option value="78">法国 France (78)</option>
+                                <option value="151">智利 Chile (151)</option>
+                                <option value="182">日本 Japan (182)</option>
+                                <option value="187">美国 USA (187)</option>
                             </select>
                         </div>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div class="floating-label-group">
-                            <input type="text" x-model="phoneForm.password" required
+                            <input type="text" x-model="phoneForm.password"
                                    class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
                                    placeholder=" ">
-                            <label class="text-sm" x-text="i18n('tasks.create.password') + ' *'"></label>
+                            <label class="text-sm" x-text="i18n('tasks.create.password')"></label>
+                            <p class="text-xs text-neutral-400 mt-1" x-text="i18n('tasks.create.password_auto_hint')"></p>
                         </div>
                         <div class="floating-label-group">
                             <input type="text" x-model="phoneForm.profile_id" required
@@ -327,10 +340,10 @@
                         </p>
                     </div>
                     <div class="col-span-2">
-                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">共用密码 *</label>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">共用密码</label>
                         <input type="text" x-model="autoBatch.password"
                                class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60"
-                               placeholder="所有号都用这个密码">
+                               placeholder="留空则每号自动生成强密码">
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-indigo-700/70 mb-1">任务模式</label>
@@ -883,8 +896,8 @@ function createTaskData() {
 
         async autoBatchSubmit() {
             const profileIds = this.profileIdsParsed;
-            if (profileIds.length === 0 || !this.autoBatch.password.trim()) {
-                showToast('请至少填一个 profile_id 和 password', 'error');
+            if (profileIds.length === 0) {
+                showToast('请至少填一个 profile_id（密码留空将自动生成）', 'error');
                 return;
             }
             if (this.autoBatch.interval_max_sec < this.autoBatch.interval_min_sec) {

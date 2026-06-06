@@ -218,10 +218,14 @@ def list_pool_cards(
 
 
 class SyntheticVisaRequest(BaseModel):
-    """合成 Visa 卡生成请求（PayPal 友好 BIN，绕过 RESTRICTED_USER）。"""
+    """合成卡生成请求（多国 PayPal 友好 BIN，绕过 RESTRICTED_USER）。"""
+    country: str = Field(
+        default="US",
+        description="发卡国 ISO alpha-2：US / GB / CA / SG / HK；决定 BIN 集与地址池",
+    )
     bin_prefix: Optional[str] = Field(
         default=None,
-        description="可选指定 BIN：'4147'（Chase）或 '4100'（Wells Fargo / Apple Card）；空则随机",
+        description="可选指定 BIN：必须属于所选 country 的合法 BIN 集；空则按 country 随机",
     )
     seed: Optional[str] = Field(
         default=None,
@@ -288,17 +292,30 @@ def generate_synthetic_visa_card(
 
     ⚠️ 注意：合成卡**不能真实扣款**，仅用于绑定 0 元试用场景。
     """
-    from sqlmodel import select
-
+    from src.fintech.country_profiles import (
+        SUPPORTED_COUNTRIES,
+        bin_prefix_strings,
+        normalize_country,
+    )
     from src.fintech.synthetic_visa import generate_synthetic_visa_kit
 
+    # 校验国家
+    country = normalize_country(body.country)
+    if country not in SUPPORTED_COUNTRIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"country 必须是 {', '.join(SUPPORTED_COUNTRIES)} 之一，得到 {country!r}",
+        )
+
+    # 校验 bin_prefix：若指定，必须属于该国合法 BIN 集
     bin_tuple = None
     if body.bin_prefix:
         clean = body.bin_prefix.strip()
-        if clean not in ("4147", "4100"):
+        allowed = bin_prefix_strings(country)
+        if clean not in allowed:
             raise HTTPException(
                 status_code=400,
-                detail=f"bin_prefix 必须是 '4147' 或 '4100'，得到 {clean!r}",
+                detail=f"{country} 的 bin_prefix 必须是 {', '.join(allowed)} 之一，得到 {clean!r}",
             )
         bin_tuple = tuple(int(c) for c in clean)
 
@@ -306,6 +323,7 @@ def generate_synthetic_visa_card(
     override_last = _validate_name(body.last_name, "last_name")
 
     kit = generate_synthetic_visa_kit(
+        country=country,
         bin_prefix=bin_tuple,
         seed=body.seed,
         override_first_name=override_first,
@@ -320,6 +338,7 @@ def generate_synthetic_visa_card(
             audit = SyntheticCardAudit(
                 bin_prefix=kit.card.bin_prefix,
                 last_four=kit.card.last_four,
+                country=kit.country,
                 address_state=kit.address_state,
                 address_zip=kit.address_zip,
                 first_name=kit.first_name,
@@ -335,9 +354,9 @@ def generate_synthetic_visa_card(
         logger.warning("synthetic_visa_kit 审计落表失败（不阻塞生成）: %s", exc)
 
     logger.info(
-        "synthetic_visa_kit 已生成: bin=%s last4=%s name=%s state=%s audit=%s requester=%s",
-        kit.card.bin_prefix, kit.card.last_four, kit.full_name,
-        kit.address_state, audit_id or "skip", user.username,
+        "synthetic_visa_kit 已生成: country=%s bin=%s last4=%s name=%s source=%s audit=%s requester=%s",
+        kit.country, kit.card.bin_prefix, kit.card.last_four, kit.full_name,
+        kit.source, audit_id or "skip", user.username,
     )
     payload["note"] = "合成卡仅过 PayPal 预校验，不能真实扣款；用于 0 元试用场景"
     payload["audit_id"] = audit_id
@@ -398,6 +417,7 @@ def stats_synthetic_visa(
     total = len(rows)
     by_bin: dict[str, dict[str, int]] = {}
     by_state: dict[str, dict[str, int]] = {}
+    by_country: dict[str, dict[str, int]] = {}
     pending = sum(1 for r in rows if r.feedback_status == "pending")
     success = sum(1 for r in rows if r.feedback_status == "success")
     declined = sum(1 for r in rows if r.feedback_status == "declined")
@@ -409,6 +429,12 @@ def stats_synthetic_visa(
         s = by_state.setdefault(r.address_state or "?", {"total": 0, "success": 0, "declined": 0, "pending": 0})
         s["total"] += 1
         s[r.feedback_status] = s.get(r.feedback_status, 0) + 1
+        c = by_country.setdefault(
+            getattr(r, "country", "") or "?",
+            {"total": 0, "success": 0, "declined": 0, "pending": 0},
+        )
+        c["total"] += 1
+        c[r.feedback_status] = c.get(r.feedback_status, 0) + 1
 
     return {
         "total": total,
@@ -417,6 +443,7 @@ def stats_synthetic_visa(
         "declined": declined,
         "by_bin": by_bin,
         "by_state": by_state,
+        "by_country": by_country,
     }
 
 

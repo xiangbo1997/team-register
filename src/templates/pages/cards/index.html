@@ -89,13 +89,27 @@
                 </p>
             </div>
             <div class="space-y-4">
+                {# 国家选择：决定 BIN 集 + 账单地址池 #}
+                <div class="relative group">
+                    <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider group-focus-within:text-primary transition-colors">国家 / 地区</label>
+                    <select x-model="synthCountry" @change="synthBinPrefix = ''"
+                            class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all appearance-none bg-white">
+                        <option value="US">🇺🇸 美国 US</option>
+                        <option value="GB">🇬🇧 英国 GB</option>
+                        <option value="CA">🇨🇦 加拿大 CA</option>
+                        <option value="SG">🇸🇬 新加坡 SG</option>
+                        <option value="HK">🇭🇰 香港 HK</option>
+                        <option value="JP">🇯🇵 日本 JP</option>
+                    </select>
+                </div>
                 <div class="relative group">
                     <label class="absolute -top-2 left-3 px-1 bg-white text-[11px] font-label font-bold text-muted uppercase tracking-wider group-focus-within:text-primary transition-colors">随机 BIN 选择</label>
                     <select x-model="synthBinPrefix"
                             class="w-full border border-border rounded-lg px-4 py-3 text-sm focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all appearance-none bg-white">
-                        <option value="">随机 BIN（4147 或 4100）</option>
-                        <option value="4147">4147（Chase / Capital One）</option>
-                        <option value="4100">4100（Wells Fargo / Apple Card）</option>
+                        <option value="">随机 BIN（按国家自动选）</option>
+                        <template x-for="opt in (binOptionsByCountry[synthCountry] || [])" :key="opt.value">
+                            <option :value="opt.value" x-text="opt.label"></option>
+                        </template>
                     </select>
                 </div>
                 {# A3: 持卡人姓名注入（对齐 OpenAI 账户姓名时通过率更高） #}
@@ -148,7 +162,9 @@
                 <div class="p-4 bg-warning/5 border border-warning/20 rounded-lg">
                     <div class="flex items-center gap-2 mb-3 flex-wrap">
                         <span class="text-xs font-bold text-warning bg-warning/10 px-2 py-0.5 rounded-full">#<span x-text="i + 1"></span></span>
-                        <span class="text-xs text-muted" x-text="`${c.full_name} · ${c.address_city}, ${c.address_state}`"></span>
+                        <span class="text-xs text-muted" x-text="`${c.full_name} · ${c.address_city}${c.address_state ? ', ' + c.address_state : ''}`"></span>
+                        <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-secondary/10 text-secondary" x-text="c.country"></span>
+                        <span x-show="c.source === 'online'" class="text-[10px] px-1.5 py-0.5 rounded-full bg-success/10 text-success" title="地址来自在线生成器">在线</span>
                         <div class="ml-auto flex flex-wrap gap-1">
                             <button @click="copySynthCard(c, 'card')" class="px-2 py-1 text-[11px] bg-secondary/10 text-secondary border border-secondary/20 rounded hover:bg-secondary/20 transition-colors flex items-center gap-1" title="卡号+过期+CVV">
                                 <span class="material-symbols-outlined text-[14px]">credit_card</span>卡
@@ -173,8 +189,9 @@
                         <div><span class="text-muted">过期：</span><span x-text="c.expiry_display" class="font-medium text-body"></span></div>
                         <div><span class="text-muted">街道：</span><span x-text="c.address_line1" class="font-medium text-body"></span></div>
                         <div><span class="text-muted">CVV：</span><span x-text="c.cvv" class="font-medium text-body"></span></div>
-                        <div><span class="text-muted">城市：</span><span x-text="c.address_city + ', ' + c.address_state + ' ' + c.address_zip" class="font-medium text-body"></span></div>
-                        <div><span class="text-muted">BIN：</span><span x-text="c.bin_prefix" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">城市：</span><span x-text="c.address_city + (c.address_state ? ', ' + c.address_state : '') + (c.address_zip ? ' ' + c.address_zip : '')" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted" x-text="(c.postal_label || '邮编') + '：'"></span><span x-text="c.address_zip || '—'" class="font-medium text-body"></span></div>
+                        <div><span class="text-muted">BIN：</span><span x-text="c.bin_prefix + ' · ' + c.country" class="font-medium text-body"></span></div>
                         <div><span class="text-muted">电话：</span><span x-text="c.phone" class="font-medium text-body"></span></div>
                     </div>
                     {# A2: 绑卡反馈按钮（数据闭环）#}
@@ -410,10 +427,42 @@ function cardsData() {
         addingCard: false,
         newCard: { card_key: '', card_provider: 'efuncard', target_warmup_count: 5 },
         _pollTimer: null,
-        // 合成卡生成器（P0 移植自 d4cc975 工程）
-        synthBinPrefix: '',           // '' = 随机 / '4147' / '4100'
-        synthFirstName: '',           // A3: 持卡人 First name 注入（对齐账户名）
-        synthLastName: '',            // A3: 持卡人 Last name 注入
+        // 合成卡生成器（多国：US/GB/CA/SG/HK）
+        synthCountry: 'US',           // 发卡国，决定 BIN 集 + 地址池
+        synthBinPrefix: '',           // '' = 按国家随机 / 具体 BIN
+        synthFirstName: '',           // 持卡人 First name 注入（对齐账户名）
+        synthLastName: '',            // 持卡人 Last name 注入
+        // 各国 BIN 下拉选项（与后端 country_profiles 的 bin_prefixes 对齐）
+        binOptionsByCountry: {
+            US: [
+                { value: '4147', label: '4147（Chase Visa）' },
+                { value: '4100', label: '4100（Wells Fargo / Apple Card）' },
+            ],
+            GB: [
+                { value: '4658', label: '4658（Barclays Visa）' },
+                { value: '4751', label: '4751（Lloyds Visa）' },
+                { value: '5301', label: '5301（NatWest MC）' },
+            ],
+            CA: [
+                { value: '4519', label: '4519（TD Visa）' },
+                { value: '4506', label: '4506（RBC Visa）' },
+                { value: '5191', label: '5191（Scotiabank MC）' },
+            ],
+            SG: [
+                { value: '4385', label: '4385（OCBC Visa）' },
+                { value: '5520', label: '5520（UOB MC）' },
+            ],
+            HK: [
+                { value: '4622', label: '4622（HSBC Visa）' },
+                { value: '4033', label: '4033（Hang Seng Visa）' },
+                { value: '5161', label: '5161（SCB MC）' },
+            ],
+            JP: [
+                { value: '4980', label: '4980（三井住友 Visa）' },
+                { value: '4541', label: '4541（三菱UFJ Visa）' },
+                { value: '5334', label: '5334（乐天 MC）' },
+            ],
+        },
         generatingSynth: false,
         synthCards: [],               // 已生成卡列表（含 card_number/expiry_display/cvv 等）
         busyCardKeys: [],             // 行内操作进行中的卡 key（per-row loading，防重复点击）
@@ -503,6 +552,7 @@ function cardsData() {
                 const count = batch5 ? 5 : 1;
                 const newCards = [];
                 const payload = {
+                    country: this.synthCountry || 'US',
                     bin_prefix: this.synthBinPrefix || null,
                     seed: null,  // 真随机；运营要确定性卡可用 API 直接传 seed
                 };

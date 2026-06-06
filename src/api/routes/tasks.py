@@ -38,7 +38,8 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 class CreateTaskRequest(BaseModel):
     # 邮箱可选：留空时由后端 mail provider 自动分配（仅 cfworker 等 managed-only 类型可用）
     email: Optional[str] = ""
-    password: str
+    # 密码可选：留空时由后端自动生成强密码（grok/openai 注册流程在底层 _gen_password 生成）
+    password: str = ""
     profile_id: str
     card_key: str = ""
     browser_provider: str = ""
@@ -81,7 +82,7 @@ class BatchRegisterRequest(BaseModel):
         default_factory=list,
         description="多 profile 并发槽（推荐）；每行/项一个 AdsPower profile，长度 = 并发数",
     )
-    password: str = Field(..., min_length=1, description="所有号共用密码")
+    password: str = Field(default="", description="所有号共用密码；留空则每号自动生成强密码")
     interval_min_sec: float = Field(default=30.0, ge=0, description="profile 内部串行的抖动下限（秒）")
     interval_max_sec: float = Field(default=90.0, ge=0, description="profile 内部串行的抖动上限（秒）")
     mode: str = Field(default="register_only", description="register_only / full")
@@ -113,13 +114,17 @@ def create_task(
             detail=f"invalid mode: {body.mode!r}（只接受 'full' 或 'register_only'）",
         )
 
-    # 注册类型鉴别（feat/mode-phone-registration 2026-05-27）
+    # 注册类型鉴别（feat/mode-phone-registration 2026-05-27 / feat/grok-register）
+    #   email — OpenAI 邮箱注册；phone — OpenAI 手机号注册；grok — Grok(x.ai) 邮箱注册
     registration_kind = str(body.registration_kind or "email").strip().lower()
-    if registration_kind not in ("email", "phone"):
+    if registration_kind not in ("email", "phone", "grok"):
         raise HTTPException(
             status_code=422,
-            detail=f"invalid registration_kind: {body.registration_kind!r}（只接受 'email' 或 'phone'）",
+            detail=f"invalid registration_kind: {body.registration_kind!r}（只接受 'email' / 'phone' / 'grok'）",
         )
+    # platform 派生：grok kind → grok 平台；其余（email/phone）→ openai 平台。
+    # worker._execute_task_inner 按 Run.platform 分叉到 grok_runtime vs main.run_task。
+    platform = "grok" if registration_kind == "grok" else "openai"
 
     config = svc.get_config()
 
@@ -144,14 +149,23 @@ def create_task(
         mail_account_id = ""
         mail_profile = svc.resolve_provider_config("mail", mail_provider, default_name=config.default_mail_provider) if mail_provider else None
         session_mode = str(((mail_profile.config if mail_profile else {}) or {}).get("session_mode") or "managed").strip().lower()
+    elif registration_kind == "grok":
+        # grok 模式：无卡 / 无 SMS，只需 mail（Grok 注册必须真实邮箱收码）。
+        # card_provider 仍解析但 worker 不会构建/使用（grok 路径跳过 card_api）。
+        mail_provider = _pick_provider("mail", body.mail_provider, config.default_mail_provider)
+        mail_account_id = str(body.mail_account_id or config.default_mail_account_id).strip()
+        mail_profile = svc.resolve_provider_config("mail", mail_provider, default_name=config.default_mail_provider)
+        session_mode = str(((mail_profile.config if mail_profile else {}) or {}).get("session_mode") or "managed").strip().lower()
     else:
         mail_provider = _pick_provider("mail", body.mail_provider, config.default_mail_provider)
         mail_account_id = str(body.mail_account_id or config.default_mail_account_id).strip()
         mail_profile = svc.resolve_provider_config("mail", mail_provider, default_name=config.default_mail_provider)
         session_mode = str(((mail_profile.config if mail_profile else {}) or {}).get("session_mode") or "managed").strip().lower()
 
-    # 邮箱模式 + 空邮箱：仅 cfworker / outlook_email_plus 可静默生成；其它 provider 直接 422 让前端阻止
-    if registration_kind == "email" and not str(body.email or "").strip():
+    # 邮箱 / grok 模式 + 空邮箱：仅 cfworker / outlook_email_plus 等可自动生成的 provider 放行；
+    # 其它 provider 直接 422 让前端阻止。grok 与 email 共用同一白名单逻辑（所选 mail provider
+    # 支持自动生成时邮箱可留空，否则必填）——见用户反馈：下面选了 cfworker 时上面邮箱不该强制必填。
+    if registration_kind in ("email", "grok") and not str(body.email or "").strip():
         allowed_blank_providers = {"cfworker", "outlook_email_plus"}
         provider_name_for_blank = str(((mail_profile.config if mail_profile else {}) or {}).get("provider_name") or "").strip().lower()
         if provider_name_for_blank not in allowed_blank_providers:
@@ -233,6 +247,7 @@ def create_task(
     snapshot = dict(svc.get_config_snapshot() or {})
     snapshot["task_mode"] = task_mode
     snapshot["registration_kind"] = registration_kind
+    snapshot["platform"] = platform
     if registration_kind == "phone":
         snapshot["requested_phone"] = str(body.phone_number or "").strip()
         # sms_country 优先用前端传值，否则沿用 .env 默认（不写也行，worker 兜底）
@@ -268,6 +283,7 @@ def create_task(
             mail_provider=mail_provider,
             mail_account_id=mail_account_id,
             phone_number=str(body.phone_number or "").strip() if registration_kind == "phone" else "",
+            platform=platform,
             status="pending",
             phase="registration",
             retry_mode="restart",
@@ -290,11 +306,16 @@ def create_task(
 @router.get("")
 def list_tasks(
     status: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None, description="openai / grok（其余值=不过滤）"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     user: User = Depends(require_authenticated_user),
 ):
-    """查询任务列表（支持状态筛选和分页）。"""
+    """查询任务列表（支持状态 / 平台筛选和分页）。
+
+    platform 宽松处理：仅 openai / grok 生效，其余值（all/空/非法）静默不过滤，
+    与 status 筛选的容错风格一致。
+    """
     with get_session() as session:
         stmt = select(Run)
         count_stmt = select(func.count()).select_from(Run)
@@ -302,6 +323,10 @@ def list_tasks(
         if status:
             stmt = stmt.where(Run.status == status)
             count_stmt = count_stmt.where(Run.status == status)
+
+        if platform in ("openai", "grok"):
+            stmt = stmt.where(Run.platform == platform)
+            count_stmt = count_stmt.where(Run.platform == platform)
 
         total = session.exec(count_stmt).one()
         runs = session.exec(
@@ -716,6 +741,8 @@ def _run_to_dict(run: Run) -> dict:
         "error_reason": run.error_reason,
         "task_mode": str(snapshot.get("task_mode") or "full"),
         "registration_kind": str(snapshot.get("registration_kind") or "email"),
+        # 注册平台（openai=GPT / grok），供前端区分两类任务；legacy 行回退 openai
+        "platform": run.platform or "openai",
         "phone_number": run.phone_number,
         "sms_order_id": run.sms_order_id,
         "created_at": run.created_at.isoformat() if run.created_at else "",

@@ -25,6 +25,17 @@
                 <span class="material-symbols-outlined text-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">expand_more</span>
             </div>
 
+            {# Platform filter dropdown（GPT / Grok）#}
+            <div class="relative">
+                <select x-model="platformFilter" @change="page = 1; fetchTasks()"
+                        class="appearance-none flex items-center px-4 py-2 pr-9 bg-white border border-border rounded-lg text-sm font-medium hover:border-primary transition-colors focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                    <option value="" x-text="i18n('tasks.list.platform_all')"></option>
+                    <option value="openai" x-text="i18n('tasks.list.platform_gpt')"></option>
+                    <option value="grok" x-text="i18n('tasks.list.platform_grok')"></option>
+                </select>
+                <span class="material-symbols-outlined text-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">expand_more</span>
+            </div>
+
             {# Refresh ghost btn #}
             <button @click="fetchTasks()"
                     class="flex items-center space-x-2 px-4 py-2 text-muted hover:text-primary hover:bg-primary/5 rounded-lg transition-all">
@@ -125,6 +136,7 @@
                             </button>
                         </th>
                         <th x-show="visibleColumns.includes('email')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.email')"></th>
+                        <th x-show="visibleColumns.includes('platform')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.platform')"></th>
                         <th x-show="visibleColumns.includes('status')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.status')"></th>
                         <th x-show="visibleColumns.includes('phase')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.phase')"></th>
                         <th x-show="visibleColumns.includes('error_reason')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.error')"></th>
@@ -161,6 +173,13 @@
                             <td x-show="visibleColumns.includes('email')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
                                 <span x-show="t.email" class="text-sm font-mono text-muted" x-text="t.email"></span>
                                 <span x-show="!t.email" class="text-sm text-border">—</span>
+                            </td>
+
+                            {# Platform badge（GPT / Grok）#}
+                            <td x-show="visibleColumns.includes('platform')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span :class="platformBadgeClass(t.platform)"
+                                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider"
+                                      x-text="platformLabel(t.platform)"></span>
                             </td>
 
                             {# Status badge —— Stitch 风格 bg-X/12 text-X #}
@@ -323,6 +342,7 @@ function taskListData() {
         page: 1,
         pageSize: 25,
         filter: '',
+        platformFilter: '',
         actionBusy: false,
         density: 'medium',
         sortKey: 'created_at',
@@ -336,9 +356,9 @@ function taskListData() {
         visibleColumns: (() => {
             try {
                 const raw = localStorage.getItem('tasks.visibleColumns');
-                return raw ? JSON.parse(raw) : ['id', 'email', 'status', 'phase', 'error_reason', 'created_at'];
+                return raw ? JSON.parse(raw) : ['id', 'email', 'platform', 'status', 'phase', 'error_reason', 'created_at'];
             } catch (_) {
-                return ['id', 'email', 'status', 'phase', 'error_reason', 'created_at'];
+                return ['id', 'email', 'platform', 'status', 'phase', 'error_reason', 'created_at'];
             }
         })(),
 
@@ -346,6 +366,7 @@ function taskListData() {
             return [
                 { key: 'id',           label: i18n('tasks.list.table.id') },
                 { key: 'email',        label: i18n('tasks.list.table.email') },
+                { key: 'platform',     label: i18n('tasks.list.table.platform') },
                 { key: 'status',       label: i18n('tasks.list.table.status') },
                 { key: 'phase',        label: i18n('tasks.list.table.phase') },
                 { key: 'error_reason', label: i18n('tasks.list.table.error') },
@@ -416,9 +437,19 @@ function taskListData() {
             return map[status] || map.cancelled;
         },
 
+        // 平台徽章（openai=GPT 绿 / grok=蓝），对齐本页 status 徽章的 bg-X/12 无边框风格
+        platformBadgeClass(p) {
+            return { openai: 'bg-success/12 text-success', grok: 'bg-secondary/12 text-secondary' }[p]
+                || 'bg-neutral-200 text-neutral-700';
+        },
+        platformLabel(p) {
+            return { openai: 'GPT', grok: 'Grok' }[p] || (p || '').toUpperCase();
+        },
+
         async fetchTasks() {
             const params = new URLSearchParams({ page: this.page, limit: this.pageSize });
             if (this.filter) params.set('status', this.filter);
+            if (this.platformFilter) params.set('platform', this.platformFilter);
             const res = await fetchJson('/api/tasks?' + params);
             this.tasks = res.items || [];
             this.total = res.total || 0;

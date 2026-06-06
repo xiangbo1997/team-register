@@ -153,6 +153,58 @@
         </div>
     </section>
 
+    {# ─── 卡住诊断卡片 —— 仅当存在诊断结论时展示 ─── #}
+    <section x-show="latestTriage"
+             class="rounded-xl shadow-token-lg border overflow-hidden"
+             :class="latestTriage && latestTriage.is_engineering
+                     ? 'bg-amber-50 border-amber-300'
+                     : 'bg-sky-50 border-sky-300'">
+        <div class="px-6 py-4 border-b flex items-center justify-between"
+             :class="latestTriage && latestTriage.is_engineering ? 'border-amber-200' : 'border-sky-200'">
+            <h3 class="text-sm font-semibold flex items-center gap-2"
+                :class="latestTriage && latestTriage.is_engineering ? 'text-amber-800' : 'text-sky-800'">
+                <span class="material-symbols-outlined text-lg"
+                      x-text="latestTriage && latestTriage.is_engineering ? 'build' : 'troubleshoot'"></span>
+                <span x-text="i18n('tasks.detail.triage.title')"></span>
+            </h3>
+            <span class="text-[10px] font-label font-bold uppercase tracking-wider px-2 py-0.5 rounded-full"
+                  :class="latestTriage && latestTriage.is_engineering
+                          ? 'bg-amber-200 text-amber-900' : 'bg-sky-200 text-sky-900'"
+                  x-text="latestTriage
+                          ? translateEnum('tasks.detail.triage.categories', latestTriage.category, latestTriage.category)
+                          : ''"></span>
+        </div>
+        <div class="px-6 py-4 space-y-3 text-sm" x-show="latestTriage">
+            {# 卡在哪 #}
+            <div x-show="latestTriage && latestTriage.evidence_summary">
+                <div class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1"
+                     x-text="i18n('tasks.detail.triage.where')"></div>
+                <div class="text-slate-700" x-text="latestTriage ? latestTriage.evidence_summary : ''"></div>
+            </div>
+            {# 为什么 #}
+            <div x-show="latestTriage && latestTriage.rationale">
+                <div class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1"
+                     x-text="i18n('tasks.detail.triage.why')"></div>
+                <div class="text-slate-700" x-text="latestTriage ? latestTriage.rationale : ''"></div>
+            </div>
+            {# 建议怎么改（仅工程类） #}
+            <div x-show="latestTriage && latestTriage.fix_suggestion"
+                 class="bg-amber-100/60 border border-amber-200 rounded-lg px-3 py-2">
+                <div class="text-xs font-bold text-amber-700 uppercase tracking-wide mb-1 flex items-center gap-1">
+                    <span class="material-symbols-outlined text-sm">lightbulb</span>
+                    <span x-text="i18n('tasks.detail.triage.fix')"></span>
+                </div>
+                <div class="text-amber-900 mono-text text-xs" x-text="latestTriage ? latestTriage.fix_suggestion : ''"></div>
+            </div>
+            {# 置信度 #}
+            <div class="flex items-center gap-2 text-xs text-slate-500">
+                <span x-text="i18n('tasks.detail.triage.confidence')"></span>
+                <span class="font-bold tabular-nums"
+                      x-text="latestTriage ? Math.round(latestTriage.confidence * 100) + '%' : ''"></span>
+            </div>
+        </div>
+    </section>
+
     {# ─── Live Events Panel —— 深色终端风 ─── #}
     <section class="bg-[#0F172A] rounded-xl shadow-token-lg border border-slate-800 overflow-hidden flex flex-col h-[420px]">
         <div class="bg-slate-900/50 px-6 py-4 border-b border-slate-800 flex justify-between items-center">
@@ -209,6 +261,16 @@ function taskDetailData() {
         actionBusy: false,
         states: ['PREFLIGHT_MAIL', 'PREFLIGHT_PHONE', 'PREFLIGHT_BROWSER', 'PREFLIGHT_IP', 'ENTRY', 'AUTH', 'VERIFY_EMAIL', 'ABOUT_YOU', 'HOME', 'PHONE', 'PAYMENT'],
         currentStateIdx: -1,
+
+        // 最近一条卡住诊断结论（来自 triage 事件）。无诊断或仅 unknown 时返回 null，
+        // 卡片整体不渲染（x-show="latestTriage"）。工程类卡点高亮"建议怎么改"。
+        get latestTriage() {
+            const triageEvents = (this.events || [])
+                .filter(e => e.event_type === 'triage' && e.payload && e.payload.category && e.payload.category !== 'unknown');
+            if (triageEvents.length === 0) return null;
+            const sorted = this.sortEvents(triageEvents);
+            return sorted[sorted.length - 1].payload;
+        },
 
         // 仅 phone 模式任务展示 PREFLIGHT_PHONE 格子；email 模式过滤掉。
         // 兜底：如果事件流里已经出现过 PREFLIGHT_PHONE，也强制展示（兼容旧任务回放）。

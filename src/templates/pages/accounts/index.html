@@ -162,9 +162,16 @@
         </div>
         <div class="flex items-center gap-3 pb-3">
             {{ ui.grid_search(placeholder='搜索 邮箱 / Run ID / Profile...') }}
-            <div class="flex items-center gap-1 px-3 py-1.5 bg-white border border-border rounded-lg text-muted">
-                <span class="material-symbols-outlined text-[18px]">filter_list</span>
-                <span class="text-sm">筛选</span>
+            {# 平台分段控件（全部 / GPT / Grok）—— 服务端筛选，切换即重新拉取 #}
+            <div class="flex items-center gap-0.5 p-0.5 bg-subtle rounded-lg">
+                <template x-for="p in platforms" :key="p.value">
+                    <button @click="currentPlatform = p.value; fetchAccounts()"
+                            :class="currentPlatform === p.value
+                                ? 'bg-white text-primary shadow-token-sm font-semibold'
+                                : 'text-muted hover:text-body'"
+                            class="px-3 py-1 text-sm rounded-md transition-colors"
+                            x-text="p.label"></button>
+                </template>
             </div>
             <div class="w-[1px] h-4 bg-border"></div>
             {{ ui.grid_columns_settings() }}
@@ -186,6 +193,8 @@
                                    title="全选 / 取消全选">
                         </th>
                         <th x-show="visibleColumns.includes('run_id')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">Run ID</th>
+                        <th x-show="visibleColumns.includes('platform')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">平台</th>
+                        <th x-show="visibleColumns.includes('register_name')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">注册名</th>
                         <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">邮箱</th>
                         <th x-show="visibleColumns.includes('profile')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">Profile</th>
                         <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 / 邮件商</th>
@@ -211,6 +220,14 @@
                             </td>
                             <td x-show="visibleColumns.includes('run_id')" class="px-4 py-3">
                                 <span class="mono-text text-sm text-body" x-text="acc.run_id.substring(0, 8)"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('platform')" class="px-4 py-3 text-center">
+                                <span :class="platformBadgeClass(acc.platform)"
+                                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-label font-bold uppercase tracking-wider border"
+                                      x-text="platformLabel(acc.platform)"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('register_name')" class="px-4 py-3">
+                                <span class="text-sm text-body" x-text="acc.register_name || '—'"></span>
                             </td>
                             <td class="px-4 py-3">
                                 <span class="text-sm font-medium text-body" x-text="acc.email"></span>
@@ -320,7 +337,7 @@
                     </tr>
                 </template>
                     <tr x-show="accounts.length === 0">
-                        <td colspan="9" class="px-4 py-16 text-center">
+                        <td colspan="11" class="px-4 py-16 text-center">
                             <div class="inline-flex flex-col items-center gap-2 text-muted">
                                 <span class="material-symbols-outlined text-5xl text-border">group_off</span>
                                 <span class="text-sm" x-text="emptyMessage"></span>
@@ -893,9 +910,16 @@ function accountsData() {
         },
 
         currentTier: 'registered',
+        currentPlatform: 'all',
         accounts: [],
         readyCards: [],
         counts: {},
+        // 平台分段控件（all=全部 / openai=GPT / grok=Grok），服务端筛选
+        platforms: [
+            { value: 'all',    label: '全部' },
+            { value: 'openai', label: 'GPT' },
+            { value: 'grok',   label: 'Grok' },
+        ],
         // 多选：用 Set 存当前 tab 选中的 run_id（切 tab 时清空）
         selected: new Set(),
 
@@ -903,13 +927,15 @@ function accountsData() {
         searchTerm: '',
         searchExpanded: false,
         visibleColumns: (() => {
-            const _DEFAULT = ['run_id', 'profile', 'providers', 'tier', 'created_at', 'ip'];
+            const _DEFAULT = ['run_id', 'platform', 'register_name', 'profile', 'providers', 'tier', 'created_at', 'ip'];
             try { const raw = localStorage.getItem('accounts.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT; }
             catch (_) { return _DEFAULT; }
         })(),
         columnOptions: [
-            { key: 'run_id',     label: 'Run ID' },
-            { key: 'profile',    label: 'Profile' },
+            { key: 'run_id',        label: 'Run ID' },
+            { key: 'platform',      label: '平台' },
+            { key: 'register_name', label: '注册名' },
+            { key: 'profile',       label: 'Profile' },
             { key: 'providers',  label: '卡商 / 邮件商' },
             { key: 'tier',       label: '段位' },
             { key: 'created_at', label: '创建时间' },
@@ -953,6 +979,16 @@ function accountsData() {
                 team:       'TEAM',
                 abandoned:  'ABANDONED',
             }[tier] || (tier || '').toUpperCase();
+        },
+        // 平台徽章配色：openai=GPT 绿 / grok=蓝
+        platformBadgeClass(p) {
+            return {
+                openai: 'bg-success/10 text-success border-success/20',
+                grok:   'bg-secondary/10 text-secondary border-secondary/20',
+            }[p] || 'bg-subtle text-muted border-border';
+        },
+        platformLabel(p) {
+            return { openai: 'GPT', grok: 'Grok' }[p] || (p || '').toUpperCase();
         },
         // 国家下拉（用户提供的 231 个 ISO 3166-1 alpha-2，含 US2 这种 ChatGPT 内部分区）
         // 显示格式：`GB · United Kingdom`，提交时只发 code
@@ -1187,15 +1223,18 @@ function accountsData() {
         async fetchAccounts() {
             // 切 tab / 刷新时清空选中：不同 tier 的勾选不应跨集合保留
             this.selected = new Set();
-            this.accounts = await fetchJson(`/api/accounts?tier=${this.currentTier}&limit=100`);
-            // 顺便算各 tier 计数
+            // 平台过滤参数：all 时不带，让后端返回全部；计数查询也带同样参数，
+            // 否则 Tab 角标与筛选后表格不一致
+            const platParam = this.currentPlatform !== 'all' ? `&platform=${this.currentPlatform}` : '';
+            this.accounts = await fetchJson(`/api/accounts?tier=${this.currentTier}&limit=100${platParam}`);
+            // 顺便算各 tier 计数（同样受当前平台过滤约束）
             const allTiers = ['registered', 'plus', 'team', 'abandoned'];
             for (const t of allTiers) {
                 if (t === this.currentTier) {
                     this.counts[t] = this.accounts.length;
                 } else {
                     try {
-                        const rows = await fetchJson(`/api/accounts?tier=${t}&limit=200`);
+                        const rows = await fetchJson(`/api/accounts?tier=${t}&limit=200${platParam}`);
                         this.counts[t] = rows.length;
                     } catch (_) { this.counts[t] = 0; }
                 }
@@ -1227,6 +1266,9 @@ function accountsData() {
         // ── 导出 URL 构造 ──
         buildExportUrl(fmt) {
             const params = new URLSearchParams({ tier: this.currentTier, fmt });
+            if (this.currentPlatform !== 'all') {
+                params.set('platform', this.currentPlatform);
+            }
             if (this.selected.size > 0) {
                 params.set('run_ids', Array.from(this.selected).join(','));
             }

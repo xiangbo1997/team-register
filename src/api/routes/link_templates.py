@@ -11,10 +11,11 @@ DELETE /api/link-templates/{template_id}    — 删除
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from src.api.security import require_csrf, require_role
@@ -33,7 +34,11 @@ from src.services.promo_eligibility_service import (
 from src.services.promo_import_service import (
     DEFAULT_KNOWN_CODES_PATH,
     import_from_known_codes,
+    import_from_uploaded,
 )
+
+# 上传导入文件大小上限（4 MB）：known_codes.json 通常 < 100KB，留足余量防滥用
+_MAX_IMPORT_UPLOAD_BYTES = 4 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +255,120 @@ def import_from_scanner(
         # JSON 解析错误等
         logger.exception("import_from_scanner 失败")
         raise HTTPException(status_code=500, detail={"code": "import_failed", "message": str(exc)})
+
+
+# 仅允许 JSON 文件（后端真正防线，前端 accept 可被绕过）
+_ALLOWED_IMPORT_CONTENT_TYPES = frozenset({
+    "application/json", "text/json", "application/octet-stream",  # 部分浏览器对 .json 用 octet-stream
+    "text/plain",  # 有些系统给 .json 标 text/plain
+})
+
+
+@router.post("/import-upload")
+async def import_upload(
+    file: UploadFile = File(..., description="promo 导入模板 JSON 文件（见 /import-template）"),
+    dry_run: bool = Form(default=False),
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """上传 promo 导入模板文件直接导入（不依赖服务器本地有该文件）。
+
+    与 import-from-scanner 共用 _import_payload 核心逻辑（同源真相）。
+    仅接受 .json 文件；格式见 GET /import-template 下载的模板。
+    返回：{source, planned, skipped_existing, created, failed, dry_run, details}
+    """
+    # 文件类型校验：扩展名 + content-type 双重把关
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".json"):
+        raise HTTPException(
+            status_code=400,
+            detail="只支持 .json 文件，请下载模板填写后上传",
+        )
+    ctype = (file.content_type or "").split(";")[0].strip().lower()
+    if ctype and ctype not in _ALLOWED_IMPORT_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件类型不支持（{ctype}）；请上传 JSON 文件",
+        )
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    if len(raw) > _MAX_IMPORT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件过大（>{_MAX_IMPORT_UPLOAD_BYTES // 1024 // 1024}MB）",
+        )
+    try:
+        return import_from_uploaded(raw, dry_run=dry_run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("import_upload 失败")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/import-template")
+def import_template(
+    user: User = Depends(require_role("admin")),
+):
+    """下载 promo 导入模板（带示例 + 字段说明）。
+
+    模板结构与 import_from_uploaded 的解析器（_iter_valid / _iter_expired）
+    同源：valid 按国家分组，expired 用 region 字段。运维下载填好后上传即可。
+    """
+    from fastapi.responses import Response
+
+    template = {
+        "_说明": "promo 码导入模板。删除所有 _开头的说明字段后上传，或保留也可（会被忽略）。",
+        "_字段说明": {
+            "valid": "有效码，按国家码分组（US/GB/CA/JP...），每国一个数组",
+            "valid[].code": "必填，promo 码本身",
+            "valid[].company": "可选，公司名（存入 import_note）",
+            "valid[].discount_pct": "可选，折扣百分比（数字，如 50）",
+            "valid[].duration_months": "可选，折扣月数（数字）",
+            "valid[].price_usd": "可选，美元价（数字）",
+            "valid[].price_local": "可选，本地货币价（字符串）",
+            "expired": "过期码数组（可选），用 region 字段标国家",
+            "expired[].code": "必填，promo 码",
+            "expired[].region": "国家码（如 US）",
+            "expired[].note": "可选，过期备注",
+        },
+        "valid": {
+            "US": [
+                {
+                    "code": "exampleuscode",
+                    "company": "Example Inc",
+                    "discount_pct": 50,
+                    "duration_months": 12,
+                    "price_usd": 25,
+                },
+            ],
+            "GB": [
+                {
+                    "code": "examplegbcode",
+                    "company": "Example UK Ltd",
+                    "discount_pct": 30,
+                    "duration_months": 6,
+                },
+            ],
+        },
+        "expired": [
+            {
+                "code": "oldexpiredcode",
+                "region": "US",
+                "note": "2026-01 已过期，仅留档",
+            },
+        ],
+    }
+    body = json.dumps(template, ensure_ascii=False, indent=2)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": 'attachment; filename="promo_import_template.json"',
+        },
+    )
 
 
 class BulkVerifyRequest(BaseModel):
