@@ -300,8 +300,9 @@ class TestTypeHumanized(unittest.TestCase):
             rng=random.Random(42),
             sleep_fn=slept.append,
         )
-        # 2 个字符应触发 2 次键间隔 sleep
-        self.assertEqual(len(slept), 2)
+        # 1 次聚焦后启动停顿 + 2 个字符的键间隔 sleep = 3 次
+        # （"ab" 无空格，不触发词间停顿）
+        self.assertEqual(len(slept), 3)
         for s in slept:
             self.assertGreater(s, 0)
 

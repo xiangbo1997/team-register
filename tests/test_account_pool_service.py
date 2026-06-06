@@ -19,6 +19,9 @@ from src.db.models import CardActivation, MailAccount, Run, RunEvent
 from src.services.account_pool_service import (
     FMT_CPA_JSON,
     FMT_CREDENTIALS_CSV,
+    FMT_FULL_JSON,
+    PLATFORM_GROK,
+    PLATFORM_OPENAI,
     TIER_ABANDONED,
     TIER_PLUS,
     TIER_REGISTERED,
@@ -59,6 +62,7 @@ def _make_run(
     tokens: dict | None = None,
     ip_address: str = "",
     ip_country: str = "",
+    platform: str = PLATFORM_OPENAI,
 ) -> Run:
     now = datetime.now(timezone.utc)
     return Run(
@@ -69,6 +73,7 @@ def _make_run(
         status=status,
         phase="token_extraction" if tier == TIER_REGISTERED else "payment",
         account_tier=tier,
+        platform=platform,
         mail_provider=mail_provider,
         config_snapshot=snapshot or {},
         openai_tokens=tokens or {},
@@ -128,6 +133,42 @@ class AccountPoolDBTest(unittest.TestCase):
         rows = list_pool(tier=TIER_REGISTERED)
         self.assertEqual([r["email"] for r in rows], ["ok@x.com"])
 
+    # ── list_pool platform 过滤 ──────────────────────────
+    def _seed_two_platforms(self):
+        with get_session() as s:
+            s.add(_make_run(run_id="gpt" + "a" * 13, email="gpt@x.com", platform=PLATFORM_OPENAI))
+            s.add(_make_run(run_id="grk" + "a" * 13, email="grok@x.com", platform=PLATFORM_GROK))
+            s.commit()
+
+    def test_list_pool_platform_filter_returns_only_matching(self):
+        self._seed_two_platforms()
+        grok_rows = list_pool(tier=TIER_REGISTERED, platform=PLATFORM_GROK)
+        self.assertEqual([r["email"] for r in grok_rows], ["grok@x.com"])
+        gpt_rows = list_pool(tier=TIER_REGISTERED, platform=PLATFORM_OPENAI)
+        self.assertEqual([r["email"] for r in gpt_rows], ["gpt@x.com"])
+
+    def test_list_pool_default_platform_returns_all(self):
+        self._seed_two_platforms()
+        rows = list_pool(tier=TIER_REGISTERED)
+        self.assertEqual({r["email"] for r in rows}, {"gpt@x.com", "grok@x.com"})
+
+    def test_list_pool_platform_all_keyword_returns_all(self):
+        self._seed_two_platforms()
+        rows = list_pool(tier=TIER_REGISTERED, platform="all")
+        self.assertEqual({r["email"] for r in rows}, {"gpt@x.com", "grok@x.com"})
+
+    def test_list_pool_invalid_platform_raises(self):
+        with self.assertRaises(ValueError):
+            list_pool(tier=TIER_REGISTERED, platform="meta")
+
+    def test_account_dict_exposes_platform(self):
+        self._seed_two_platforms()
+        grok_rows = list_pool(tier=TIER_REGISTERED, platform=PLATFORM_GROK)
+        self.assertEqual(grok_rows[0]["platform"], PLATFORM_GROK)
+        # legacy 行（默认 openai）也应正确暴露
+        gpt_rows = list_pool(tier=TIER_REGISTERED, platform=PLATFORM_OPENAI)
+        self.assertEqual(gpt_rows[0]["platform"], PLATFORM_OPENAI)
+
     def test_list_pool_invalid_tier(self):
         with self.assertRaises(ValueError):
             list_pool(tier="weird")
@@ -161,6 +202,38 @@ class AccountPoolDBTest(unittest.TestCase):
         rows = list_pool(tier=TIER_REGISTERED)
         self.assertEqual(rows[0]["ip_address"], "")
         self.assertEqual(rows[0]["ip_country"], "")
+
+    # ── register_name（注册 GPT 的名字，来自 config_snapshot.identity）──
+    def test_list_pool_exposes_register_name_from_full_name(self):
+        """identity 含 full_name → register_name 直接取 full_name。"""
+        with get_session() as s:
+            s.add(_make_run(
+                run_id="n" * 16, email="named@x.com", tier=TIER_REGISTERED,
+                snapshot={"identity": {"first_name": "Laport", "last_name": "Willis",
+                                       "full_name": "Laport Willis"}},
+            ))
+            s.commit()
+        rows = list_pool(tier=TIER_REGISTERED)
+        self.assertEqual(rows[0]["register_name"], "Laport Willis")
+
+    def test_list_pool_register_name_falls_back_to_first_last(self):
+        """identity 无 full_name → 用 first + last 兜底拼接。"""
+        with get_session() as s:
+            s.add(_make_run(
+                run_id="f" * 16, email="fallback@x.com", tier=TIER_REGISTERED,
+                snapshot={"identity": {"first_name": "Grom", "last_name": "Walburn"}},
+            ))
+            s.commit()
+        rows = list_pool(tier=TIER_REGISTERED)
+        self.assertEqual(rows[0]["register_name"], "Grom Walburn")
+
+    def test_list_pool_register_name_empty_for_legacy_rows(self):
+        """老数据 config_snapshot 无 identity：register_name 为空串，前端显示 —。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="g" * 16, email="legacy2@x.com", tier=TIER_REGISTERED))
+            s.commit()
+        rows = list_pool(tier=TIER_REGISTERED)
+        self.assertEqual(rows[0]["register_name"], "")
 
     # ── get_account_detail ───────────────────────────────
     def test_get_account_detail_not_found(self):
@@ -710,6 +783,45 @@ class ExportPoolTest(unittest.TestCase):
         self.assertEqual(ctype, "application/zip")
         rows = _parse_export_to_entries(content, ctype, filename)
         self.assertEqual(len(rows), 2)
+
+    # ── export_pool platform 过滤 ────────────────────────
+    def test_export_platform_filter_only_grok(self):
+        """platform=grok → 只导出 grok 账号。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="g1" + "0" * 14, email="g1@x.com", platform=PLATFORM_OPENAI))
+            s.add(_make_run(run_id="g2" + "0" * 14, email="g2@x.com", platform=PLATFORM_OPENAI))
+            s.add(_make_run(run_id="k1" + "0" * 14, email="k1@x.com", platform=PLATFORM_GROK))
+            s.commit()
+        content, ctype, filename, _skipped = export_pool(
+            TIER_REGISTERED, FMT_FULL_JSON, platform=PLATFORM_GROK
+        )
+        rows = _parse_export_to_entries(content, ctype, filename)
+        self.assertEqual([r["email"] for r in rows], ["k1@x.com"])
+
+    def test_export_default_platform_exports_all(self):
+        """不传 platform → 全平台导出（向后兼容）。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="g3" + "0" * 14, email="g3@x.com", platform=PLATFORM_OPENAI))
+            s.add(_make_run(run_id="k2" + "0" * 14, email="k2@x.com", platform=PLATFORM_GROK))
+            s.commit()
+        content, ctype, filename, _skipped = export_pool(TIER_REGISTERED, FMT_FULL_JSON)
+        rows = _parse_export_to_entries(content, ctype, filename)
+        self.assertEqual(sorted(r["email"] for r in rows), ["g3@x.com", "k2@x.com"])
+
+    def test_export_platform_with_run_ids_intersect(self):
+        """platform 与 run_ids 取交集：选中里只导出匹配平台的行。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="g4" + "0" * 14, email="g4@x.com", platform=PLATFORM_OPENAI))
+            s.add(_make_run(run_id="k3" + "0" * 14, email="k3@x.com", platform=PLATFORM_GROK))
+            s.commit()
+        # 选中两条，但限定 platform=openai → 只剩 g4
+        content, ctype, filename, _skipped = export_pool(
+            TIER_REGISTERED, FMT_FULL_JSON,
+            run_ids=["g4" + "0" * 14, "k3" + "0" * 14],
+            platform=PLATFORM_OPENAI,
+        )
+        rows = _parse_export_to_entries(content, ctype, filename)
+        self.assertEqual([r["email"] for r in rows], ["g4@x.com"])
 
     def test_export_zip_contains_one_file_per_account(self):
         """多账号 zip：每条账号一个独立 codex-{email}-{plan}.json"""

@@ -27,6 +27,7 @@ from src.automation import (
     extract_session_tokens_with_http,
 )
 from src.automation.captcha_solver import build_solver_from_config
+from src.automation.triage import attach_log_buffer, build_triage_provider
 from src.config import load_config, AppConfig
 from src.efuncard import EfunCard
 from src.nodecard import NodeCard
@@ -2444,9 +2445,11 @@ def run_task(
                     emit_event=_runtime_emit,
                     cancel_check=_ensure_task_active,
                     captcha_solver=build_solver_from_config(config),
+                    triage_provider=build_triage_provider(config),
                     assist_enabled=bool(getattr(config, "assist_fallback_enabled", False)),
                     assist_experience=assist_store,
                 )
+                attach_log_buffer(runtime)
 
                 if initial_phase == "registration":
                     machine = RegistrationStateMachine()

@@ -191,6 +191,14 @@ class ArtifactRecorder:
         handoff_path.write_text(json.dumps(redact_structure(payload), ensure_ascii=False, indent=2), encoding="utf-8")
         return handoff_path
 
+    def record_triage(self, *, run_id: str, payload: dict[str, Any]) -> Path:
+        """落盘卡住诊断结论。一次 run 可能多次卡住，故追加到 triage.jsonl。"""
+        run_dir = self._base_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        triage_path = run_dir / "triage.jsonl"
+        self._append_jsonl(triage_path, payload)
+        return triage_path
+
     @staticmethod
     def _append_jsonl(path: Path, payload: Any) -> None:
         with path.open("a", encoding="utf-8") as fp:

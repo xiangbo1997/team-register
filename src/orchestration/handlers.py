@@ -25,8 +25,13 @@ from src.workflow import humanize as _humanize
 from src.orchestration.selectors import (
     AUTH_HOST_MARKERS,
     COOKIE_ACCEPT_SELECTORS,
+    COUNTRY_ID_TO_DIAL_CODE,
+    COUNTRY_ID_TO_ISO,
     EMAIL_SELECTOR,
     PASSWORD_SELECTOR,
+    PHONE_CODE_SELECTORS,
+    PHONE_COUNTRY_SELECT_SELECTORS,
+    PHONE_INPUT_SELECTORS,
     PHONE_SELECTOR,
     PRIMARY_SUBMIT_SELECTORS,
     SIGNUP_SELECTORS,
@@ -86,6 +91,33 @@ def human_typing(page, selector: str, text: str, *, runtime=None) -> None:
     target_locator.click()
     human_delay(0.2, 0.8)
     target_locator.press_sequentially(text, delay=random.randint(50, 150))
+
+
+def _press_with_sampled_delays(
+    page,
+    text: str,
+    *,
+    wpm_mean: float = 90,
+    wpm_std: float = 25,
+) -> None:
+    """逐字符真实键盘输入（isTrusted=true），按拟人化曲线采样每个按键间隔。
+
+    专给**密码框 / OTP 框**这类 react-aria 受控组件用：它们的校验只认
+    isTrusted=true 的真实键盘事件（见 submit_password 注释），所以不能走
+    type_humanized 的 click-then-type（会重复聚焦），也不能用 React setter
+    （isTrusted=false 校验不过）。这里假定调用方已 click 聚焦 + 清空，只负责
+    用 ``page.keyboard.type(ch)`` 逐字符发真实事件 + 采样延迟。
+
+    wpm 默认偏慢（90）：密码/验证码是逐字符核对的谨慎输入，比填名字更慢。
+    复用 ``humanize.sample_keystroke_delays`` 的正态分布曲线，不重复造轮子。
+    """
+    delays = _humanize.sample_keystroke_delays(len(text), wpm_mean=wpm_mean, wpm_std=wpm_std)
+    keyboard = page.keyboard
+    for idx, ch in enumerate(text):
+        keyboard.type(ch)
+        delay_sec = delays[idx] / 1000.0 if idx < len(delays) else 0.09
+        if delay_sec > 0:
+            time.sleep(delay_sec)
 
 
 def click_first_visible(page, selectors: tuple[str, ...], *, description: str, timeout_ms: int = 1500) -> bool:
@@ -391,12 +423,160 @@ def wait_for_auth_page(context: BrowserContext, page: Page) -> Page:
     return page
 
 
+def _set_react_input_value(page, selector, value) -> bool:
+    """用 React 受控组件标准解法设置 input 值：原生 value setter + dispatch InputEvent。
+
+    Playwright 的 fill()/type() 对 react 受控 input 偶发失效（设了 DOM value 但 react
+    内部 state 没更新 → 表单校验仍认为空/旧值 → 提交无效或重复填）。这是 react 受控
+    组件的经典坑。标准解法：拿原型链上的原生 value setter（绕过 react 重写的 setter）
+    设值，再派发 bubbles 的 input/change 事件让 react onChange 抓到。
+
+    一次到位、幂等（重复调用结果一致），不会叠加。
+
+    Returns:
+        True 表示设值后回读一致；False 表示该 selector 不存在或设值失败。
+    """
+    js = """
+    ([selector, value]) => {
+        const el = document.querySelector(selector);
+        if (!el) return { ok: false, reason: 'not_found' };
+        // 防叠加核心：已经填对就直接跳过（状态机重试时不再 append）。
+        if (el.value === value) return { ok: true, skipped: true, actual_len: el.value.length };
+        const proto = Object.getPrototypeOf(el);
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+                  || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+        const setter = desc && desc.set;
+        el.focus();
+        // 先彻底清空：原生 setter 设空 + 派发 input 让 react state 同步成空
+        if (setter) { setter.call(el, ''); } else { el.value = ''; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        // 再设目标值
+        if (setter) { setter.call(el, value); } else { el.value = value; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: el.value === value, actual_len: el.value.length };
+    }
+    """
+    try:
+        result = page.evaluate(js, [selector, value])
+        return bool(result and result.get("ok"))
+    except Exception:
+        return False
+
+
 def submit_password(page: Page, password: str, *, runtime: AutomationRuntime | None = None) -> None:
-    """填写密码并提交。"""
-    logger.info("发现密码输入框，正在填写...")
-    human_typing(page, PASSWORD_SELECTOR, password, runtime=runtime)
-    human_delay(1, 2)
-    page.keyboard.press("Enter")
+    """填写密码并提交。
+
+    关键防御（2026-06-01 修复 run ea469e74「密码一长串」+ 26b66798「密码重复两次」）：
+    密码框是 react 受控组件，Playwright fill/type 偶发不触发 onChange → react state 没更新
+    → 提交无效 → 状态机重试 → 再填一遍叠加/重复。改用 React 标准解法
+    `_set_react_input_value`（原生 value setter + dispatch InputEvent），一次到位幂等，
+    重复调用也不叠加（先 setter('') 清空再设值）。
+    """
+    logger.info("发现密码输入框，正在填写...[v3-keyboard-trusted]")
+
+    # 根因（2026-06-02 真机 run 4ec2ef88）：React setter 派发的事件 isTrusted=false，
+    # react-aria 的密码校验只认真实用户输入（isTrusted=true）→ 续行按钮不 enable →
+    # 点击无效 → 页面停在创建密码页 → 状态机空转 4 次到 silent_failure。
+    # 修复：用 Playwright 键盘真实输入（press_sequentially，isTrusted=true）触发校验。
+    loc = page.locator(PASSWORD_SELECTOR).first
+    try:
+        # 防重复：已填对就跳过输入，直接提交（状态机重试时不再叠加）
+        already = ""
+        try:
+            already = loc.input_value(timeout=2000)
+        except Exception:
+            pass
+        if str(already or "") == password:
+            logger.info("密码已正确填入，跳过输入直接提交。")
+        else:
+            loc.click(timeout=3000)
+            # 全选清空（防叠加），再真实键盘逐字符输入
+            page.keyboard.press("Meta+A")
+            page.keyboard.press("Backspace")
+            human_delay(0.2, 0.6)  # 清空后、开打前的真人停顿
+            try:
+                # 拟人化采样延迟逐字符输入（isTrusted=true，过 react-aria 校验）；
+                # 替代旧的固定 delay=30（≈330WPM 超人类上限，keystroke dynamics 易识别）
+                _press_with_sampled_delays(page, password, wpm_mean=90, wpm_std=25)
+            except Exception:
+                # 兜底：老逻辑 press_sequentially / type
+                try:
+                    loc.press_sequentially(password, delay=random.randint(60, 140), timeout=8000)
+                except Exception:
+                    loc.type(password, delay=random.randint(60, 140))
+            logger.info("密码已通过键盘真实输入填入（isTrusted，触发 react-aria 校验）。")
+    except Exception as exc:
+        logger.warning("密码键盘输入异常，降级 React setter: %s", exc)
+        _set_react_input_value(page, PASSWORD_SELECTOR, password)
+
+    # 等续行按钮从 disabled 变 enabled（react-aria 校验通过后才启用）。
+    _wait_submit_enabled(page, runtime=runtime)
+    human_delay(0.5, 1)
+
+    # 提交：优先点「続行」按钮，兜底 Enter
+    submitted = _click_first_visible(page, _PHONE_SUBMIT_SELECTORS, description="提交密码", runtime=runtime)
+    if not submitted:
+        page.keyboard.press("Enter")
+    # 多轮等待页面离开创建密码页（关键修复 run 0709877b）：
+    # OpenAI 提交密码后要请求后端再跳 OTP 页，有 3-8s 延迟。早期只等 1 次就判
+    # "仍停在密码页" → 状态机过早重试 submit_password → 实际页面正在跳转 → 混乱
+    # → silent_failure。改为多轮轮询（最多 ~12s）等页面真正跳走。
+    import time as _t
+    deadline = _t.time() + 18.0   # OpenAI 提交密码→跳 OTP 页有时 >15s（实测 run 0709877b）
+    left_password = False
+    while _t.time() < deadline:
+        try:
+            cur_url = page.url
+            # 号已注册信号（实测 run c5ba5779）：注册流程提交密码后若跳到 /log-in/，
+            # 说明 OpenAI 认出该号已有账号 → 转登录流程（死路，我们填的是新密码）。
+            # 立即标记，让 runtime 据此判失败拉黑换号，不在登录页空转到 silent_failure。
+            if "/log-in/" in cur_url:
+                logger.warning(
+                    "密码提交后跳转到登录页（%s）—— 该手机号已在 OpenAI 注册过，需换号。", cur_url,
+                )
+                try:
+                    runtime is not None and setattr(runtime, "phone_already_registered", True)
+                except Exception:
+                    pass
+                left_password = True
+                break
+            on_password = (
+                "create-account/password" in cur_url
+                and page.locator(PASSWORD_SELECTOR).first.count() > 0
+            )
+            if not on_password:
+                left_password = True
+                logger.info("密码提交成功，页面已离开创建密码页 → %s", cur_url)
+                break
+        except Exception:
+            # 页面跳转中 locator 可能 detach，视为正在离开
+            left_password = True
+            break
+        _t.sleep(1.0)
+    if not left_password:
+        logger.warning(
+            "密码提交后 18s 仍停在创建密码页 —— 可能号被 OpenAI 拒或按钮未生效。",
+        )
+
+
+def _wait_submit_enabled(page, *, runtime=None, timeout_ms: int = 5000) -> bool:
+    """等待「続行」提交按钮从 aria-disabled 变为可点（react-aria 校验通过后启用）。"""
+    import time as _t
+    deadline = _t.time() + timeout_ms / 1000.0
+    while _t.time() < deadline:
+        try:
+            for sel in ('button[type="submit"]', 'button:has-text("続行")'):
+                btn = page.locator(sel).first
+                if btn.count() == 0:
+                    continue
+                disabled = btn.get_attribute("aria-disabled")
+                if disabled not in ("true", "True"):
+                    return True
+        except Exception:
+            pass
+        _t.sleep(0.3)
+    return False
 
 
 def handle_email_verification_step(page: Page, mail_api, email: str, *, runtime: AutomationRuntime | None = None) -> bool:
@@ -932,66 +1112,344 @@ def manual_handoff(runtime: AutomationRuntime, payload: dict) -> bool:
 
 
 def submit_phone_and_code(runtime: AutomationRuntime, _action) -> bool:
-    """Mode B handler：填手机号 → 提交 → 轮询 SMS OTP → 填验证码 → 提交。
+    """PHONE state handler：选国家 → 填手机号 → 提交。**只推进一步，不等 OTP**。
+
+    关键设计（2026-06-01 真机修正）：OpenAI phone 注册真实顺序是
+        填号 → 【创建密码页】→ 提交后**才发短信** → SMS OTP 页 → 填码。
+    早期实现把「填号」和「等 OTP」绑成一步 → 填完号死等 OTP，但 OpenAI 因密码页
+    没填而不发短信 → 双方互等卡死（线上 run 11d63e00 实证：HeroSMS 后台「等待短信」
+    一直空）。修复：本 handler 只做「选国家+填号+提交」即 return，让状态机重新
+    infer_state 推进到 AUTH（创建密码页, submit_password）→ 再到 SMS OTP 页
+    （submit_sms_code handler 收码）。
 
     依赖：
-        runtime.config.requested_phone — worker._execute_task_inner 已申领或用户手填
-        runtime.config.sms_order_id    — SMS-Activate 订单 id，用于 get_code 轮询
-        runtime.sms_api                — SMSManager 实例
-
-    OTP code input 选择器是基于 OpenAI 历史 DOM 的推测（'input[name="code"]'），
-    实施 PR 第一次跑真机时必须用 AdsPower 截 DOM 校验；不匹配则 handler 会失败，
-    上层 _try_manual_handoff 会兜底成人工接管。
+        runtime.config.requested_phone / sms_country — worker 已注入
+        runtime.sms_api                              — 收码留给 submit_sms_code
     """
     page = runtime.page
     config = runtime.config
-    sms_api = runtime.sms_api
     phone = str(getattr(config, "requested_phone", "") or "").strip()
-    order_id = str(getattr(config, "sms_order_id", "") or "").strip()
+    country = str(getattr(config, "sms_country", "") or "").strip()
 
     if not phone:
         runtime.logger.error("phone 模式 handler 但 requested_phone 为空（worker 未注入？）")
         return False
+
+    # 1. 先选国家（流程要求：先改国家 → 再填对应号）。失败仅 warning（沿用默认国）。
+    _select_phone_country(page, country, runtime=runtime)
+    human_delay(0.5, 1)
+
+    # 2. 填手机号：剥离国家码前缀（输入框前缀已显示「+区号」，只填国内号部分）。
+    local_phone = _strip_country_dial_code(phone, country)
+    runtime.logger.info("PHONE handler: 填入手机号 %s（原始 %s）", local_phone, phone)
+    if not _fill_first_visible(
+        page, PHONE_INPUT_SELECTORS, local_phone, runtime=runtime, dispatch_events=True
+    ):
+        runtime.logger.error(
+            "填手机号失败：尝试过所有 selector %s 均不可见（请真机截 DOM 校验）",
+            PHONE_INPUT_SELECTORS,
+        )
+        try:
+            page.screenshot(path="phone_input_debug.png")
+        except Exception:
+            pass
+        return False
+
+    # 3. 提交手机号 → 进入下一页（创建密码页）。不等 OTP，立即 return。
+    _click_first_visible(page, _PHONE_SUBMIT_SELECTORS, description="提交手机号", runtime=runtime)
+    human_delay(1.5, 2.5)
+    runtime.logger.info("PHONE handler: 手机号已提交，交还状态机推进（创建密码页 → SMS OTP 页）")
+    return True
+
+
+def submit_sms_code(runtime: AutomationRuntime, _action) -> bool:
+    """SMS OTP handler：轮询接码平台拿短信验证码 → 填入 → 提交。
+
+    在「创建密码」之后由状态机推进到此（OpenAI 此时才发短信）。
+    与 verify_email（邮箱码）并列，由 registration_kind 决定 VERIFY 状态走哪个。
+
+    依赖：
+        runtime.config.sms_order_id — 接码订单 id
+        runtime.sms_api             — SMSManager（get_code 轮询）
+    """
+    page = runtime.page
+    config = runtime.config
+    sms_api = runtime.sms_api
+    order_id = str(getattr(config, "sms_order_id", "") or "").strip()
+
     if sms_api is None:
-        runtime.logger.error("phone 模式 handler 但 runtime.sms_api 为空（构造期未注入？）")
+        runtime.logger.error("SMS OTP handler 但 runtime.sms_api 为空")
         return False
-
-    runtime.logger.info("Mode B handler: 填入手机号 %s", phone)
-    try:
-        page.fill('input[name="phoneNumber"]', phone)
-    except Exception as exc:
-        runtime.logger.error("填手机号失败（选择器 input[name=phoneNumber]）: %s", exc)
-        return False
-
-    try:
-        page.click('button[type="submit"]')
-    except Exception as exc:
-        runtime.logger.warning("点击提交手机号按钮失败（继续等待 OTP）: %s", exc)
-
     if not order_id:
-        runtime.logger.error("没有 sms_order_id，无法轮询 OTP")
+        runtime.logger.error("SMS OTP handler 但 sms_order_id 为空，无法轮询")
         return False
 
-    runtime.logger.info("等待 SMS OTP（order=%s, 最多 ~150s）...", order_id)
+    # 1. 轮询短信验证码（号码复用时 worker 已 setStatus(3)，这里直接拿新码）。
+    runtime.logger.info("SMS OTP handler: 等待短信验证码（order=%s, 最多 ~150s）...", order_id)
     code = sms_api.get_code(order_id, max_retries=30)
     if not code:
-        runtime.logger.error("SMS OTP 等待超时（order=%s）", order_id)
+        runtime.logger.error("SMS OTP 等待超时（order=%s）—— 号可能被 OpenAI 拒，取消并拉黑", order_id)
+        # 收不到码大概率是号被 OpenAI 风控（用过/被标记）：取消激活止损 + 拉黑防复用。
+        try:
+            if hasattr(sms_api, "cancel_number"):
+                sms_api.cancel_number(order_id)
+        except Exception as exc:  # noqa: BLE001
+            runtime.logger.warning("取消号码异常（忽略）: %s", exc)
+        try:
+            from src.services import sms_activation_service as _sms_reuse
+            _sms_reuse.invalidate(order_id, reason="otp_timeout_likely_rejected")
+        except Exception:
+            pass
         return False
 
-    runtime.logger.info("Mode B handler: 收到 OTP=%s，填入验证码 input", code)
-    try:
-        # 注意：选择器待真机校验；现在用通用模式作为占位
-        page.fill('input[name="code"]', code)
-    except Exception as exc:
-        runtime.logger.error("填 OTP 失败（选择器 input[name=code]）: %s", exc)
+    # 2. 填 OTP：多重 fallback（单框或分离框）。
+    runtime.logger.info("SMS OTP handler: 收到验证码，填入")
+    if not _fill_otp_code(page, code, runtime=runtime):
+        runtime.logger.error(
+            "填 SMS OTP 失败：所有 selector %s 均不可见（请真机截 DOM 校验）",
+            PHONE_CODE_SELECTORS,
+        )
+        try:
+            page.screenshot(path="phone_code_debug.png")
+        except Exception:
+            pass
         return False
 
-    try:
-        page.click('button[type="submit"]')
-    except Exception as exc:
-        runtime.logger.warning("点击提交 OTP 按钮失败（页面可能已自动跳转）: %s", exc)
-
+    # 3. 提交（部分实现填完最后一格自动跳转，点击失败不致命）。
+    _click_first_visible(page, _PHONE_SUBMIT_SELECTORS, description="提交 SMS OTP", runtime=runtime)
     return True
+
+
+# phone 弹窗提交按钮：复用通用提交 selector + 日文「続行」。
+_PHONE_SUBMIT_SELECTORS = PRIMARY_SUBMIT_SELECTORS + (
+    'button:has-text("続行")',
+    'button:has-text("继续")',
+)
+
+
+def _fill_first_visible(page, selectors, value, *, runtime=None, dispatch_events=False) -> bool:
+    """按顺序尝试一组 selector，命中第一个可见的就填值并返回 True。
+
+    Args:
+        dispatch_events: react 受控组件（如电话框）填完后强制派发 input/change，
+            避免 DOM value 设了但 react state 没同步导致「電話番号が必要です」。
+    """
+    for sel in selectors:
+        try:
+            locator = page.locator(sel).first
+            if locator.count() == 0:
+                continue
+            locator.fill(value, timeout=5000)
+            if dispatch_events:
+                # 受控组件同步：派发 input/change，让 react onChange 读到新值
+                for ev in ("input", "change"):
+                    try:
+                        locator.dispatch_event(ev)
+                    except Exception:
+                        pass
+                # 回读校验：value 为空说明受控组件吃掉了填充，再补一次
+                try:
+                    actual = locator.input_value(timeout=2000)
+                    if not str(actual or "").strip():
+                        locator.click(timeout=2000)
+                        locator.type(value, delay=30)
+                except Exception:
+                    pass
+            if runtime is not None:
+                runtime.logger.info("已填入（selector=%s）", sel)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_first_visible(page, selectors, *, description="", runtime=None) -> bool:
+    """按顺序尝试一组 selector，命中第一个可见的就点击并返回 True。
+
+    点击失败不抛异常（phone 提交按钮失败往往因页面已自动跳转）。
+    """
+    for sel in selectors:
+        try:
+            locator = page.locator(sel).first
+            if locator.count() == 0:
+                continue
+            locator.click(timeout=5000)
+            if runtime is not None and description:
+                runtime.logger.info("已点击%s（selector=%s）", description, sel)
+            return True
+        except Exception:
+            continue
+    if runtime is not None and description:
+        runtime.logger.warning("未找到可点击的%s按钮（继续）", description)
+    return False
+
+
+def _strip_country_dial_code(phone, country_id):
+    """剥离手机号的国家码前缀（OpenAI 电话框前缀已显示「+区号」，只填国内号）。
+
+    SMS 平台常返回带国家码的号（日本 8190xxxx / 美国 1xxxxxxxxxx）。若整串填入
+    会变成 +81 8190xxxx（重复国家码）导致号码无效。按申号国的区号剥离前缀。
+
+    保守策略：仅当号码确实以该国区号开头时才剥离；否则原样返回（避免误删）。
+    """
+    raw = str(phone or "").strip().lstrip("+").replace(" ", "").replace("-", "")
+    dial = COUNTRY_ID_TO_DIAL_CODE.get(str(country_id or "").strip(), "")
+    if dial and raw.startswith(dial) and len(raw) > len(dial):
+        return raw[len(dial):]
+    return raw
+
+
+def _select_phone_country(page, country_id, *, runtime=None) -> bool:
+    """在 phone 弹窗里把国家切到 country_id 对应国家（先选国家，再填对应号）。
+
+    真实 DOM（2026-06-01 实测）：react-phone-number-input 组件，含一个隐藏
+    ``<select>``（option value 为 ISO 码 JP/US/PH...）+ 可见 combobox 按钮。
+
+    策略（通用 + 可靠）：
+    1. 主路径：直接对隐藏 ``<select>`` 调 ``select_option(value=ISO)`` —— 最稳，
+       不依赖点开下拉、不受区号文本本地化影响。
+    2. fallback：点 combobox 按钮展开 → 按国际区号 ``+dial`` 文本匹配 option 点选。
+
+    任何步骤失败仅 warning（默认国即可继续），返回是否切换成功。
+    """
+    cid = str(country_id or "").strip()
+    iso = COUNTRY_ID_TO_ISO.get(cid, "")
+    dial = COUNTRY_ID_TO_DIAL_CODE.get(cid, "")
+    if not iso and not dial:
+        return False  # 不在映射表：沿用默认国
+
+    log = runtime.logger if runtime is not None else logger
+
+    # ── 主路径：隐藏 select 直接 select_option(value=ISO) ──
+    if iso:
+        for sel in PHONE_COUNTRY_SELECT_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() == 0:
+                    continue
+                tag = (loc.evaluate("el => el.tagName") or "").lower()
+                if tag != "select":
+                    continue  # combobox 按钮留给 fallback 路径
+                loc.select_option(value=iso, timeout=3000)
+                log.info("已选国家 ISO=%s（country_id=%s，select_option）", iso, cid)
+                # 触发 change 事件确保 react 状态同步
+                try:
+                    loc.dispatch_event("change")
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                continue
+
+    # ── fallback：点 combobox 展开按区号匹配 option ──
+    if dial:
+        try:
+            for sel in ('button[aria-label*="国コード"]', 'button[role="combobox"]'):
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() == 0:
+                        continue
+                    btn.click(timeout=3000)
+                    human_delay(0.4, 0.8)
+                    break
+                except Exception:
+                    continue
+            for opt_sel in (
+                f'[role="option"]:has-text("+（{dial}）")',
+                f'[role="option"]:has-text("+{dial}")',
+                f'li:has-text("+{dial}")',
+            ):
+                try:
+                    opt = page.locator(opt_sel).first
+                    if opt.count() == 0:
+                        continue
+                    opt.click(timeout=3000)
+                    log.info("已选国家区号 +%s（country_id=%s，combobox）", dial, cid)
+                    return True
+                except Exception:
+                    continue
+        except Exception as exc:
+            log.warning("国家 combobox 选择异常（沿用默认国）: %s", exc)
+
+    log.warning("未能切换国家（country_id=%s iso=%s），沿用默认国", cid, iso)
+    return False
+
+
+def _fill_otp_code(page, code, *, runtime=None) -> bool:
+    """填 OTP 验证码：先试单框（React 受控组件解法），失败再试分离式多框逐格填。
+
+    关键（2026-06-02 真机修复）：真实 DOM 是 react-aria-TextField 单框
+    `<input name="code" autocomplete="one-time-code" maxlength="6" inputmode="numeric">`。
+    react-aria 校验只认真实用户输入（isTrusted=true）；React setter 派发的事件
+    isTrusted=false → 校验不认 → 续行按钮不 enable → 提交无效。与密码同源，改用
+    **键盘真实输入**（press_sequentially）触发 react-aria 校验。
+    """
+    code = str(code or "").strip()
+    if not code:
+        return False
+    log = runtime.logger if runtime is not None else logger
+
+    # 单框：键盘真实输入（isTrusted，触发 react-aria 校验）
+    single_box = ('input[name="code"]', 'input[autocomplete="one-time-code"]', 'input[name="otp"]')
+    for sel in single_box:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            # 防重复：已填对跳过
+            try:
+                if str(loc.input_value(timeout=2000) or "") == code:
+                    log.info("OTP 已填入，跳过（selector=%s）", sel)
+                    return True
+            except Exception:
+                pass
+            loc.click(timeout=3000)
+            page.keyboard.press("Meta+A")
+            page.keyboard.press("Backspace")
+            human_delay(0.2, 0.5)  # 清空后、开打前的真人停顿
+            try:
+                # 拟人化采样延迟（替代固定 delay=40）；OTP 是逐位核对的稍慢输入
+                _press_with_sampled_delays(page, code, wpm_mean=120, wpm_std=30)
+            except Exception:
+                try:
+                    loc.press_sequentially(code, delay=random.randint(50, 120), timeout=8000)
+                except Exception:
+                    loc.type(code, delay=random.randint(50, 120))
+            log.info("OTP 已通过键盘真实输入填入（isTrusted, selector=%s）", sel)
+            return True
+        except Exception:
+            continue
+    # 兜底：React setter（极少数键盘失败）
+    for sel in single_box:
+        try:
+            if page.locator(sel).first.count() == 0:
+                continue
+            if _set_react_input_value(page, sel, code):
+                log.info("OTP 已通过 React setter 兜底填入（selector=%s）", sel)
+                return True
+        except Exception:
+            continue
+
+    # 分离式：6 个 maxlength=1 的 input，逐格填一位（React setter 逐格）
+    try:
+        boxes = page.locator('input[inputmode="numeric"][maxlength="1"]')
+        n = boxes.count()
+        if n >= len(code):
+            for i, ch in enumerate(code):
+                # 分离格用 nth selector 的 React setter 不便，逐格 fill+dispatch
+                bx = boxes.nth(i)
+                bx.fill(ch, timeout=3000)
+                for ev in ("input", "change"):
+                    try:
+                        bx.dispatch_event(ev)
+                    except Exception:
+                        pass
+            log.info("已逐格填入 %d 位分离式 OTP", len(code))
+            return True
+    except Exception as exc:
+        log.warning("分离式 OTP 填写失败: %s", exc)
+
+    return False
 
 
 def build_runtime_handlers(
@@ -1006,11 +1464,25 @@ def build_runtime_handlers(
         runtime.page = wait_for_auth_page(runtime.context, runtime.page)
         return True
 
+    def enter_signup_phone(runtime: AutomationRuntime, _action) -> bool:
+        """phone 模式入口：复用 main._open_phone_signup_entry。
+
+        与 enter_signup（邮箱）并列；后续 PHONE state 由 submit_phone_and_code 接管。
+        """
+        from main import _open_phone_signup_entry as _entry
+        _entry(runtime.page)
+        return True
+
     def _submit_password(runtime: AutomationRuntime, _action) -> bool:
         submit_password(runtime.page, password, runtime=runtime)
         return True
 
     def verify_email(runtime: AutomationRuntime, _action) -> bool:
+        # VERIFY 状态分流：phone 模式收短信码（submit_sms_code），email 模式收邮箱码。
+        # OpenAI phone 注册在「创建密码」之后才发短信，此时 VERIFY 状态的 code 是 SMS OTP。
+        kind = str(getattr(runtime.config, "registration_kind", "email") or "email").strip().lower()
+        if kind == "phone":
+            return submit_sms_code(runtime, _action)
         return handle_email_verification_step(runtime.page, runtime.mail_api, email, runtime=runtime)
 
     def _fill_about_you(runtime: AutomationRuntime, _action) -> bool:
@@ -1034,6 +1506,7 @@ def build_runtime_handlers(
 
     return {
         "enter_signup": enter_signup,
+        "enter_signup_phone": enter_signup_phone,
         "submit_password": _submit_password,
         "verify_email": verify_email,
         "fill_about_you": _fill_about_you,
@@ -1042,6 +1515,7 @@ def build_runtime_handlers(
         "recover_error": recover_from_error_page,
         "manual_handoff": manual_handoff,
         "submit_phone_and_code": submit_phone_and_code,
+        "submit_sms_code": submit_sms_code,
     }
 
 

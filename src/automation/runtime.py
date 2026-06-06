@@ -110,6 +110,8 @@ class AutomationRuntime:
     triage_provider: Optional[Any] = None
     captcha_solver: Optional[Any] = None
     recent_log_buffer: list[str] = field(default_factory=list)
+    # 最近一次卡住诊断结论（dict 快照），供 worker 终态写回 failure_reason。
+    last_triage: Optional[dict[str, Any]] = None
     # 卡顿检测（P0）：state.value -> 上一步 DOM 指纹 / 连续无进展步数。
     dom_fingerprints: dict[str, str] = field(default_factory=dict)
     stall_counters: dict[str, int] = field(default_factory=dict)
@@ -178,29 +180,61 @@ def _run_triage(runtime: AutomationRuntime, evidence: Any, last_error: str) -> N
     except Exception:
         screenshot_bytes = None
 
+    # 把当前 state 的 retry/stall 计数并入 signals，供 LLM 判定 handler_stuck
+    # （反复点同一步、计数累加但 DOM 指纹不变 = 逻辑卡死）。
+    state_value = getattr(evidence, "step_name", "") or str(last_error or "")
+    signals = dict(getattr(evidence, "signals", {}) or {})
+    signals["_retry_count"] = runtime.retry_counters.get(state_value, 0)
+    signals["_stall_count"] = runtime.stall_counters.get(state_value, 0)
+
     try:
         decision = provider.diagnose(
             screenshot_bytes=screenshot_bytes,
             page_url=getattr(evidence, "url", ""),
             recent_logs=list(getattr(runtime, "recent_log_buffer", []))[-10:],
-            signals=dict(getattr(evidence, "signals", {}) or {}),
+            signals=signals,
             last_error=str(last_error or ""),
+            recent_actions=list(getattr(runtime, "last_actions", []))[-10:],
         )
     except Exception as exc:
         runtime.logger.warning("分诊器异常，跳过: %s", exc)
         return
 
+    triage_payload = {
+        "category": decision.category,
+        "suggested_action": decision.suggested_action,
+        "confidence": decision.confidence,
+        "rationale": decision.rationale,
+        "evidence_summary": decision.evidence_summary,
+        "fix_suggestion": decision.fix_suggestion,
+        "is_actionable": decision.is_actionable,
+        "is_engineering": decision.is_engineering,
+    }
+
+    # 挂到 runtime 供 worker 终态写回 failure_reason（仅高置信非 unknown 才有诊断价值）。
+    if decision.category != "unknown":
+        runtime.last_triage = dict(triage_payload)
+
+    # 落盘到 artifacts/runs/{run_id}/triage.jsonl，与证据包同目录。
+    recorder = getattr(runtime, "artifact_recorder", None)
+    run_id = getattr(runtime, "run_id", "")
+    if recorder is not None and run_id:
+        try:
+            recorder.record_triage(
+                run_id=run_id,
+                payload={
+                    **triage_payload,
+                    "url": getattr(evidence, "url", ""),
+                    "step_name": getattr(evidence, "step_name", ""),
+                },
+            )
+        except Exception as exc:  # 落盘失败不阻塞主流程
+            runtime.logger.warning("分诊结论落盘失败: %s", exc)
+
     _emit_runtime_event(
         runtime,
         "triage",
-        payload={
-            "category": decision.category,
-            "suggested_action": decision.suggested_action,
-            "confidence": decision.confidence,
-            "rationale": decision.rationale,
-            "evidence_summary": decision.evidence_summary,
-            "is_actionable": decision.is_actionable,
-        },
+        payload=triage_payload,
     )
 
 

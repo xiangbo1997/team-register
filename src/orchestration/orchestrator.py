@@ -27,6 +27,7 @@ from src.automation import (
     extract_session_tokens_with_http,
 )
 from src.automation.captcha_solver import build_solver_from_config
+from src.automation.triage import attach_log_buffer, build_triage_provider
 from src.config import AppConfig
 from src.db.engine import get_session
 from src.db.models import Checkpoint, Run, RunEvent
@@ -304,9 +305,11 @@ class PhaseOrchestrator:
                 llm_provider=llm_provider,
                 experience_store=experience_store,
                 captcha_solver=build_solver_from_config(self._config),
+                triage_provider=build_triage_provider(self._config),
                 assist_enabled=bool(getattr(self._config, "assist_fallback_enabled", False)),
                 assist_experience=assist_store,
             )
+            attach_log_buffer(runtime)
 
             machine = RegistrationStateMachine()
             result = machine.run(runtime)

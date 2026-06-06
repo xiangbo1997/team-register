@@ -8,6 +8,20 @@ Turnstile / Captcha 自愈框架
   只需新增一个 30 行的 SolverProvider 实现即可
 - 当前默认 NoOpSolver（不做任何事），等价于"零行为变更"
 
+⚠️ 重要结论（2026-06-04，3 个独立调研 agent + Cloudflare 官方文档交叉验证）：
+  **「在别处求解 token 再注入回页面」对交互式 Turnstile 是死路，别再走这条路。**
+  - Turnstile token 绑定「域名/sitekey + IP 信誉 + 浏览器遥测/TLS 指纹」，单次使用、
+    300s 过期。solver 在自己的浏览器/IP 解出的 token，注入回 AdsPower 页面（不同 IP/指纹）
+    后，服务端 siteverify 会以 domain/IP mismatch 拒绝。Cloudflare 官方原话："bots might
+    complete challenges, but Cloudflare can detect bot-like signals and mark the token
+    as invalid"（点了也白点）。
+  - 被打到交互式（出现可勾选 ☐ 复选框）= Cloudflare 已判该会话高风险，此时点击只治标。
+  - CDP 协议点击有 screenX/screenY<100 特征，被 Cloudflare 专门检测；Playwright/Selenium
+    全中招，只有系统级点击（PyAutoGUI）或 Firefox 免疫。
+  **正确的免费解（按 ROI）**：① 住宅/移动 IP + AdsPower 指纹一致性，让 Turnstile 回到
+  被动模式自动变绿（根治）；② 偶发交互式用人工接管真人点击兜底（见 grok_runtime.py
+  _wait_turnstile_manual_handoff）。本框架的 NoOpSolver 默认 + 不接开源 solver 是刻意决策。
+
 使用方式：
     runtime = AutomationRuntime(..., captcha_solver=NoCaptchaSolver(api_key=...))
 

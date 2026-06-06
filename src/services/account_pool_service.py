@@ -46,6 +46,27 @@ _VALID_TIERS = (TIER_REGISTERED, TIER_PLUS, TIER_TEAM, TIER_ABANDONED)
 _PROMOTABLE_TARGETS = (TIER_PLUS, TIER_TEAM)
 
 
+# 注册平台常量（与 Run.platform 字段值对齐）：openai = GPT / ChatGPT，grok = x.ai Grok
+PLATFORM_OPENAI = "openai"
+PLATFORM_GROK = "grok"
+_VALID_PLATFORMS = (PLATFORM_OPENAI, PLATFORM_GROK)
+
+
+def _normalize_platform(platform: Optional[str]) -> Optional[str]:
+    """规整 platform 过滤值。
+
+    None / "" / "all" → None（不过滤，向后兼容）；合法值原样返回；非法值抛 ValueError。
+    """
+    if platform is None:
+        return None
+    p = str(platform).strip().lower()
+    if p in ("", "all"):
+        return None
+    if p not in _VALID_PLATFORMS:
+        raise ValueError(f"invalid platform: {platform!r}")
+    return p
+
+
 def _redact_email(email: str) -> str:
     """脱敏邮箱：前 3 后 4，本地名段够长则显示部分中间字符。"""
     s = str(email or "")
@@ -61,10 +82,23 @@ def _redact_email(email: str) -> str:
 
 def _account_to_dict(run: Run) -> dict[str, Any]:
     """脱敏序列化（不暴露 password / token）。"""
+    # 注册 ChatGPT 时实际填写的姓名（"About you" 表单），存在 config_snapshot.identity
+    # JSON 里而非独立 DB 列；历史 Run 无 identity 时为空，前端显示 —。
+    snapshot = run.config_snapshot or {}
+    identity = snapshot.get("identity") or {}
+    register_name = ""
+    if isinstance(identity, dict):
+        register_name = str(identity.get("full_name") or "").strip()
+        if not register_name:
+            # full_name 缺失时用 first + last 兜底拼接
+            fn = str(identity.get("first_name") or "").strip()
+            ln = str(identity.get("last_name") or "").strip()
+            register_name = (fn + " " + ln).strip()
     return {
         "run_id": run.id,
         "email": run.email,
         "email_redacted": _redact_email(run.email),
+        "register_name": register_name,
         "profile_id": run.profile_id,
         "browser_provider": run.browser_provider,
         "card_provider": run.card_provider,
@@ -72,6 +106,8 @@ def _account_to_dict(run: Run) -> dict[str, Any]:
         "status": run.status,
         "phase": run.phase,
         "account_tier": run.account_tier,
+        # 注册平台（openai=GPT / grok），供前端区分两类账号；legacy 行回退 openai
+        "platform": run.platform or PLATFORM_OPENAI,
         "card_key": run.card_key,
         "card_bin": run.card_bin,
         "is_card_warmed_up": bool(run.is_card_warmed_up),
@@ -86,22 +122,26 @@ def _account_to_dict(run: Run) -> dict[str, Any]:
 def list_pool(
     *,
     tier: str = TIER_REGISTERED,
+    platform: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """列出指定段位的号。
 
     默认只展示 status=success 的号 —— 失败的号不算"账号"，不该入池。
+    platform 可选过滤 openai / grok（None / "all" = 全平台，向后兼容）。
     """
     if tier not in _VALID_TIERS:
         raise ValueError(f"invalid tier: {tier}")
+    platform_filter = _normalize_platform(platform)
     with get_session() as session:
         stmt = (
             select(Run)
             .where(Run.account_tier == tier)
             .where(Run.status == "success")
-            .order_by(Run.created_at.desc())  # type: ignore
-            .limit(max(1, min(limit, 200)))
         )
+        if platform_filter is not None:
+            stmt = stmt.where(Run.platform == platform_filter)
+        stmt = stmt.order_by(Run.created_at.desc()).limit(max(1, min(limit, 200)))  # type: ignore
         rows = list(session.exec(stmt).all())
         return [_account_to_dict(r) for r in rows]
 
@@ -561,6 +601,7 @@ def export_pool(
     fmt: str,
     *,
     run_ids: Optional[list[str]] = None,
+    platform: Optional[str] = None,
 ) -> tuple[str, str, str, list[dict[str, str]]]:
     """导出指定段位的号池。
 
@@ -569,6 +610,8 @@ def export_pool(
         fmt: credentials_csv（账号+OAuth） / cpa_json（CPA token 格式）
         run_ids: 可选，仅导出这些 run_id 的号（用于"导出选中"功能）。
                  传空列表 [] 视为"无匹配"，返回空内容；None 表示不过滤。
+        platform: 可选过滤 openai / grok（None / "all" = 全平台）。
+                  与 run_ids 取交集：选中导出也只导出匹配平台的行。
 
     Returns:
         (content, content_type, filename, skipped)
@@ -585,6 +628,7 @@ def export_pool(
         raise ValueError(f"invalid tier: {tier}")
     if fmt not in _VALID_EXPORT_FORMATS:
         raise ValueError(f"invalid fmt: {fmt}")
+    platform_filter = _normalize_platform(platform)
 
     # 规整 run_ids：去重 + 去空，全空视为 [] 而非 None
     ids_filter: Optional[list[str]] = None
@@ -596,8 +640,10 @@ def export_pool(
             select(Run)
             .where(Run.account_tier == tier)
             .where(Run.status == "success")
-            .order_by(Run.created_at.desc())  # type: ignore
         )
+        if platform_filter is not None:
+            stmt = stmt.where(Run.platform == platform_filter)
+        stmt = stmt.order_by(Run.created_at.desc())  # type: ignore
         if ids_filter is not None:
             if not ids_filter:
                 # 显式传了空列表 → 直接返回空导出（避免误导出整个 tier）
@@ -1070,6 +1116,8 @@ __all__ = [
     "TIER_PLUS",
     "TIER_TEAM",
     "TIER_ABANDONED",
+    "PLATFORM_OPENAI",
+    "PLATFORM_GROK",
     "FMT_CREDENTIALS_CSV",
     "FMT_CPA_JSON",
     "FMT_FULL_JSON",

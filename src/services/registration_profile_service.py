@@ -40,12 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 # 注册方式合法取值
-VALID_REGISTRATION_KINDS = frozenset({"email", "phone"})
+VALID_REGISTRATION_KINDS = frozenset({"email", "phone", "grok"})
 
 # seed 阶段使用的默认组合名（与现有 _seed_runtime_defaults 的 ProviderConfig 命名一致）
 _DEFAULT_PROFILE_NAMES = {
     "email": "email-default",
     "phone": "phone-default",
+    "grok": "grok-default",
 }
 
 

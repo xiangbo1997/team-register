@@ -50,7 +50,7 @@ class TestDynamicProxyPool(unittest.TestCase):
         self.assertIsNone(pool._current_proxy_info)
 
         url, country = pool.next_proxy_url()
-        self.assertEqual(url, "http://1.2.3.4:8080")
+        self.assertEqual(url, "socks5h://1.2.3.4:8080")
         self.assertEqual(country, "US")
         self.assertEqual(pool.stats()["total_rotations"], 1)
         self.assertEqual(pool.stats()["current_ip_used_count"], 1)
@@ -73,12 +73,12 @@ class TestDynamicProxyPool(unittest.TestCase):
         )
         # 调 6 次 → 2 次轮换（第 1 次 + 第 4 次）
         urls = [pool.next_proxy_url()[0] for _ in range(6)]
-        self.assertEqual(urls[0], "http://1.1.1.1:80")
-        self.assertEqual(urls[1], "http://1.1.1.1:80")  # 同 IP
-        self.assertEqual(urls[2], "http://1.1.1.1:80")
-        self.assertEqual(urls[3], "http://1.1.1.2:80")  # 阈值到，换
-        self.assertEqual(urls[4], "http://1.1.1.2:80")
-        self.assertEqual(urls[5], "http://1.1.1.2:80")
+        self.assertEqual(urls[0], "socks5h://1.1.1.1:80")
+        self.assertEqual(urls[1], "socks5h://1.1.1.1:80")  # 同 IP
+        self.assertEqual(urls[2], "socks5h://1.1.1.1:80")
+        self.assertEqual(urls[3], "socks5h://1.1.1.2:80")  # 阈值到，换
+        self.assertEqual(urls[4], "socks5h://1.1.1.2:80")
+        self.assertEqual(urls[5], "socks5h://1.1.1.2:80")
         self.assertEqual(pool.stats()["total_rotations"], 2)
 
     @patch("src.proxy_clients.adapters.base.requests.get")
@@ -99,7 +99,7 @@ class TestDynamicProxyPool(unittest.TestCase):
         self.assertEqual(pool.stats()["rotations_by_403"], 1)
         # 验证下一次 next_proxy_url 拿到的是新 IP
         url, _ = pool.next_proxy_url()
-        self.assertEqual(url, "http://2.2.2.2:80")
+        self.assertEqual(url, "socks5h://2.2.2.2:80")
 
     @patch("src.proxy_clients.adapters.base.requests.get")
     def test_rotation_failure_keeps_old_ip(self, mock_get):

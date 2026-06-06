@@ -26,6 +26,26 @@ from src.models import ProxyInfo
 logger = logging.getLogger(__name__)
 
 
+# 各 kind 拉到裸 IP 后应该用什么代理协议拼 URL。
+# 关键：1024 白名单端口是 SOCKS5（不是 HTTP）——用 http:// 拼会连接瞬拒/超时。
+# socks5h 让 DNS 也走代理（防泄漏，对 chatgpt.com 更稳）。
+# generic_http 默认 http（多数通用供应商是 HTTP 代理）；如需 socks 由 URL 模板自带。
+_KIND_PROXY_SCHEME: dict[str, str] = {
+    "1024proxy": "socks5h",
+    "generic_http": "http",
+}
+
+
+def proxy_url_from_info(provider: dict, host: str, port: str) -> str:
+    """按供应商 kind 把裸 host:port 拼成带正确协议的代理 URL。
+
+    1024proxy → socks5h://host:port（白名单端口是 SOCKS5）
+    其它      → http://host:port
+    """
+    scheme = _KIND_PROXY_SCHEME.get(provider.get("kind", ""), "http")
+    return f"{scheme}://{host}:{port}"
+
+
 @dataclass
 class DynamicProxyPool:
     """动态代理池：达到轮换阈值或被强制时换 IP。
@@ -59,9 +79,10 @@ class DynamicProxyPool:
         self._used_count += 1
         if self._current_proxy_info is None:
             return "", ""
-        url = (
-            f"http://{self._current_proxy_info.host}:"
-            f"{self._current_proxy_info.port}"
+        url = proxy_url_from_info(
+            self.provider,
+            self._current_proxy_info.host,
+            self._current_proxy_info.port,
         )
         return url, self._current_proxy_info.country or ""
 
