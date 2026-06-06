@@ -120,7 +120,11 @@ def _build_import_note(item: dict, source: str) -> str:
 
 
 def _write_import_note(template_id: int, note: str) -> None:
-    """把 import_note 写入 last_eligibility_metadata；不存在则创建 dict。"""
+    """把 import_note 写入 last_eligibility_metadata；不存在则创建 dict。
+
+    顺带抽 P4 结构化字段（导入码的折扣力度来自 import_note 文本），让导入的码
+    在号池升级弹窗里也能按折扣排序/显示，而不必等单独 verify。
+    """
     if not note:
         return
     with get_session() as session:
@@ -130,6 +134,15 @@ def _write_import_note(template_id: int, note: str) -> None:
         metadata = dict(tpl.last_eligibility_metadata or {})
         metadata["import_note"] = note
         tpl.last_eligibility_metadata = metadata
+
+        # P4：从 import_note 抽折扣力度字段（容错抽取器同时认 note 和 API metadata）
+        from src.services.promo_metadata_extract import extract_promo_fields
+        fields = extract_promo_fields(metadata)
+        if fields["percent_off"] is not None:
+            tpl.promo_percent_off = fields["percent_off"]
+        if fields["duration_months"] is not None:
+            tpl.promo_duration_months = fields["duration_months"]
+
         session.add(tpl)
         session.commit()
 
@@ -165,6 +178,42 @@ def import_from_known_codes(
         raise FileNotFoundError(f"known_codes.json 不存在: {src}")
 
     payload = json.loads(src.read_text(encoding="utf-8"))
+    return _import_payload(payload, source_label=str(src), dry_run=dry_run)
+
+
+def import_from_uploaded(raw: bytes, *, dry_run: bool = False) -> dict[str, Any]:
+    """从上传的 JSON 字节流导入（不依赖服务器本地文件）。
+
+    与 import_from_known_codes 共用 _import_payload 核心逻辑（同源真相）。
+
+    Args:
+        raw: 上传文件的原始字节（known_codes.json 同结构）
+        dry_run: True 时只计划不写库
+
+    Returns:
+        同 import_from_known_codes
+
+    Raises:
+        ValueError: JSON 解析失败 / 结构非法（调用方映射成 400）
+    """
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"文件不是合法 UTF-8 JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("JSON 顶层必须是对象（含 valid / expired 字段）")
+    if "valid" not in payload and "expired" not in payload:
+        raise ValueError("JSON 缺少 valid / expired 字段，格式与 known_codes.json 不符")
+    return _import_payload(payload, source_label="upload", dry_run=dry_run)
+
+
+def _import_payload(
+    payload: dict, *, source_label: str, dry_run: bool = False
+) -> dict[str, Any]:
+    """核心导入逻辑：吃一个 payload dict，计划 + 去重 + 写库。
+
+    被 import_from_known_codes（读本地文件）和 import_from_uploaded（上传）共用。
+    """
     existing = _existing_names()
     existing_keys = _existing_business_keys()
 
@@ -224,7 +273,7 @@ def import_from_known_codes(
             skipped_existing += 1
 
     result: dict[str, Any] = {
-        "source": str(src),
+        "source": source_label,
         "planned": len(plan),
         "skipped_existing": skipped_existing,
         "created": 0,
@@ -269,4 +318,4 @@ def import_from_known_codes(
     return result
 
 
-__all__ = ["import_from_known_codes", "DEFAULT_KNOWN_CODES_PATH"]
+__all__ = ["import_from_known_codes", "import_from_uploaded", "DEFAULT_KNOWN_CODES_PATH"]

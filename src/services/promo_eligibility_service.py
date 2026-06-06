@@ -225,6 +225,22 @@ def _write_back_eligibility_result(
         tpl.last_eligibility_status = result.status
         tpl.last_eligibility_check_at = now
         tpl.last_eligibility_metadata = metadata_dict
+
+        # P4：从 metadata 抽 5 个结构化字段，供号池升级弹窗按折扣力度排序/展示。
+        # 多路径容错抽取（见 promo_metadata_extract），抽不到保持 None 不覆盖已有值。
+        from src.services.promo_metadata_extract import extract_promo_fields
+        fields = extract_promo_fields(metadata_dict)
+        if fields["percent_off"] is not None:
+            tpl.promo_percent_off = fields["percent_off"]
+        if fields["duration_months"] is not None:
+            tpl.promo_duration_months = fields["duration_months"]
+        if fields["expires_at"] is not None:
+            tpl.promo_expires_at = fields["expires_at"]
+        if fields["max_redemptions"] is not None:
+            tpl.promo_max_redemptions = fields["max_redemptions"]
+        if fields["applicable_plans"]:
+            tpl.promo_applicable_plans = fields["applicable_plans"]
+
         session.add(tpl)
         session.commit()
     return now, metadata_dict
