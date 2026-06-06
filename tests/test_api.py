@@ -289,6 +289,81 @@ class TestAPI(unittest.TestCase):
         # mail_provider 仍落默认（后端会用 default 兜底，UI 不暴露邮箱字段但落库仍记）
         self.assertTrue(data["mail_provider"])
 
+    # ── 平台（GPT / Grok）筛选 ─────────────────────────────
+    def _seed_platform_runs(self):
+        """直接落库一个 openai + 一个 grok 成功号，account_tier=registered。"""
+        now = datetime.now(timezone.utc)
+        with get_session() as session:
+            session.add(Run(
+                id="gpt" + "a" * 13, email="gpt-acc@x.com", password="pw",
+                profile_id="p1", status="success", phase="token_extraction",
+                account_tier="registered", platform="openai",
+                created_at=now, updated_at=now,
+            ))
+            session.add(Run(
+                id="grk" + "a" * 13, email="grok-acc@x.com", password="pw",
+                profile_id="p2", status="success", phase="grok_done",
+                account_tier="registered", platform="grok",
+                created_at=now, updated_at=now,
+            ))
+            session.commit()
+
+    def test_accounts_platform_filter_returns_only_grok(self):
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        resp = admin.get("/api/accounts?tier=registered&platform=grok")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        rows = resp.json()
+        self.assertEqual([r["email"] for r in rows], ["grok-acc@x.com"])
+        self.assertEqual(rows[0]["platform"], "grok")
+
+    def test_accounts_no_platform_returns_all_with_platform_field(self):
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        resp = admin.get("/api/accounts?tier=registered")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        rows = resp.json()
+        self.assertEqual({r["email"] for r in rows}, {"gpt-acc@x.com", "grok-acc@x.com"})
+        self.assertTrue(all("platform" in r for r in rows))
+
+    def test_accounts_invalid_platform_returns_422(self):
+        admin = self._new_client()
+        self._login_admin(admin)
+        resp = admin.get("/api/accounts?tier=registered&platform=meta")
+        self.assertEqual(resp.status_code, 422)
+
+    def test_accounts_export_platform_filter_only_grok(self):
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        resp = admin.get("/api/accounts/export?tier=registered&platform=grok&fmt=full_json")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        # 单账号导出 → JSON object，仅含 grok
+        body = resp.json()
+        rows = body if isinstance(body, list) else [body]
+        self.assertEqual([r["email"] for r in rows], ["grok-acc@x.com"])
+
+    def test_tasks_platform_filter_returns_only_grok(self):
+        viewer = self._new_client()
+        self._login_viewer(viewer)
+        self._seed_platform_runs()
+        resp = viewer.get("/api/tasks?platform=grok")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        items = resp.json()["items"]
+        self.assertEqual([t["email"] for t in items], ["grok-acc@x.com"])
+        self.assertTrue(all("platform" in t for t in items))
+
+    def test_tasks_invalid_platform_lenient_returns_all(self):
+        viewer = self._new_client()
+        self._login_viewer(viewer)
+        self._seed_platform_runs()
+        resp = viewer.get("/api/tasks?platform=bogus")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        items = resp.json()["items"]
+        self.assertEqual({t["email"] for t in items}, {"gpt-acc@x.com", "grok-acc@x.com"})
+
     def test_create_task_phone_kind_with_explicit_phone_persists_to_run(self):
         """Mode B：用户手填 phone_number 时直接落到 Run.phone_number（不走 SMS 申领）。"""
         operator = self._new_client()

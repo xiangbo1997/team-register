@@ -180,6 +180,9 @@ class AppConfig:
     nocaptcha_user_token: str = ""
     captcha_solver_budget_cap_usd: float = 5.0
     captcha_solver_timeout_ms: int = 30000
+    # Grok 资料页 Turnstile 被降级成交互式时，等人工在 AdsPower 窗口手动勾选复选框的时长（秒）。
+    # 0 = 用默认 180s。设计依据见 captcha_solver.py 模块 docstring（token 注入死路 → 真人点击兜底）。
+    grok_turnstile_manual_handoff_sec: int = 0
 
     # Sentinel PoW 配置（详见 src/automation/sentinel.py）
     # sentinel_strategy: noop / pure_python
@@ -493,6 +496,7 @@ def load_config(dotenv_path: Optional[str] = None) -> AppConfig:
         nocaptcha_user_token=os.getenv("NOCAPTCHA_USER_TOKEN", "").strip(),
         captcha_solver_budget_cap_usd=_read_float("CAPTCHA_SOLVER_BUDGET_CAP_USD", 5.0),
         captcha_solver_timeout_ms=_read_int("CAPTCHA_SOLVER_TIMEOUT_MS", 30000),
+        grok_turnstile_manual_handoff_sec=_read_int("GROK_TURNSTILE_MANUAL_HANDOFF_SEC", 0),
         sentinel_strategy=os.getenv("SENTINEL_STRATEGY", "noop").strip().lower() or "noop",
         sentinel_sdk_version=os.getenv("SENTINEL_SDK_VERSION", "20260124ceb8").strip() or "20260124ceb8",
         sentinel_impersonate=os.getenv("SENTINEL_IMPERSONATE", "chrome120").strip() or "chrome120",

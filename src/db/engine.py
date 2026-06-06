@@ -92,6 +92,9 @@ def _run_schema_migrations(engine: Engine) -> None:
         # 手机号注册模式（feat/mode-phone-registration 2026-05-27 引入）
         "phone_number": "ALTER TABLE runs ADD COLUMN phone_number VARCHAR(40) NOT NULL DEFAULT ''",
         "sms_order_id": "ALTER TABLE runs ADD COLUMN sms_order_id VARCHAR(64) NOT NULL DEFAULT ''",
+        # Grok (x.ai) 注册（feat/grok-register 引入）：platform 区分 openai/grok，sso_token 存 Grok 产物
+        "platform": "ALTER TABLE runs ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'openai'",
+        "sso_token": "ALTER TABLE runs ADD COLUMN sso_token TEXT NOT NULL DEFAULT ''",
     }
     # mail_accounts.role 列（消除 Ambiguity #2）+ pro_warmup 号池调度字段
     mail_columns = _table_columns(engine, "mail_accounts")
@@ -111,6 +114,11 @@ def _run_schema_migrations(engine: Engine) -> None:
         "warmed_at": "ALTER TABLE card_activations ADD COLUMN warmed_at DATETIME NULL",
         "last_warmup_status": "ALTER TABLE card_activations ADD COLUMN last_warmup_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
         "last_warmup_reason": "ALTER TABLE card_activations ADD COLUMN last_warmup_reason VARCHAR(200) NULL",
+    }
+    # 合成卡审计表：多国化新增 country 列（此前 _run_schema_migrations 完全没处理这张表）
+    synth_audit_columns = _table_columns(engine, "synthetic_card_audits")
+    synth_audit_specs = {
+        "country": "ALTER TABLE synthetic_card_audits ADD COLUMN country VARCHAR(4) NOT NULL DEFAULT 'US'",
     }
     # 链接模板：关联代理 id（代理池功能新增）+ promo eligibility 验证状态
     link_template_columns = _table_columns(engine, "link_templates")
@@ -156,12 +164,31 @@ def _run_schema_migrations(engine: Engine) -> None:
                     continue
                 conn.execute(text(ddl))
                 logger.info("已为 card_activations 表补齐字段: %s", column_name)
+        if synth_audit_columns:
+            for column_name, ddl in synth_audit_specs.items():
+                if column_name in synth_audit_columns:
+                    continue
+                conn.execute(text(ddl))
+                logger.info("已为 synthetic_card_audits 表补齐字段: %s", column_name)
         if link_template_columns:
             for column_name, ddl in link_template_specs.items():
                 if column_name in link_template_columns:
                     continue
                 conn.execute(text(ddl))
                 logger.info("已为 link_templates 表补齐字段: %s", column_name)
+
+        # 加宽既有列 synthetic_card_audits.address_state: 4→16
+        # （JP 都道府县全名如 Kanagawa=8 超出原 VARCHAR(4)）。
+        # SQLite 不强制 VARCHAR 长度可跳过；PostgreSQL 需 ALTER COLUMN TYPE。
+        if synth_audit_columns and not engine.url.drivername.startswith("sqlite"):
+            try:
+                conn.execute(text(
+                    "ALTER TABLE synthetic_card_audits "
+                    "ALTER COLUMN address_state TYPE VARCHAR(16)"
+                ))
+                logger.info("已加宽 synthetic_card_audits.address_state → VARCHAR(16)")
+            except Exception as exc:  # noqa: BLE001 — 已是 16 或不支持时静默跳过
+                logger.debug("address_state 加宽跳过（可能已是 16）: %s", exc)
     # app_setting_revisions 表由 SQLModel.metadata.create_all() 自动建（init_db 调用），
     # 这里无需手工 CREATE TABLE。
 
