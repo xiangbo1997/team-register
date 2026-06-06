@@ -17,6 +17,9 @@ error_debug.png
 *.pyc
 config.json
 log.txt
+# 个人 IDE / 编辑器配置
+.vscode/
+*.code-workspace
 # 运行时数据（含加密敏感字段）
 team_register.db
 team_register.db-journal
