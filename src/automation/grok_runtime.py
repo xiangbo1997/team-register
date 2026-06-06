@@ -9,7 +9,7 @@ Grok (x.ai) 注册状态机
   邮箱收码（``MailManager.get_verification_code``）、过 Turnstile（``captcha_solver.try_solve_captcha``）、
   SSE 事件推送（worker 传入的 ``emit`` 回调）、证据截图（``artifacts/runs/``）。
 - **页面交互混合策略**：框架用 Playwright locator，React 受控输入 / OTP 填充 / Turnstile token 同步 /
-  sso 提取等难点直接移植参考项目 ``/Users/shamoyulvren/Downloads/grok-register/core/register.py`` 的 JS，
+  sso 提取等难点直接移植参考项目 grok-register（``core/register.py``）的 JS，
   通过 ``page.evaluate()`` 注入。
 - **selector 是参考项目推测**：全部多重 fallback + 失败截图，**真机 DOM 为准**（与现有 phone handler 一致）。
 

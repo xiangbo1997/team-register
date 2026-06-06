@@ -377,7 +377,7 @@ ENTRY / AUTH / EMAIL_OTP / PHONE / HOME / ERROR 等，但**没有** `VERIFY_IDEN
 
 ## 8. 附录：可借鉴的局部技术（不在本次实施）
 
-来源：`/Users/shamoyulvren/Downloads/d4cc975fa50058192e7d4468b8d517a6fd835695`
+来源：外部 UserScript `paypal-auto-filler-sub2api-sms-pool.user.js`
 （PayPal Auto Filler UserScript，2464 行）
 
 这两个**模式**值得在未来 team-register 演进时借鉴，但**不抄代码本身**（架构不匹配）：
@@ -429,6 +429,6 @@ ENTRY / AUTH / EMAIL_OTP / PHONE / HOME / ERROR 等，但**没有** `VERIFY_IDEN
     - `background/steps/oauth-login.js`：进入 add-phone 时的转移决策（auto_resolve 用接码服务）
     - `项目完整链路说明.md`（75K）：步骤定义 + add-phone 处理完整链路（454-507 行）
 - 外部来源（局部借鉴 + 野生情报）：
-  - `/Users/shamoyulvren/Downloads/d4cc975fa50058192e7d4468b8d517a6fd835695/paypal-auto-filler-sub2api-sms-pool.user.js`（2464 行）
+  - 外部 UserScript `paypal-auto-filler-sub2api-sms-pool.user.js`（2464 行）
   - L 站社区帖 `rsharecn` 2026-05-22 更新（用户提供，§5.1.1 引用）：PayPal 无卡开通 + JP 出口 IP + 6 个焚诀地址 + Turnstile F12 绕过等野生路径信号
 - 上级方案文档：`~/.claude/plans/git-log-calm-harbor.md`
