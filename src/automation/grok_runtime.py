@@ -398,12 +398,46 @@ class GrokRegistrationError(RuntimeError):
     """Grok 注册流程业务异常。"""
 
 
-def _gen_password() -> str:
-    """生成强密码（参考项目格式）。"""
-    return "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
+def _gen_password(length: int = 16) -> str:
+    """生成强密码：保证含大写+小写+数字+特殊符号四类，长度 >=12，无歧义字符。
+
+    修 run 1007773b「提交资料后页面未前进」根因：x.ai 资料页 react onSubmit 有密码强度
+    校验，弱密码（缺某类字符 / 太短）被拦 → 表单不提交 → 停在资料页。旧 _gen_password 用
+    token_hex+token_urlsafe 拼接，可能缺特殊符号或大写字母 → 强度不达标。改为显式保证四类。
+    """
+    length = max(12, int(length))
+    lower = "abcdefghijkmnpqrstuvwxyz"   # 去掉易混 l/o
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"   # 去掉易混 I/O
+    digits = "23456789"                  # 去掉易混 0/1
+    special = "!@#$%&*?-_"
+    all_chars = lower + upper + digits + special
+    # 先各取一个保证四类齐全，其余随机填充
+    pwd = [
+        secrets.choice(lower),
+        secrets.choice(upper),
+        secrets.choice(digits),
+        secrets.choice(special),
+    ]
+    pwd += [secrets.choice(all_chars) for _ in range(length - 4)]
+    # 打乱顺序（避免「首位固定类型」的可预测模式）
+    secrets.SystemRandom().shuffle(pwd)
+    return "".join(pwd)
 
 
-def _gen_name() -> tuple[str, str]:
+def _gen_name(config: Any = None) -> tuple[str, str]:
+    """优先用 worker 注入的真实身份（first/last 与 email_local 呼应、不撞名人），
+    无注入身份（CLI 直跑 / 老批次）才回退随机表。
+
+    风控关键（feedback：填写要符合人类实际）：worker 在 _resolve_runtime_config 已把
+    config_snapshot.identity 注入到 config.identity_first_name/last_name（email_local
+    如 william.harrison82 即由它们派生）。Grok 旧逻辑自己 random.choice 笛卡尔积组合，会撞
+    名人（Jennifer Lopez / Michael Jackson）且与注册邮箱 local-part 完全对不上 —— 这是账号
+    关联签名红旗。改为复用现有身份系统，姓名与邮箱一致，符合真人注册分布。
+    """
+    first = (getattr(config, "identity_first_name", "") or "").strip() if config is not None else ""
+    last = (getattr(config, "identity_last_name", "") or "").strip() if config is not None else ""
+    if first and last:
+        return first, last
     return random.choice(_FIRST_NAMES), random.choice(_LAST_NAMES)
 
 
@@ -494,7 +528,11 @@ def run_grok_task(
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(ws_url)
         context: "BrowserContext" = browser.contexts[0]
-        page = context.pages[0] if context.pages else context.new_page()
+        # 选一个干净 tab：profile 可能残留其他站点的 tab（尤其之前跑过 OpenAI 留下的
+        # accounts/chatgpt 页 + 「セッションが終了しました」），直接用 pages[0] 会在错的
+        # tab 上操作 → 找不到 Grok 表单 → 「填写资料超时或表单未就绪」。
+        # 修 run c58b/44cd：关掉非 x.ai 的残留 tab，留/造一个干净 tab 给 Grok。
+        page = _select_clean_grok_page(context, _emit)
         solver_runtime = _GrokSolverRuntime(page, solver, emit)
 
         # 决策上下文：硬规则失败时各步用它走「经验→LLM→固化」
@@ -503,7 +541,7 @@ def run_grok_task(
             _open_signup(page, _emit, assist, context=context)
             _fill_email(page, email, _emit, assist)
             _wait_and_fill_code(page, mail_api, email, code_timeout, _emit, assist)
-            _fill_profile(page, password, solver_runtime, try_solve_captcha, _emit, assist)
+            _fill_profile(page, password, solver_runtime, try_solve_captcha, _emit, assist, config=config)
             sso = _extract_sso(page, context, sso_timeout, _emit)
         except GrokRegistrationError:
             _screenshot(page, db_run_id, "grok_failure")
@@ -522,6 +560,57 @@ def run_grok_task(
 # ─────────────────────────────────────────────────────────────────────
 # 5 步实现
 # ─────────────────────────────────────────────────────────────────────
+
+def _select_clean_grok_page(context: Any, emit: Callable) -> Any:
+    """从 profile 现有 tab 里选/造一个干净 tab 给 Grok 注册用。
+
+    根因（修 run c58b/44cd「填写资料超时或表单未就绪」）：AdsPower profile 复用，之前跑过
+    OpenAI 会残留 accounts.openai.com / chatgpt.com 的 tab（截图见「セッションが終了しました」）。
+    旧逻辑 `context.pages[0]` 可能拿到这个残留 OpenAI tab，后续在错 tab 上找 Grok 表单必然失败。
+
+    策略（语言无关，靠 URL host 判断）：
+      1. 已有 x.ai / grok.com 的 tab → 复用第一个
+      2. 否则新开一个干净 tab
+      3. 关掉其余残留 tab（尤其 openai/chatgpt），避免干扰 + 释放资源
+
+    Returns:
+        一个可用于 Grok 注册的 Page 对象。
+    """
+    pages = list(context.pages) if context.pages else []
+
+    def _host(pg: Any) -> str:
+        try:
+            return str(pg.url or "").lower()
+        except Exception:
+            return ""
+
+    grok_pages = [pg for pg in pages if "x.ai" in _host(pg) or "grok.com" in _host(pg)]
+    target = grok_pages[0] if grok_pages else None
+    if target is None:
+        try:
+            target = context.new_page()
+            emit("action", "GROK_ENTRY", "新开干净 tab（profile 无 Grok tab）",
+                 action_id="clean_tab", result="new")
+        except Exception:
+            # 兜底：实在开不了新 tab 就用第一个现有 tab（退回旧行为）
+            target = pages[0] if pages else context.new_page()
+
+    # 关掉所有非目标 tab（target 已被 skip）。残留 tab 多是 OpenAI/about:blank，
+    # 留着只会干扰 + 占资源；Grok 注册只需要 target 这一个干净 tab。
+    closed = 0
+    for pg in pages:
+        if pg is target:
+            continue
+        try:
+            pg.close()
+            closed += 1
+        except Exception:
+            pass
+    if closed:
+        emit("action", "GROK_ENTRY", f"已关闭 {closed} 个残留 tab（含 OpenAI 等）",
+             action_id="clean_tab", result="closed")
+    return target
+
 
 def _clear_grok_session(page: Any, context: Any, emit: Callable) -> None:
     """清掉 profile 残留的 grok 登录态（cookies + storage），保证从干净注册态开始。
@@ -653,12 +742,22 @@ def _wait_and_fill_code(page: Any, mail_api: Any, email: str, timeout: int, emit
         # 已经跳到资料页（部分场景自动跳转）→ 直接返回
         if page.evaluate(_JS_HAS_PROFILE_FORM):
             return
-        result = "not-ready"
+        # 主路径：真实键盘填 OTP（isTrusted=true）。x.ai OTP 框是 react 严格组件，
+        # JS setNativeValue + 合成 InputEvent（isTrusted=false）视觉上填了但 react state 不认 →
+        # 提交时判 OTP 为空 → x.ai 重置回邮箱页（实证 run c58b 失败截图就是空邮箱页）。
+        # 与资料页/OpenAI 密码页同源修复（changelog 2026-06-02 react isTrusted）。
+        filled = False
         for fill_code in fill_candidates:
-            result = page.evaluate(_JS_FILL_CODE, fill_code)
-            if result == "filled":
+            if _fill_otp_real_keyboard(page, fill_code):
+                filled = True
                 break
-        if result == "filled":
+        # 真实键盘失败再退回 JS 合成事件（某些非 react 场景仍有效）
+        if not filled:
+            for fill_code in fill_candidates:
+                if page.evaluate(_JS_FILL_CODE, fill_code) == "filled":
+                    filled = True
+                    break
+        if filled:
             time.sleep(1.0)
             # 语言无关提交（OTP 框很多场景填满即自动提交，这里再补一次 submit 点击）
             if not page.evaluate(_JS_CLICK_SUBMIT):
@@ -672,7 +771,16 @@ def _wait_and_fill_code(page: Any, mail_api: Any, email: str, timeout: int, emit
                 if page.evaluate(_JS_HAS_PROFILE_FORM):
                     emit("action", "GROK_VERIFY_EMAIL", "已确认验证码，进入资料页", action_id="confirm_code", result="ok")
                     return
-            return  # 没检测到资料页也放行，由 fill_profile 自己判断
+            # 15s 没进资料页：可能 OTP 被拒重置回邮箱页。检测是否退回邮箱页，
+            # 是则不放行（继续循环重填），避免 fill_profile 在邮箱页死等资料表单。
+            if page.evaluate(_JS_HAS_EMAIL_INPUT):
+                emit("action", "GROK_VERIFY_EMAIL", "OTP 提交后退回邮箱页（验证码可能被拒），重试",
+                     action_id="confirm_code", result="bounced_back")
+                # 退回邮箱页说明邮箱要重填——但本函数只管 OTP，交由外层超时/重试处理；
+                # 这里继续循环，下一轮 _JS_HAS_PROFILE_FORM 仍 false 会再试填 OTP（若 OTP 框还在）
+                time.sleep(1.0)
+                continue
+            return  # 既非资料页也非邮箱页（中间态）→ 放行由 fill_profile 判断
         time.sleep(0.6)
     # 硬规则填不进 OTP（框被遮挡/结构变化）→ AI 辅助填验证码，成功后固化
     if _try_assist(page, emit, assist, step="verify_email", want_fill=True, fill_value=code,
@@ -683,32 +791,301 @@ def _wait_and_fill_code(page: Any, mail_api: Any, email: str, timeout: int, emit
     raise GrokRegistrationError("填写验证码超时（硬规则+AI辅助均失败）")
 
 
-def _fill_profile(page: Any, password: str, solver_runtime: Any, try_solve: Callable, emit: Callable, assist: Optional[dict] = None) -> None:
-    emit("state_change", "GROK_PROFILE", "填写姓名和密码...")
-    first, last = _gen_name()
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        result = page.evaluate(_JS_FILL_PROFILE, {"given": first, "family": last, "password": password})
-        if result == "filled":
-            # 过 Turnstile（提交前）：先尝试 solver（pending 时），再轮询等 token 就绪。
-            # 关键（修 run 9da55807 "未提取到 sso token"）：Turnstile 是被动异步验证，
-            # 截图实证会自动 "成功しました!"，但旧逻辑 solver 失败就立刻点提交 → token
-            # 未就绪 → x.ai「登録を完了」提交空击 → 停在资料页 → 拿不到 sso。
-            # 故提交前轮询等 cf-turnstile-response 从 pending → ready（最多 ~20s）。
-            _solve_turnstile_if_present(page, solver_runtime, try_solve, emit)
-            _wait_turnstile_ready(page, emit, timeout=20)
-            # 语言无关提交（button[type=submit] 优先，Enter，再 AI 辅助点完成按钮）
-            if not page.evaluate(_JS_CLICK_SUBMIT):
+# OTP 聚合框（单框装整个码）selector，语言无关
+_GROK_OTP_AGG_SELECTOR = (
+    'input[data-input-otp="true"], input[name="code"], input[autocomplete="one-time-code"], '
+    'input[inputmode="numeric"], input[inputmode="text"]'
+)
+# OTP 分格框（每格一字符）selector
+_GROK_OTP_BOX_SELECTOR = 'input[maxlength="1"], input[autocomplete="one-time-code"]'
+
+
+def _fill_otp_real_keyboard(page: Any, code: str) -> bool:
+    """用 Playwright 真实键盘填 OTP（isTrusted=true）。react OTP 组件只认真实键盘。
+
+    兼容两种结构：① 单聚合框（一个 input 装整个码）② 6 格分离框（每格一字符）。
+    填前 click 聚焦 + 清空，填后回读校验。任一结构成功即返回 True。
+    """
+    code = str(code or "").strip()
+    if not code:
+        return False
+    # 结构 1：单聚合框
+    try:
+        agg = page.locator(_GROK_OTP_AGG_SELECTOR).first
+        agg.wait_for(state="visible", timeout=2000)
+        # maxLength>1 才是聚合框（排除分格框）
+        maxlen = agg.get_attribute("maxlength", timeout=1000)
+        if maxlen is None or int(maxlen or 0) > 1 or int(maxlen or 0) == 0:
+            agg.click()
+            for combo in ("Meta+A", "Control+A"):
                 try:
-                    page.keyboard.press("Enter")
+                    page.keyboard.press(combo)
+                    break
+                except Exception:
+                    continue
+            try:
+                page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            agg.press_sequentially(code, delay=random.randint(30, 80))
+            if (agg.input_value() or "").strip().replace("-", "").replace(" ", "") == code:
+                return True
+    except Exception:
+        pass
+    # 结构 2：6 格分离框——逐格真实键盘输入
+    try:
+        boxes = page.locator(_GROK_OTP_BOX_SELECTOR)
+        n = boxes.count()
+        if n >= len(code):
+            first_box = boxes.first
+            first_box.click()
+            # 逐字符 type：react OTP 通常自动 focus 下一格
+            for ch in code:
+                page.keyboard.type(ch, delay=random.randint(30, 80))
+            # 回读校验：拼接所有格的值
+            filled = ""
+            for i in range(min(n, len(code))):
+                try:
+                    filled += (boxes.nth(i).input_value() or "").strip()
                 except Exception:
                     pass
-                _try_assist(page, emit, assist, step="profile_submit", want_fill=False, verify=lambda: True)
+            if filled == code:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _fill_profile(page: Any, password: str, solver_runtime: Any, try_solve: Callable, emit: Callable, assist: Optional[dict] = None, config: Any = None) -> None:
+    emit("state_change", "GROK_PROFILE", "填写姓名和密码...")
+    first, last = _gen_name(config)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        # 关键（修 run b5e42a3f "未提取到 sso token"，真机 DOM + 截图实证）：x.ai 资料页是
+        # react-hook-form 严格表单，只信任 isTrusted=true 的真实用户输入。旧 _JS_FILL_PROFILE
+        # 用原生 setter + 合成 InputEvent（isTrusted=false）注入值——视觉上值进去了、GTM 也记到
+        # field-interact，但 react formState 不认 → 提交时 onSubmit 被拦 → 停在资料页拿不到 sso。
+        # 改为 Playwright press_sequentially（真实键盘事件 isTrusted=true），与 OpenAI 创建密码页
+        # /OTP 页同源修复（changelog 2026-06-02 react-aria isTrusted）。
+        if _fill_profile_real_keyboard(page, first, last, password, emit):
+            # 过 Turnstile（提交前）：先尝试 solver（pending 时），再轮询等 token 就绪。
+            # Turnstile 是被动异步验证，截图实证会自动 "成功しました!" 且 cf-turnstile-response
+            # 隐藏 input 被填入完整 token；提交前轮询等 pending → ready（最多 ~20s）。
+            _solve_turnstile_if_present(page, solver_runtime, try_solve, emit)
+            # 先等被动验证自动完成（managed 模式正常路径，~20s）；若超时仍 pending，
+            # 说明被 Cloudflare 降级成交互式（需手动点复选框）——进入人工接管等待，
+            # 给运维时间在 AdsPower 窗口手动勾选「私はロボットではありません」。
+            # 设计依据（3 agent 调研 + Cloudflare 官方文档交叉验证，2026-06-04）：
+            # token 绑定 IP/指纹/sitekey，跨环境注入必被 siteverify 拒；交互式挑战
+            # 唯一可靠的免费解是真人 isTrusted 点击。详见 captcha_solver.py 模块 docstring。
+            if not _wait_turnstile_ready(page, emit, timeout=20):
+                _wait_turnstile_manual_handoff(page, emit, config=config)
+            # 提交资料：多策略 + 提交后验证页面真的前进（语言无关，不靠按钮文案）。
+            # 修 run 44cd0531「Turnstile 过了 / finish=ok 但停在资料页拿不到 sso」：旧逻辑
+            # 点一次 click() 就 return，从不验证 react 表单 onSubmit 是否真触发——按钮有
+            # [@media(pointer:fine)]:hidden 覆盖 span，CDP click 可能点到覆盖层没提交。
+            submitted = _submit_profile_and_confirm(page, emit, assist)
+            if not submitted:
+                emit("action", "GROK_PROFILE", "提交资料后页面未前进（可能未生效）",
+                     action_id="finish", result="warning")
             emit("action", "GROK_PROFILE", f"已提交资料 {first} {last}", action_id="finish", result="ok")
             time.sleep(2)
             return
         time.sleep(0.5)
     raise GrokRegistrationError("填写资料超时或表单未就绪")
+
+
+# 资料页输入框 selector（真机 DOM 实证：data-testid 主锚 + name/autocomplete 兜底）
+_GROK_GIVEN_SELECTOR = 'input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]'
+_GROK_FAMILY_SELECTOR = 'input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]'
+_GROK_PASSWORD_SELECTOR = 'input[data-testid="password"], input[name="password"], input[type="password"]'
+# 提交按钮：表单内 type=submit（真机 DOM「登録を完了」无 disabled/aria-disabled，文案随 locale 变）
+_GROK_SUBMIT_SELECTOR = 'form button[type="submit"], button[type="submit"], input[type="submit"]'
+
+
+def _fill_one_field_real(page: Any, selector: str, value: str) -> bool:
+    """用 Playwright 真实键盘填单个输入框（isTrusted=true），回读校验。
+
+    react-hook-form 只认真实用户输入，故必须 press_sequentially 而非 JS setter。
+    填前先 click 聚焦 + 清空（Meta/Ctrl+A → Backspace），避免残留值叠加。
+    """
+    try:
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=5000)
+    except Exception:
+        return False
+    try:
+        # 已是目标值则跳过（防重试叠加）
+        if (loc.input_value() or "").strip() == value:
+            return True
+    except Exception:
+        pass
+    try:
+        loc.click()
+        # 全选清空（跨平台：Meta+A 不中再 Control+A）
+        for combo in ("Meta+A", "Control+A"):
+            try:
+                page.keyboard.press(combo)
+                break
+            except Exception:
+                continue
+        try:
+            page.keyboard.press("Backspace")
+        except Exception:
+            pass
+        loc.press_sequentially(value, delay=random.randint(25, 70))
+        # 回读校验：react 受控组件值同步到 DOM 才算成功
+        return (loc.input_value() or "").strip() == value
+    except Exception as exc:
+        logger.warning("Grok 真实键盘填充失败 selector=%s: %s", selector[:30], exc)
+        return False
+
+
+def _fill_profile_real_keyboard(page: Any, first: str, last: str, password: str, emit: Callable) -> bool:
+    """Playwright 真实键盘依次填姓名/密码，全部回读校验通过才返回 True。"""
+    if not _fill_one_field_real(page, _GROK_GIVEN_SELECTOR, first):
+        return False
+    if not _fill_one_field_real(page, _GROK_FAMILY_SELECTOR, last):
+        return False
+    if not _fill_one_field_real(page, _GROK_PASSWORD_SELECTOR, password):
+        return False
+    return True
+
+
+def _click_submit_real(page: Any) -> bool:
+    """真实鼠标点击提交按钮（isTrusted=true）。语言无关，靠 type=submit 而非文案。
+
+    用 page.mouse.click(x, y) 点按钮真实坐标——产生最真实的 isTrusted 点击事件，
+    坐标相对主框架（避开 Cloudflare 对 CDP click 的 screenX<100 检测），且穿透按钮上
+    的 [@media(pointer:fine)]:hidden 覆盖 span（精细指针下该 span 隐藏，鼠标坐标点直达按钮）。
+
+    返回 True = 点中可见可用的 submit 按钮；False = 未找到（由调用方回退）。
+    """
+    try:
+        loc = page.locator(_GROK_SUBMIT_SELECTOR).first
+        loc.wait_for(state="visible", timeout=5000)
+        loc.scroll_into_view_if_needed(timeout=2000)
+        # 优先真实坐标鼠标点击（isTrusted=true，最接近真人）
+        try:
+            box = loc.bounding_box(timeout=2000)
+            if box:
+                cx = box["x"] + box["width"] / 2
+                cy = box["y"] + box["height"] / 2
+                page.mouse.move(cx, cy)
+                time.sleep(0.1)
+                page.mouse.click(cx, cy)
+                return True
+        except Exception:
+            pass
+        # 兜底：locator.click（force 穿透覆盖层）
+        loc.click(timeout=5000, force=True)
+        return True
+    except Exception as exc:
+        logger.warning("Grok 真实点击提交失败（回退）: %s", exc)
+        return False
+
+
+# 表单原生提交（语言无关）：form.requestSubmit() 触发 react onSubmit，比点按钮更可靠
+# ——按钮有 [@media(pointer:fine)]:hidden 覆盖 span，CDP click 可能点到覆盖层不提交。
+_JS_REQUEST_SUBMIT = r"""() => {
+  const ci = document.querySelector('input[name="cf-turnstile-response"]');
+  const form = ci ? ci.closest('form') : document.querySelector('form');
+  if (!form) return false;
+  if (typeof form.requestSubmit === 'function') { form.requestSubmit(); return true; }
+  form.submit();
+  return true;
+}"""
+
+# 资料页是否还在（语言无关）：靠 cf-turnstile-response 隐藏 input 是否还存在判断，
+# 不靠 URL/文案。提交成功后 react 会卸载资料表单，这个 input 随之消失。
+_JS_PROFILE_STILL_PRESENT = r"""() => {
+  return !!document.querySelector('input[name="cf-turnstile-response"]');
+}"""
+
+
+def _turnstile_token_present(page: Any) -> bool:
+    """cf-turnstile-response 隐藏 input 是否已被填入非空 token（语言无关）。"""
+    try:
+        return str(page.evaluate(_JS_TURNSTILE_STATE) or "") == "ready"
+    except Exception:
+        return False
+
+
+def _profile_left_page(page: Any) -> bool:
+    """资料页是否已离开（提交生效）。语言无关：cf-turnstile-response input 消失即视为前进。"""
+    try:
+        return not bool(page.evaluate(_JS_PROFILE_STILL_PRESENT))
+    except Exception:
+        return False
+
+
+def _submit_profile_and_confirm(
+    page: Any, emit: Callable, assist: Optional[dict] = None, *, max_attempts: int = 4
+) -> bool:
+    """提交资料并验证页面真的前进；未前进则换更强方式重试。语言无关，不靠按钮文案。
+
+    根因（修 run 44cd0531「Turnstile 过了但停在资料页拿不到 sso」）：被动 Turnstile 需要
+    几秒才自动写入 token，且提交按钮有覆盖 span 导致 CDP click 可能不触发 react onSubmit。
+    本函数：① 提交前先等 token 就绪（最多 10s）；② 多策略提交（requestSubmit → 真实点击
+    → Enter）；③ 每次提交后验证页面是否前进（cf-turnstile-response input 消失），未前进
+    则升级策略重试。
+
+    Returns:
+        True = 确认页面已离开资料页（提交生效）；False = 多次尝试仍停在资料页。
+    """
+    # 提交前确认 Turnstile 真勾上了再点（你的洞察：自动勾选需要时间，没勾上别点提交）。
+    # 轮询 3 轮，每轮等 ~3.3s（共 ~10s）查 cf-turnstile-response 是否被填入 token。
+    token_ready = False
+    for poll in range(1, 4):
+        for _ in range(7):  # 每轮 ~3.3s
+            if _turnstile_token_present(page):
+                token_ready = True
+                break
+            time.sleep(0.5)
+        if token_ready:
+            emit("action", "GROK_PROFILE", f"Turnstile 已勾选（第 {poll} 轮确认），开始提交",
+                 action_id="submit", result="pending")
+            break
+        emit("action", "GROK_PROFILE", f"Turnstile 尚未勾选，继续等待（第 {poll}/3 轮）",
+             action_id="submit", result="pending")
+    if not token_ready:
+        # 三轮仍没勾上：被降级成交互式需人工点，已由上层 _wait_turnstile_manual_handoff 处理；
+        # 这里仍尝试提交（万一是检测延迟），但标 warning
+        emit("action", "GROK_PROFILE", "Turnstile 三轮仍未勾选即提交（大概率失败）",
+             action_id="submit", result="warning")
+
+    for attempt in range(1, max_attempts + 1):
+        # 策略升级：1=真实坐标点击（isTrusted=true，最可能过 react onSubmit 校验）
+        # 2=form.requestSubmit 3=Enter 4=AI 辅助。
+        # 实证 run 1007773b：requestSubmit 当首选时「提交后页面未前进」——x.ai 资料页
+        # react onSubmit 需要真实用户点击信号，合成提交不够，故真实点击提到首位。
+        if attempt == 1:
+            _click_submit_real(page)
+        elif attempt == 2:
+            try:
+                page.evaluate(_JS_REQUEST_SUBMIT)
+            except Exception as exc:
+                logger.warning("Grok requestSubmit 失败: %s", exc)
+        elif attempt == 3:
+            try:
+                page.locator(_GROK_PASSWORD_SELECTOR).first.press("Enter", timeout=3000)
+            except Exception:
+                try:
+                    page.keyboard.press("Enter")
+                except Exception:
+                    pass
+        else:
+            _try_assist(page, emit, assist, step="profile_submit", want_fill=False,
+                        verify=lambda: _profile_left_page(page))
+
+        # 提交后给 react/网络一点时间，再验证页面是否前进
+        for _ in range(6):  # 最多等 ~3s
+            time.sleep(0.5)
+            if _profile_left_page(page):
+                emit("action", "GROK_PROFILE", f"提交生效（策略 {attempt}）",
+                     action_id="submit", result="ok")
+                return True
+    return False
 
 
 def _solve_turnstile_if_present(page: Any, solver_runtime: Any, try_solve: Callable, emit: Callable) -> None:
@@ -758,6 +1135,71 @@ def _wait_turnstile_ready(page: Any, emit: Callable, *, timeout: int = 20) -> bo
             return True
         time.sleep(0.5)
     emit("action", "GROK_PROFILE", "Turnstile 等待超时（仍尝试提交）", action_id="turnstile", result="timeout")
+    return False
+
+
+# 人工接管等待 Turnstile 的默认时长（秒）。被动验证超时即视为降级成交互式，
+# 给运维在 AdsPower 窗口手动点复选框的时间窗口；可被 config.grok_turnstile_manual_handoff_sec 覆盖。
+_TURNSTILE_MANUAL_HANDOFF_SEC = 180
+
+
+def _wait_turnstile_manual_handoff(page: Any, emit: Callable, *, config: Any = None) -> bool:
+    """被动验证超时后，轮询等人工手动勾选 Turnstile 复选框。
+
+    场景：Cloudflare 把会话降级成交互式 Turnstile（截图实证出现可勾选 ☐），被动验证
+    不会自动变绿。此时唯一可靠的免费解是真人在 AdsPower 窗口手动点击复选框（isTrusted=true
+    的真实点击 + 真实行为生物特征，天然过 Cloudflare 行为层；自动 CDP 点击会被 screenX<100
+    检测识破，token 注入会被 IP/指纹绑定的 siteverify 拒）。
+
+    无人值守（worker 批量）场景：等满超时仍 pending → 返回 False，由上层走失败/换号，
+    比旧逻辑「硬提交必失败」更明确。
+
+    Returns:
+        True = 等待期内复选框被勾选（cf-turnstile-response 变 ready）；False = 超时仍 pending。
+    """
+    timeout = _TURNSTILE_MANUAL_HANDOFF_SEC
+    if config is not None:
+        try:
+            override = int(getattr(config, "grok_turnstile_manual_handoff_sec", 0) or 0)
+            if override > 0:
+                timeout = override
+        except (TypeError, ValueError):
+            pass
+
+    emit(
+        "action", "GROK_PROFILE",
+        f"Turnstile 被降级为交互式，请在 AdsPower 窗口手动勾选「私はロボットではありません」"
+        f"（等待 {timeout}s）...",
+        action_id="turnstile", result="manual_handoff",
+    )
+    deadline = time.time() + timeout
+    last_notice = 0.0
+    while time.time() < deadline:
+        try:
+            state = page.evaluate(_JS_TURNSTILE_STATE)
+        except Exception:
+            state = "not-found"
+        if state in ("ready", "not-found"):
+            emit(
+                "action", "GROK_PROFILE", "Turnstile 已通过（人工接管成功）",
+                action_id="turnstile", result="ok",
+            )
+            return True
+        # 每 30s 提醒一次剩余时间，避免运维以为卡死
+        now = time.time()
+        if now - last_notice >= 30:
+            remaining = int(deadline - now)
+            emit(
+                "action", "GROK_PROFILE", f"仍在等待手动勾选 Turnstile（剩余 ~{remaining}s）",
+                action_id="turnstile", result="manual_handoff",
+            )
+            last_notice = now
+        time.sleep(1.0)
+
+    emit(
+        "action", "GROK_PROFILE", "Turnstile 人工接管超时（仍尝试提交，大概率失败）",
+        action_id="turnstile", result="timeout",
+    )
     return False
 
 
