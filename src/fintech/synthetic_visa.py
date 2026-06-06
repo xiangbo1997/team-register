@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""合成 Visa 卡生成器（PayPal 友好 BIN + Luhn 校验和）。
+"""多国合成卡生成器（按国家选 BIN + Luhn 校验和 + 在线/本地地址）。
 
-移植自 PayPal Auto Filler 浏览器脚本（v36.9.5）的 buildHostedVisaCard 函数：
-  - BIN 段：4147xx（Chase / Capital One Visa Premier）、4100xx（Wells Fargo / Apple Card / Cash App Card）
+BIN 来源：`country_profiles.py` 按国家维护真实发卡行 BIN（US/GB/CA/SG/HK）。
   - Luhn 算法校验和：保证生成的 16 位卡号通过 PayPal / Stripe 预校验
   - 过期日期：当前年 +2~+5 年，月份随机
+  - 地址/姓名：优先在线生成器（`online_identity.py`），失败回退本地池
 
 设计用途（与 EfunCard / X988Card 等真实虚拟卡的区别）：
   - 真实卡：能扣款、走真实 3DS、有真实持卡人 KYC
@@ -27,19 +27,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-# PayPal Auto Filler v36.9.5 实测 PayPal 拒绝率最低的两个 US BIN 段
-# 4147xx = Chase / Capital One Visa（实体银行）
-# 4100xx = Wells Fargo / Apple Card / Cash App Card（金融科技）
+# [DEPRECATED] 旧的写死 US BIN 段，现已迁移到 country_profiles 的 US profile。
+# 保留仅为向后兼容，新代码不要引用——BIN 选取统一走 country_profiles.get_profile()。
 _PAYPAL_FRIENDLY_BIN_PREFIXES: Final[tuple[tuple[int, ...], ...]] = (
-    (4, 1, 4, 7),
-    (4, 1, 0, 0),
+    (4, 1, 4, 7),  # Chase Visa
+    (4, 1, 0, 0),  # Wells Fargo / Apple Card / Cash App Card
 )
 _CARD_LENGTH: Final[int] = 16
 
 
 @dataclass(frozen=True)
 class SyntheticCard:
-    """合成 Visa 卡（Luhn 合法的随机卡号）。
+    """合成 Visa/MC 卡（Luhn 合法的随机卡号）。
 
     跟 src.models.CardInfo 保持同样字段命名以便互操作，但不强制类型继承
     （避免污染真实卡的字段语义）。
@@ -49,6 +48,7 @@ class SyntheticCard:
     expiry_year: str   # 'YY'
     cvv: str           # 3 位
     bin_prefix: str    # 4 位 BIN（4147 / 4100 等）
+    country: str = "US"  # 发卡国 ISO alpha-2（按 country_profiles 的 BIN 集生成）
 
     @property
     def expiry_display(self) -> str:
@@ -87,20 +87,28 @@ def _luhn_check_digit(partial_digits: list[int]) -> int:
 
 def generate_synthetic_visa(
     *,
+    country: str = "US",
     bin_prefix: tuple[int, ...] | None = None,
     seed: str | int | None = None,
 ) -> SyntheticCard:
-    """生成一张合成 Visa 卡。
+    """生成一张合成卡（按国家选 BIN）。
 
     Args:
-        bin_prefix: 显式指定 4 位 BIN；None 则从 PayPal 友好集合随机选
+        country: ISO alpha-2 国家码；决定 BIN 前缀集（见 country_profiles）。默认 US。
+        bin_prefix: 显式指定 BIN（覆盖 country 默认集）；None 则从该国 BIN 集随机选
         seed: 确定性种子（同一 seed 永远生成同一张卡）；None 用真随机
 
     Returns:
         SyntheticCard 实例（card_number 已通过 Luhn 校验）
     """
+    from src.fintech.country_profiles import get_profile, normalize_country
+
+    cc = normalize_country(country)
     rng = random.Random(seed) if seed is not None else random
-    chosen_prefix = bin_prefix if bin_prefix else rng.choice(_PAYPAL_FRIENDLY_BIN_PREFIXES)
+    if bin_prefix:
+        chosen_prefix = bin_prefix
+    else:
+        chosen_prefix = rng.choice(get_profile(cc).bin_prefixes)
 
     digits = list(chosen_prefix)
     while len(digits) < _CARD_LENGTH - 1:
@@ -136,18 +144,20 @@ def generate_synthetic_visa(
         expiry_year=expiry_year,
         cvv=cvv,
         bin_prefix=bin_str,
+        country=cc,
     )
 
 
 @dataclass(frozen=True)
 class SyntheticCardKit:
-    """合成卡 + 账单地址 + 持卡人姓名 + 电话的完整 PayPal 表单套件。
+    """合成卡 + 账单地址 + 持卡人姓名 + 电话的完整表单套件（多国）。
 
-    设计：所有字段一次性生成，互相一致（state-zip-area_code 三元组匹配；
-    姓名与电话独立但都符合 US 风格），避免 PayPal AVS 关联多账号风控。
+    设计：所有字段一次性生成，互相一致（地址/电话同国；姓名与地址同源），
+    避免 AVS 关联多账号风控。地址字段形态随国家不同（GB/SG/HK 无 state 等，
+    见 country_profiles）。
     """
     card: SyntheticCard
-    # 持卡人 / 账单姓名（PayPal 表单 First name + Last name）
+    # 持卡人 / 账单姓名（表单 First name + Last name）
     first_name: str
     last_name: str
     full_name: str
@@ -156,8 +166,13 @@ class SyntheticCardKit:
     address_city: str
     address_state: str
     address_zip: str
-    # 电话（区号匹配 state）
+    # 电话（按国家格式）
     phone: str
+    # 国家 + 邮编标签（前端展示用，区分 ZIP/Postcode/Postal code）
+    country: str = "US"
+    postal_label: str = "ZIP"
+    # 数据来源标记（"online" / "fallback"），便于审计与排障
+    source: str = "fallback"
 
     def to_form_payload(self) -> dict[str, str]:
         """转成扁平 dict 便于前端复制 / 后端透传。"""
@@ -177,48 +192,80 @@ class SyntheticCardKit:
             "address_state": self.address_state,
             "address_zip": self.address_zip,
             "phone": self.phone,
+            "country": self.country,
+            "postal_label": self.postal_label,
+            "source": self.source,
         }
 
 
 def generate_synthetic_visa_kit(
     *,
+    country: str = "US",
+    use_online: bool = True,
+    http_get=None,
     bin_prefix: tuple[int, ...] | None = None,
     seed: str | int | None = None,
     gender: str | None = None,
     override_first_name: str | None = None,
     override_last_name: str | None = None,
 ) -> SyntheticCardKit:
-    """一次性生成 PayPal 表单完整套件（卡 + 地址 + 姓名 + 电话）。
+    """一次性生成表单完整套件（卡 + 地址 + 姓名 + 电话），按国家。
+
+    地址/姓名来源优先级：
+      1. 在线生成器（randomuser.me / fakerapi.it，真实感更强）—— 仅 use_online=True
+         且非 seed 模式时启用。
+      2. 本地兜底池（country_profiles 各国地址 + identity_generator 姓名）。
+    在线失败/字段缺失/SG-HK 不被支持 → 自动回退本地池（绝不阻塞）。
 
     Args:
-        bin_prefix: 卡 BIN 段（None 走默认 4147/4100 随机）
-        seed: 确定性种子（同 seed 永远生成同一套件，跨字段一致性自动保证）
-        gender: 'm' / 'f' / None（影响姓名生成）
-        override_first_name: A3 注入：对齐 OpenAI 账户姓名（None 走随机姓名池）
-        override_last_name: A3 注入：对齐 OpenAI 账户姓名（None 走随机姓名池）
+        country: ISO alpha-2 国家码（US/GB/CA/SG/HK）。默认 US。
+        use_online: 是否尝试在线地址源；seed 模式下强制 False（保确定性）。
+        http_get: 注入的 HTTP 函数（测试 mock 用）。
+        bin_prefix: 卡 BIN 段（None 走该国 BIN 集随机）
+        seed: 确定性种子（同 seed 永远生成同一套件；强制走本地池不调在线）
+        gender: 'm' / 'f' / None（影响本地姓名池生成）
+        override_first_name: 注入持卡人名（对齐 OpenAI 账户；优先级最高）
+        override_last_name: 注入持卡人姓（对齐 OpenAI 账户；优先级最高）
 
     Returns:
-        SyntheticCardKit 实例，所有字段互相一致
+        SyntheticCardKit 实例，所有字段同国一致；`source` 标记 online/fallback。
 
     Note:
         override_first_name / override_last_name 必须**同时**传入或同时为 None；
-        只传其一时另一个回退到随机姓名，会破坏 first/last 同源一致性。
+        只传其一时另一个回退到本地姓名，会破坏 first/last 同源一致性。
     """
-    # 延迟 import 避免 fintech 包内循环依赖（如果有）
+    # 延迟 import 避免 fintech 包内循环依赖
     from src.fintech.billing_addresses import (
-        generate_us_phone,
+        generate_phone,
         pick_address_with_cooldown,
         pick_random_address,
     )
+    from src.fintech.country_profiles import get_profile, normalize_country
+    from src.fintech.online_identity import fetch_online_identity
     from src.services.identity_generator import generate_identity
 
-    # 1. 生成卡
-    card = generate_synthetic_visa(bin_prefix=bin_prefix, seed=seed)
+    cc = normalize_country(country)
+    profile = get_profile(cc)
 
-    # 2. 生成姓名：A3 优先用注入姓名（对齐 OpenAI 账户），未注入则走随机池
-    if override_first_name and override_last_name:
+    # 1. 生成卡（按国家 BIN）
+    card = generate_synthetic_visa(country=cc, bin_prefix=bin_prefix, seed=seed)
+
+    # 2. 在线优先拿地址（+ 可能的姓名/电话）；seed 模式不调在线（保确定性）
+    online = None
+    if use_online and seed is None:
+        online = fetch_online_identity(cc, http_get=http_get)
+
+    has_name_override = bool(override_first_name and override_last_name)
+    source = "fallback"
+
+    # 3. 决定姓名：注入 > 在线 > 本地池
+    if has_name_override:
         first_name = override_first_name.strip()
         last_name = override_last_name.strip()
+        full_name = f"{first_name} {last_name}"
+    elif online is not None and online.has_name:
+        first_name = online.first_name
+        last_name = online.last_name
         full_name = f"{first_name} {last_name}"
     else:
         identity = generate_identity(gender=gender)
@@ -226,28 +273,54 @@ def generate_synthetic_visa_kit(
         last_name = identity.last_name
         full_name = identity.full_name
 
-    # 3. 选地址：
-    #    - seed 模式：确定性映射（同 seed 同卡同地址，A2 审计追踪用），走 pick_random_address
-    #    - 无 seed：启用 24h cooldown，单地址 24h 内最多 3 次（A1 风控护栏）
-    if seed is not None:
-        address = pick_random_address(seed=f"{seed}-addr")
+    # 4. 决定地址：在线 > 本地池
+    if online is not None and online.has_address:
+        source = "online"
+        addr_line1 = online.line1
+        addr_city = online.city
+        addr_state = online.state
+        addr_zip = online.postal
+        online_phone = online.phone
+        area_code_hint = ""  # 在线地址无本地 area_code，电话走默认号段
     else:
-        address = pick_address_with_cooldown(used_within_hours=24.0, max_uses=3)
+        # 本地兜底池：seed 模式确定性映射；无 seed 走 24h cooldown（A1 风控护栏）
+        if seed is not None:
+            address = pick_random_address(seed=f"{seed}-addr", country=cc)
+        else:
+            address = pick_address_with_cooldown(
+                used_within_hours=24.0, max_uses=3, country=cc
+            )
+        addr_line1 = address.line1
+        addr_city = address.city
+        addr_state = address.state
+        addr_zip = address.zip_code
+        online_phone = ""
+        area_code_hint = address.area_code
 
-    # 4. 生成电话（区号跟地址 state 匹配）
-    phone_seed = seed if seed is not None else card.card_number
-    phone = generate_us_phone(area_code=address.area_code, seed=f"{phone_seed}-phone")
+    # 5. 电话：在线返回电话则优先用；否则按国家格式本地生成
+    if online_phone:
+        phone = online_phone
+    else:
+        phone_seed = seed if seed is not None else card.card_number
+        phone = generate_phone(
+            country=cc,
+            area_code=area_code_hint or None,
+            seed=f"{phone_seed}-phone",
+        )
 
     return SyntheticCardKit(
         card=card,
         first_name=first_name,
         last_name=last_name,
         full_name=full_name,
-        address_line1=address.line1,
-        address_city=address.city,
-        address_state=address.state,
-        address_zip=address.zip_code,
+        address_line1=addr_line1,
+        address_city=addr_city,
+        address_state=addr_state,
+        address_zip=addr_zip,
         phone=phone,
+        country=cc,
+        postal_label=profile.postal_label,
+        source=source,
     )
 
 
