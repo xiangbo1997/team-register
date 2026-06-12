@@ -217,6 +217,24 @@ class TestPaymentLinkGenerator(unittest.TestCase):
         self.assertEqual(link, "https://chatgpt.com/checkout/openai_llc/cs_retry_ok")
         self.assertEqual(mock_post.call_count, 2)
 
+    @patch("src.payment_link.requests.post")
+    def test_generate_checkout_link_fails_fast_on_connection_timeout(self, mock_post: MagicMock):
+        """连接层超时（curl(28)）应 fail-fast：只打一次、不重试满 3 次、返回中文提示。"""
+        mock_post.side_effect = RuntimeError(
+            "Failed to perform, curl: (28) Connection timed out after 20000 milliseconds"
+        )
+
+        success, link = PaymentLinkGenerator.generate_checkout_link(
+            "access_123",
+            plan_type="plus",
+            return_mode="long",
+        )
+
+        self.assertFalse(success)
+        self.assertIn("代理", link)  # 中文友好提示
+        # 关键：连接超时不重试，只打一次（对比上面的偶发异常会重试到 2 次）
+        self.assertEqual(mock_post.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

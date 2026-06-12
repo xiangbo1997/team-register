@@ -81,6 +81,30 @@ def _resolve_schema_version(plan: str, override: Optional[str] = None) -> str:
     return _DEFAULT_SCHEMA_VERSIONS.get(plan, "v1")
 
 
+# 重试无意义的"连接层"错误关键词：代理/网关连不上时，立刻重试同一个抖动的
+# 网关只会再等满一个超时窗口（curl_cffi 的 curl(28) = Connection timed out）。
+# 命中这些关键词直接 fail-fast，把控制权交回用户（换代理 / 稍后重试），
+# 而不是默默卡满 _MAX_RETRIES × timeout（实测可达 60s+）。
+_CONNECTION_ERROR_MARKERS = (
+    "curl: (28)",          # Connection timed out
+    "connection timed out",
+    "curl: (7)",           # Couldn't connect to server
+    "failed to connect",
+    "curl: (56)",          # Recv failure（代理隧道中断）
+    "connection reset",
+)
+
+
+def _is_connection_error(message: str) -> bool:
+    """判断异常文本是否属于"重试无意义的连接层错误"。
+
+    业务错误（如 401/403，本就走 return 不进重试）和偶发 5xx 不在此列——
+    那些值得重试。只对代理/网关连不上的网络故障 fail-fast。
+    """
+    low = (message or "").lower()
+    return any(marker in low for marker in _CONNECTION_ERROR_MARKERS)
+
+
 class PaymentLinkGenerator:
     """生成支付链接客户端。
 
@@ -282,6 +306,15 @@ class PaymentLinkGenerator:
                 break
             except Exception as exc:  # pragma: no cover - 统一错误兜底
                 last_error = str(exc)
+                # 连接层错误（代理/网关连不上）：重试同一个抖动网关无意义，
+                # 立刻 fail-fast 把控制权交回用户（换代理 / 稍后重试），
+                # 避免默默卡满 _MAX_RETRIES × timeout（实测可达 60s+）。
+                if _is_connection_error(last_error):
+                    logger.warning(
+                        "生成支付链接遇连接层错误，跳过剩余重试 (attempt %d/%d): %s",
+                        attempt, cls._MAX_RETRIES, exc,
+                    )
+                    return False, f"代理/网络连接超时，请检查代理或稍后重试（{exc}）"
                 logger.warning(
                     "生成支付链接异常 (attempt %d/%d): %s",
                     attempt, cls._MAX_RETRIES, exc,

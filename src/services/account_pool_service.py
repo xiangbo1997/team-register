@@ -263,6 +263,26 @@ _VALID_LINK_PLANS = ("team", "plus", "pro", "pro_lite")
 _VALID_RETURN_MODES = ("long", "app")
 
 
+def _humanize_link_error(raw: str) -> str:
+    """把 PaymentLinkGenerator 返回的原始错误映射成 UI 可读的中文提示。
+
+    client 层已对连接超时（curl(28) 等）做过中文化；这里再覆盖 401/403 等
+    业务错误，让 /accounts 弹窗的 toast 不再直接甩英文 curl/HTTP 报文给运维。
+    无法识别的错误原样返回（截断防过长），保留排障信息。
+    """
+    low = (raw or "").lower()
+    if "代理" in raw or "连接超时" in raw or "connection timed out" in low or "curl: (28)" in low:
+        # client 层已中文化（含 fail-fast 文案），原样透出
+        return raw
+    if "401" in low or "token 无效" in low or "unauthorized" in low:
+        return "该号 access_token 已失效，请重新刷新 token 后再生成"
+    if "403" in low or "forbidden" in low or "cloudflare" in low:
+        return "请求被风控拦截（403），换个代理或稍后重试"
+    if "未找到可用 checkout" in raw or "stripe" in low:
+        return f"OpenAI/Stripe 未返回可用链接，可能是该计划/promo 配置问题：{raw[:200]}"
+    return (raw or "生成 checkout 链接失败")[:300]
+
+
 def generate_link(
     run_id: str,
     *,
@@ -357,9 +377,30 @@ def generate_link(
     if checkout_ui_mode and checkout_ui_mode.lower() in ("hosted", "custom"):
         gen_kwargs["checkout_ui_mode"] = checkout_ui_mode.lower()
 
+    started_at = datetime.now(timezone.utc)
     success, link = PaymentLinkGenerator.generate_checkout_link(access_token, **gen_kwargs)
+    elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+
     if not success:
-        raise ValueError(f"生成 checkout 链接失败: {link}")
+        # link 此时是错误原因（client 层已对连接超时做了中文友好化，
+        # 这里再补 401/403 等业务错误的友好映射，让 UI toast 即可读懂）。
+        friendly = _humanize_link_error(str(link))
+        # 失败也留痕：/accounts 历史可查每次生成结果（成败/原因/耗时）
+        with get_session() as session:
+            session.add(RunEvent(
+                run_id=run_id,
+                event_type="link_generate_failed",
+                state="payment",
+                payload={
+                    "plan": plan_normalized,
+                    "return_mode": mode,
+                    "reason": friendly,
+                    "raw_error": str(link)[:500],
+                    "elapsed_ms": elapsed_ms,
+                },
+            ))
+            session.commit()
+        raise ValueError(friendly)
 
     # 留痕：链接已生成，但还没绑卡（绑卡是独立的 assign_card 步骤）
     with get_session() as session:
@@ -372,6 +413,7 @@ def generate_link(
                 "return_mode": mode,
                 "has_promo_code": bool(promo_code),
                 "has_promo_campaign": bool(promo_campaign_id),
+                "elapsed_ms": elapsed_ms,
             },
         ))
         session.commit()

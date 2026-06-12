@@ -1128,6 +1128,27 @@ class GenerateLinkTest(unittest.TestCase):
             generate_link("x" * 16, plan="team", return_mode="long")
         self.assertIn("registered", str(cm.exception))
 
+    def test_generate_link_writes_failed_event_and_friendly_error(self):
+        """生成失败（如 401）应写 RunEvent(link_generate_failed) 并抛中文友好原因。"""
+        self._make_registered()
+        with mock.patch(
+            "src.payment_link.PaymentLinkGenerator.generate_checkout_link",
+            return_value=(False, "Access Token 无效或已过期 (401 Unauthorized)"),
+        ):
+            with self.assertRaises(ValueError) as cm:
+                generate_link("g" * 16, plan="plus", return_mode="long")
+        # 抛出的是友好中文原因（前端 toast 直接显示）
+        self.assertIn("失效", str(cm.exception))
+        # 失败也留痕，payload 含原因 + 耗时
+        with get_session() as s:
+            evs = s.query(RunEvent).filter_by(
+                run_id="g" * 16, event_type="link_generate_failed"
+            ).all()
+            self.assertEqual(len(evs), 1)
+            self.assertIn("失效", evs[0].payload["reason"])
+            self.assertIn("401", evs[0].payload["raw_error"])
+            self.assertIn("elapsed_ms", evs[0].payload)
+
 
 class AssignCardTest(unittest.TestCase):
     """新拆出的 assign_card：仅校验卡 + 写 RunEvent。"""
