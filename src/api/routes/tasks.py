@@ -13,6 +13,7 @@ DELETE /api/tasks/{id}        — 硬删除任务（仅终态，级联 RunEvent 
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +31,38 @@ from src.services.config_service import ConfigService
 from src.services.event_service import EventBroadcaster
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+logger = logging.getLogger(__name__)
+
+
+def _is_managed_auto_allocated_mail(mail_provider: str) -> bool:
+    """判断该 mail provider 的邮箱是否为「号商自动分配」可替换的随机号。
+
+    managed 模式（cfworker / outlook_email_plus 等随机池或自有域名）的邮箱由号商
+    在运行时 claim-random 分配，用户无法指定具体地址，因此脏号（被 OpenAI 拒发
+    验证码）可安全清空换新号。credentialed 模式（applemail 等用户绑定 client_id /
+    refresh_token 的固定号）是指定要注册的账号，返回 False 不可替换。
+
+    判据复用 ConfigService.resolve_provider_config 解析出的 session_mode，与
+    worker._resolve_runtime_config / 任务创建 preflight 保持同一套语义。
+    """
+    if not mail_provider:
+        return False
+    # applemail 等 credentialed 固定号 provider：run.mail_provider 存的是 provider
+    # 类型名（非 provider_config 名），resolve 不到配置；显式排除，绝不换号。
+    if "applemail" in str(mail_provider).strip().lower():
+        return False
+    try:
+        svc = ConfigService()
+        mail_profile = svc.resolve_provider_config("mail", mail_provider)
+        if mail_profile is None:
+            # 找不到对应 provider_config：来源不明，保守不换号。
+            return False
+        session_mode = str((mail_profile.config or {}).get("session_mode") or "").strip().lower()
+        return session_mode == "managed"
+    except Exception as exc:  # 解析失败按"不可替换"保守处理，绝不误清
+        logger.warning("解析 mail provider %s 的 session_mode 失败，retry 不换号: %s", mail_provider, exc)
+        return False
 
 
 # ── 请求模型 ──────────────────────────────────────
@@ -401,6 +434,22 @@ def retry_task(
         run.retry_mode = retry_mode
         if retry_mode == "restart":
             run.phase = "registration"
+            # 脏号自愈：restart 模式下，若邮箱来自 managed provider 的自动分配
+            # （outlook_email_plus / cfworker 等随机池/自有域名，号由号商分配而非
+            # 用户指定），清空 run.email 让 worker 重新 claim-random 拿新号。
+            # 否则被 OpenAI 风控拒发验证码的脏号会被无限复用、永远 VERIFY_EMAIL 失败。
+            # credentialed provider（applemail 等用户绑定的固定号）保持不动——
+            # 那是指定要注册的账号，不能替换。
+            if run.email and _is_managed_auto_allocated_mail(run.mail_provider):
+                _old_email = run.email
+                run.email = ""
+                run.mail_account_id = ""
+                logger.info(
+                    "retry restart 换号自愈：清空自动分配的脏号 %s（mail_provider=%s），"
+                    "worker 将重新分配新号",
+                    _old_email,
+                    run.mail_provider,
+                )
         run.updated_at = datetime.now(timezone.utc)
         session.add(run)
         session.commit()
