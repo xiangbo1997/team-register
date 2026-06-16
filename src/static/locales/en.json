@@ -185,7 +185,8 @@
         "orchestrator_error": "Orchestrator Error",
         "log": "Log",
         "screenshot": "Screenshot",
-        "triage": "Triage"
+        "triage": "Triage",
+        "decision_trace": "Decision Trace"
       },
       "retry_resume_submitted": "Retry from failure submitted. Task is queued again",
       "retry_restart_submitted": "Full restart submitted. Task is queued again",

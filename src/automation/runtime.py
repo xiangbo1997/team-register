@@ -889,6 +889,29 @@ class RegistrationStateMachine:
                     runtime.llm_uncertain_counters[state.value] = 0
                 else:
                     runtime.llm_uncertain_counters[state.value] = runtime.llm_uncertain_counters.get(state.value, 0) + 1
+                    # 决策可观测（C 阶段）：LLM 被调用但没选出有效动作（低置信度/请求更多证据/
+                    # abort）。以前这是无声的，只在连续 N 次后写 handoff.json。现在每次都暴露，
+                    # 让你能看到「LLM 介入了、但为什么没用、想要什么证据」。
+                    _emit_runtime_event(
+                        runtime,
+                        "decision_trace",
+                        state=state,
+                        payload={
+                            "message": (
+                                f"LLM 介入但不确定（{llm_decision.kind.value}）"
+                                f" 连续={runtime.llm_uncertain_counters[state.value]}"
+                            ),
+                            "decision_source": "llm_uncertain",
+                            "decision_kind": llm_decision.kind.value,
+                            "confidence": round(float(llm_decision.confidence or 0.0), 3),
+                            "reason_code": llm_decision.reason_code,
+                            "requested_evidence": list(llm_decision.requested_evidence or []),
+                            "consecutive_uncertain": runtime.llm_uncertain_counters[state.value],
+                            "uncertain_limit": runtime.config.llm_max_consecutive_uncertain,
+                            "candidate_count": len(candidates),
+                            "stall_count": stall_count,
+                        },
+                    )
                     if runtime.llm_uncertain_counters[state.value] >= runtime.config.llm_max_consecutive_uncertain:
                         if self._try_manual_handoff(runtime, evidence, "LLM_UNCERTAIN"):
                             runtime.llm_uncertain_counters[state.value] = 0
@@ -899,6 +922,29 @@ class RegistrationStateMachine:
                             failure_reason="LLM_UNCERTAIN",
                             manual_handoff_used=runtime.manual_handoff_used,
                         )
+
+            # 决策可观测（C 阶段）：每步决策定型后、执行前发一条 decision_trace，
+            # 让控制台 SSE 能逐步看到「谁做的决策 / 选了什么 / 候选有几个 / 卡了几步 /
+            # 经验是否命中」。纯只读埋点，不改决策逻辑；emit 失败被吞，绝不阻断主流程。
+            _emit_runtime_event(
+                runtime,
+                "decision_trace",
+                state=state,
+                payload={
+                    "message": f"决策来源={decision_source} 动作={decision.action_id or '∅'}",
+                    "decision_source": decision_source,
+                    "action_id": decision.action_id,
+                    "decision_kind": decision.kind.value,
+                    "confidence": round(float(decision.confidence or 0.0), 3),
+                    "reason_code": decision.reason_code,
+                    "candidate_count": len(candidates),
+                    "candidate_ids": [item.action_id for item in candidates],
+                    "retry_count": retry_count,
+                    "stall_count": stall_count,
+                    "experience_hit": decision_source == "experience",
+                    "llm_invoked": bool(should_llm),
+                },
+            )
 
             action = next((item for item in candidates if item.action_id == decision.action_id), None)
             if action is None:

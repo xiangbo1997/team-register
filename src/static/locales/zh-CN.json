@@ -185,7 +185,8 @@
         "orchestrator_error": "编排异常",
         "log": "日志",
         "screenshot": "截图",
-        "triage": "诊断"
+        "triage": "诊断",
+        "decision_trace": "决策追踪"
       },
       "retry_resume_submitted": "已提交失败处重试，任务正在重新进入队列",
       "retry_restart_submitted": "已提交完整重跑，任务正在重新进入队列",
