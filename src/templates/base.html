@@ -489,15 +489,22 @@
     </button>
 
     <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-token-lg fade-in relative z-[71]">
-        <div class="flex items-start justify-between border-b border-border px-4 py-3">
+        {# 标题栏：绑拖拽事件让展开态也能拖动；close 按钮加 @mousedown.stop 防止冒泡触发 startDrag #}
+        <div
+            class="flex items-start justify-between border-b border-border px-4 py-3 cursor-grab active:cursor-grabbing select-none"
+            @mousedown="startDrag($event)"
+            @touchstart="startDrag($event)"
+        >
             <div>
                 <h3 class="text-sm font-semibold text-body">{{ _('assistant.title') }}</h3>
                 <p class="mt-1 text-xs text-muted" x-text="ready ? i18n('assistant.status_ready') : i18n('assistant.status_fallback')"></p>
             </div>
             {# Close 按钮：type=button 防止隐含 submit；@click.stop 防止冒泡到父 widget；
+               @mousedown.stop 防止触发标题栏的 startDrag；
                z-[72] + relative 保证按钮永远在最顶层不被任何透明覆盖层挡住（修复"× 点不掉"）#}
             <button
                 @click.stop="open = false"
+                @mousedown.stop
                 type="button"
                 aria-label="关闭 AI 助手"
                 title="关闭 (Esc)"
@@ -736,6 +743,74 @@ async function fetchJson(url, options = {}) {
     return data;
 }
 
+// 从 Content-Disposition 响应头解析下载文件名（兼容 filename* / filename 两种写法）。
+function _parseDownloadFilename(headers, fallback) {
+    const cd = headers.get('Content-Disposition') || '';
+    // RFC 5987 filename*=UTF-8''xxx 优先
+    let m = cd.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+    if (m && m[1]) {
+        try { return decodeURIComponent(m[1].trim().replace(/^["']|["']$/g, '')); } catch (_) {}
+    }
+    m = cd.match(/filename="?([^";]+)"?/i);
+    if (m && m[1]) return m[1].trim();
+    return fallback || 'download';
+}
+
+// 用 fetch 拉取附件并通过 Blob + createObjectURL 触发浏览器下载。
+//
+// 为什么不用 <a href> 直接指向下载 URL：桌面应用（pywebview/WebView）没有内置
+// 下载管理器，点这种返回 Content-Disposition:attachment 的链接要么静默无反应，
+// 要么把二进制当页面导航把控制台冲掉。改成前端拉 blob 再下载，浏览器与 WebView 通用。
+//
+// 返回服务端通过 X-Export-Skipped-Count 头暴露的跳过条数（无则 0）。
+async function downloadFile(url, { fallbackName = 'download' } = {}) {
+    const response = await fetch(url, { credentials: 'same-origin' });
+    if (!response.ok) {
+        let detail = response.statusText || `HTTP ${response.status}`;
+        try { const j = await response.json(); detail = j.detail || j.message || detail; } catch (_) {}
+        const err = new Error(detail);
+        err.status = response.status;
+        throw err;
+    }
+    const filename = _parseDownloadFilename(response.headers, fallbackName);
+    const skipped = parseInt(response.headers.get('X-Export-Skipped-Count') || '0', 10);
+    const skippedCount = Number.isFinite(skipped) ? skipped : 0;
+
+    // 桌面端（pywebview / macOS WKWebView）：<a download> 与 blob URL 不触发下载，
+    // 点击会被 WebView 当页面导航把 CSV/JSON 平铺渲染。改走 Python 桥的原生保存
+    // 对话框，把文本内容交给系统另存为。导出均为 UTF-8 文本（CSV / JSON），用
+    // response.text() 取内容即可。
+    const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.save_file
+        ? window.pywebview.api : null;
+    if (bridge) {
+        const text = await response.text();
+        const res = await bridge.save_file(filename, text);
+        if (res && res.ok) {
+            return { filename, skipped: skippedCount, savedPath: res.path };
+        }
+        if (res && res.cancelled) {
+            // 用户主动取消：抛带标记的错误，调用方据此静默处理、不报错。
+            const err = new Error('用户取消了保存');
+            err.cancelled = true;
+            throw err;
+        }
+        throw new Error((res && res.error) || '原生保存失败');
+    }
+
+    // Web 端（浏览器访问）：标准 blob 下载，行为不变。
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 延迟 revoke：部分 WebView 立即 revoke 会中断尚未开始的下载
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    return { filename, skipped: skippedCount };
+}
+
 async function logoutConsole() {
     try {
         await fetchJson('/api/auth/logout', { method: 'POST' });
@@ -808,9 +883,11 @@ function assistantWidget({ enabled, backendReady }) {
                 }
             } catch (e) { /* ignore */ }
         },
-        _clampPos(left, top) {
-            // 保证浮窗不被拖出可视区（留 48px 余量便于抓回）
-            const maxLeft = Math.max(0, window.innerWidth - 80);
+        _clampPos(left, top, panelWidth) {
+            // 保证浮窗不被拖出可视区：展开时用面板真实宽度（22rem≈352px），收起时用按钮宽约 180px
+            // panelWidth 可选，调用方按当前 open 状态传入；未传则按展开态保守估算
+            const pw = typeof panelWidth === 'number' ? panelWidth : (this.open ? 352 : 180);
+            const maxLeft = Math.max(0, window.innerWidth - pw - 8);
             const maxTop = Math.max(0, window.innerHeight - 48);
             return {
                 left: Math.min(Math.max(8, left), maxLeft),
@@ -819,14 +896,20 @@ function assistantWidget({ enabled, backendReady }) {
         },
         widgetStyle() {
             if (this.pos) {
-                return `left:${this.pos.left}px; top:${this.pos.top}px; right:auto; bottom:auto;`;
+                // 展开时重新 clamp，防止收起位置合法但展开后面板右侧超出可视区
+                const clamped = this._clampPos(this.pos.left, this.pos.top);
+                return `left:${clamped.left}px; top:${clamped.top}px; right:auto; bottom:auto;`;
             }
             return '';  // 用 class 的 bottom-8 right-8 默认定位
         },
         startDrag(ev) {
             // 只左键拖拽；触摸用 touchstart
             const point = ev.touches ? ev.touches[0] : ev;
-            const rect = ev.currentTarget.closest('[data-assistant-root]').getBoundingClientRect();
+            // 守卫：拖拽手柄同时绑在 launcher 按钮和展开面板标题栏上，
+            // 两处 closest 都能上溯到 data-assistant-root；模板被改坏时返回 null 直接放弃，不崩。
+            const root = ev.currentTarget.closest('[data-assistant-root]');
+            if (!root) return;
+            const rect = root.getBoundingClientRect();
             this._moved = false;
             this._drag = {
                 startX: point.clientX,
@@ -867,7 +950,9 @@ function assistantWidget({ enabled, backendReady }) {
         async init() {
             if (!this.enabled) return;
             this._restorePos();
-            window.addEventListener('resize', () => { if (this.pos) this.pos = this._clampPos(this.pos.left, this.pos.top); });
+            // 存成实例属性便于 destroy() 移除（匿名函数无法 removeEventListener，HTMX 局部刷新会重建组件导致监听器累积）
+            this._resizeHandler = () => { if (this.pos) this.pos = this._clampPos(this.pos.left, this.pos.top); };
+            window.addEventListener('resize', this._resizeHandler);
             this._applyPageAwarePrompts();
             if (!this.backendReady) {
                 this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
@@ -886,6 +971,14 @@ function assistantWidget({ enabled, backendReady }) {
             } catch (error) {
                 this.ready = false;
                 this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
+            }
+        },
+
+        destroy() {
+            // Alpine 在组件元素移除时调用：清理 resize 监听器，避免 HTMX 局部刷新累积泄漏
+            if (this._resizeHandler) {
+                window.removeEventListener('resize', this._resizeHandler);
+                this._resizeHandler = null;
             }
         },
 

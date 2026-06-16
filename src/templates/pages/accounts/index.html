@@ -22,68 +22,63 @@
             注册成功的号自动进 <strong>普号池</strong> → 选熟卡生成绑卡链接 → 手动绑卡 → 晋级 Plus / Team
         </div>
         <div class="flex items-center gap-2 shrink-0">
-            <!-- 导出：格式下拉 + 主操作按钮（两段式，更清晰）-->
-            <!-- 段 1：格式选择（始终可见，下拉显示完整描述）-->
-            <!-- 注：不用嵌套 x-data="{ open: false }" —— Alpine 嵌套 scope 会遮蔽
-                 外层的 EXPORT_FORMATS / getExportMeta，导致 x-for 找不到数组只展开空容器。
-                 用 exportDropdownOpen 共享 state（已在 accountsData() 里声明） -->
-            <!-- 注意：外层不能用 overflow-hidden —— 会裁掉 dropdown 的 absolute 弹出内容
-                 两段按钮通过左右各自的 rounded-l/r 拼接圆角效果 -->
-            <div class="flex items-stretch shadow-token-sm">
-                <div class="relative">
-                    <button @click="exportDropdownOpen = !exportDropdownOpen"
-                            type="button"
-                            class="flex items-center gap-2 px-3 py-1.5 text-sm bg-white hover:bg-slate-50 border border-r-0 border-slate-300 rounded-l-md transition">
-                        <span x-text="getExportMeta(exportFmt).icon"
-                              class="text-base"></span>
-                        <span x-text="getExportMeta(exportFmt).label"
-                              class="font-medium text-slate-800"></span>
-                        <svg class="w-3.5 h-3.5 text-slate-400" :class="exportDropdownOpen ? 'rotate-180' : ''"
-                             fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M19 9l-7 7-7-7"/>
-                        </svg>
-                    </button>
-                    <div x-show="exportDropdownOpen" x-transition.opacity x-cloak @click.outside="exportDropdownOpen = false"
-                         class="absolute left-0 mt-1 w-72 bg-white border border-slate-200 rounded-md shadow-lg z-30 overflow-hidden">
-                        <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
-                            <button @click="exportFmt = meta.key; exportDropdownOpen = false"
-                                    type="button"
-                                    class="w-full text-left px-3 py-2.5 hover:bg-primary-50 transition flex items-start gap-3"
-                                    :class="exportFmt === meta.key ? 'bg-primary-50' : ''">
-                                <span x-text="meta.icon" class="text-xl shrink-0 mt-0.5"></span>
-                                <div class="flex-1 min-w-0">
-                                    <div class="flex items-center gap-2">
-                                        <span class="font-medium text-sm text-slate-900" x-text="meta.label"></span>
-                                        <span x-show="exportFmt === meta.key" class="text-primary-600 text-xs">✓ 当前</span>
-                                    </div>
-                                    <div class="text-[11px] text-slate-500 mt-0.5" x-text="meta.desc"></div>
-                                </div>
-                            </button>
-                        </template>
-                    </div>
-                </div>
-                <!-- 段 2：主下载按钮（文案随选中状态变化）-->
-                <a :href="buildExportUrl(exportFmt)"
-                   :title="`下载 ${getExportMeta(exportFmt).label}${selected.size > 0 ? ` (${selected.size} 条)` : ' 全部'}`"
-                   class="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-slate-300 rounded-r-md transition"
-                   :class="selected.size > 0
-                       ? 'bg-primary-600 text-white hover:bg-primary-700 border-primary-600'
-                       : 'bg-slate-50 text-slate-700 hover:bg-slate-100'">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                    </svg>
+            <!-- 导出：统一 indigo pill（主操作 + 右侧格式 chevron 分段）—— Stitch 原型对齐
+                 设计要点：单一 pill 不再拼接两个不协调的灰白半块；Export 为 hero action。
+                 用 @click 调 downloadExport()（blob 下载）而非 <a href>——桌面 WebView 没有
+                 下载管理器，<a href download> 静默无效，必须前端拉 blob 触发。 -->
+            <div class="relative inline-flex items-stretch rounded-lg shadow-sm">
+                <!-- 主下载按钮（文案随选中状态变化）-->
+                <button @click="downloadExport(buildExportUrl(exportFmt))"
+                        type="button"
+                        :disabled="exporting"
+                        :title="`下载 ${getExportMeta(exportFmt).label}${selected.size > 0 ? ` (${selected.size} 条)` : ' 全部'}`"
+                        class="flex items-center gap-2 px-4 h-10 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-l-lg transition disabled:opacity-60 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-[18px]"
+                          :class="exporting ? 'animate-pulse' : ''"
+                          x-text="exporting ? 'progress_activity' : 'download'"></span>
                     <span x-show="selected.size === 0">导出全部</span>
                     <span x-show="selected.size > 0">导出选中 <span x-text="selected.size"></span> 条</span>
-                </a>
+                </button>
+                <!-- 格式 chevron 分段（同一 pill 右侧，开格式菜单）-->
+                <button @click="exportDropdownOpen = !exportDropdownOpen"
+                        type="button"
+                        title="选择导出格式"
+                        class="flex items-center px-2 h-10 text-white bg-primary-600 hover:bg-primary-700 rounded-r-lg border-l border-white/20 transition">
+                    <span class="material-symbols-outlined text-[18px] transition-transform"
+                          :class="exportDropdownOpen ? 'rotate-180' : ''">keyboard_arrow_down</span>
+                </button>
+                <!-- 格式选择菜单 -->
+                <div x-show="exportDropdownOpen" x-transition.opacity x-cloak @click.outside="exportDropdownOpen = false"
+                     class="absolute right-0 top-full mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-lg z-30 py-1.5 overflow-hidden">
+                    <div class="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">导出格式</div>
+                    <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
+                        <button @click="exportFmt = meta.key; exportDropdownOpen = false"
+                                type="button"
+                                class="w-full text-left px-3 py-2.5 hover:bg-primary-50 transition flex items-start gap-3"
+                                :class="exportFmt === meta.key ? 'bg-primary-50' : ''">
+                            <span x-text="meta.icon" class="text-xl shrink-0 mt-0.5"></span>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="font-medium text-sm text-slate-900" x-text="meta.label"></span>
+                                    <span x-show="exportFmt === meta.key" class="material-symbols-outlined text-[16px] text-primary-600">check</span>
+                                </div>
+                                <div class="text-[11px] text-slate-500 mt-0.5" x-text="meta.desc"></div>
+                            </div>
+                        </button>
+                    </template>
+                </div>
             </div>
-            <!-- 导入按钮 -->
+            <!-- 导入按钮（次级 slate 描边）-->
             <button @click="openImportDialog()"
-                    class="text-sm px-3 py-1.5 border rounded-md hover:bg-slate-50">
+                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">
+                <span class="material-symbols-outlined text-[18px]">upload</span>
                 导入
             </button>
-            <button @click="fetchAccounts()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-slate-50">刷新</button>
+            <button @click="fetchAccounts()"
+                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">
+                <span class="material-symbols-outlined text-[18px]">refresh</span>
+                刷新
+            </button>
             <!-- 须知 ℹ️ 浮层（取代底部常驻说明）-->
             <div class="relative" @click.outside="showHints = false">
                 <button @click="showHints = !showHints"
@@ -199,6 +194,7 @@
                         <th x-show="visibleColumns.includes('profile')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">Profile</th>
                         <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 / 邮件商</th>
                         <th x-show="visibleColumns.includes('tier')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">段位</th>
+                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">Plus 状态</th>
                         <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时间</th>
                         <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时 IP</th>
                         <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right">操作</th>
@@ -226,10 +222,14 @@
                                       class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-label font-bold uppercase tracking-wider border"
                                       x-text="platformLabel(acc.platform)"></span>
                             </td>
-                            <td x-show="visibleColumns.includes('register_name')" class="px-4 py-3">
+                            <td x-show="visibleColumns.includes('register_name')" class="px-4 py-3 cursor-pointer select-none"
+                                title="双击复制注册名"
+                                @dblclick="acc.register_name && copyText(acc.register_name)">
                                 <span class="text-sm text-body" x-text="acc.register_name || '—'"></span>
                             </td>
-                            <td class="px-4 py-3">
+                            <td class="px-4 py-3 cursor-pointer select-none"
+                                title="双击复制邮箱"
+                                @dblclick="copyText(acc.email)">
                                 <span class="text-sm font-medium text-body" x-text="acc.email"></span>
                             </td>
                             <td x-show="visibleColumns.includes('profile')" class="px-4 py-3">
@@ -247,6 +247,13 @@
                                 <span :class="tierBadgeClass(acc.account_tier)"
                                       class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-label font-bold uppercase tracking-wider border"
                                       x-text="tierLabel(acc.account_tier)"></span>
+                            </td>
+                            {# Plus 开通状态：读 acc.pix_status（最后一次开通/核验事件） #}
+                            <td class="px-4 py-3 text-center whitespace-nowrap">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold border"
+                                      :class="pixStatusClass(acc.pix_status)"
+                                      :title="acc.pix_status ? (pixStatusTitle(acc.pix_status)) : '未发起开通'"
+                                      x-text="pixStatusLabel(acc.pix_status)"></span>
                             </td>
                             <td x-show="visibleColumns.includes('created_at')" class="px-4 py-3">
                                 <span class="text-sm text-muted mono-text tabular-nums"
@@ -280,6 +287,36 @@
                                             title="绑卡（登记这个号用了哪张卡）"
                                             class="p-1.5 text-success hover:bg-success/10 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">credit_score</span>
+                                    </button>
+                                </template>
+                                {# ⚡ PIX 渠道开通 Plus — baxigpt 卡密自助开通；bolt 闪电语义"一键开通"，仅 openai 号显示 #}
+                                <template x-if="acc.account_tier === 'registered' && acc.platform === 'openai'">
+                                    <button @click="openPixPlusDialog(acc)"
+                                            title="PIX 渠道开通 Plus（baxigpt 卡密）"
+                                            class="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded transition">
+                                        <span class="material-symbols-outlined text-[18px]">bolt</span>
+                                    </button>
+                                </template>
+                                {# 🔍 核验 Plus — 起浏览器读 chatgpt.com 实时订阅状态，确认 Plus 是否真生效 #}
+                                <template x-if="acc.platform === 'openai'">
+                                    <button @click="verifyPlus(acc)"
+                                            :disabled="verifyingRunId === acc.run_id"
+                                            title="核验 Plus（起浏览器查该号实时订阅状态）"
+                                            class="p-1.5 text-sky-600 hover:bg-sky-50 rounded transition disabled:opacity-40">
+                                        <span class="material-symbols-outlined text-[18px]"
+                                              :class="verifyingRunId === acc.run_id ? 'animate-spin' : ''"
+                                              x-text="verifyingRunId === acc.run_id ? 'progress_activity' : 'fact_check'"></span>
+                                    </button>
+                                </template>
+                                {# 🔄 刷新 token — token 过期时起浏览器（必要时重新登录）更新 access_token #}
+                                <template x-if="acc.platform === 'openai'">
+                                    <button @click="refreshToken(acc)"
+                                            :disabled="refreshingRunId === acc.run_id"
+                                            title="刷新 token（token 过期时重新登录更新）"
+                                            class="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded transition disabled:opacity-40">
+                                        <span class="material-symbols-outlined text-[18px]"
+                                              :class="refreshingRunId === acc.run_id ? 'animate-spin' : ''"
+                                              x-text="refreshingRunId === acc.run_id ? 'progress_activity' : 'sync'"></span>
                                     </button>
                                 </template>
                                 {# 🏅 晋级 Plus — workspace_premium 高级徽章；改用 sky secondary 与 Checkout 的 indigo 区分 #}
@@ -320,15 +357,15 @@
                                         <div class="px-3 py-2 text-[11px] text-slate-500 bg-slate-50 border-b truncate"
                                              x-text="`导出 ${acc.email}`"></div>
                                         <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
-                                            <a :href="buildRowExportUrl(acc, meta.key)"
-                                               @click="rowExportOpenId = ''"
-                                               class="block px-3 py-2 hover:bg-primary-50 transition border-b last:border-b-0">
+                                            <button @click="rowExportOpenId = ''; downloadExport(buildRowExportUrl(acc, meta.key))"
+                                               type="button"
+                                               class="block w-full text-left px-3 py-2 hover:bg-primary-50 transition border-b last:border-b-0">
                                                 <div class="flex items-center gap-2">
                                                     <span x-text="meta.icon" class="text-base"></span>
                                                     <span class="font-medium text-sm text-slate-800" x-text="meta.label"></span>
                                                 </div>
                                                 <div class="text-[10px] text-slate-500 mt-0.5 pl-6" x-text="meta.desc"></div>
-                                            </a>
+                                            </button>
                                         </template>
                                     </div>
                                 </div>
@@ -337,7 +374,7 @@
                     </tr>
                 </template>
                     <tr x-show="accounts.length === 0">
-                        <td colspan="11" class="px-4 py-16 text-center">
+                        <td colspan="12" class="px-4 py-16 text-center">
                             <div class="inline-flex flex-col items-center gap-2 text-muted">
                                 <span class="material-symbols-outlined text-5xl text-border">group_off</span>
                                 <span class="text-sm" x-text="emptyMessage"></span>
@@ -791,6 +828,59 @@
         </div>
     </div>
 
+    <!-- ⚡ PIX 渠道开通 Plus 弹窗（baxigpt 卡密自助开通；同步阻塞跑浏览器） -->
+    <div x-show="pixPlusDialog.open"
+         x-transition.opacity
+         class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
+         @keydown.escape="!pixPlusDialog.submitting && closePixPlusDialog()">
+        <div class="bg-white rounded-lg shadow-lg p-6 max-w-md w-full"
+             @click.outside="!pixPlusDialog.submitting && closePixPlusDialog()">
+            <div class="text-lg font-medium mb-3">PIX 渠道开通 Plus · <span x-text="pixPlusDialog.email"></span></div>
+            <div class="text-xs text-slate-500 mb-4">
+                输入卡密后，系统自动起浏览器打开 <code>baxigpt.com</code> → 填卡密 → 验证 → 填本号 token → 开通 Plus。
+            </div>
+            <div class="space-y-3">
+                <div>
+                    <label class="text-xs text-slate-600 block mb-1">卡密（SDK）：</label>
+                    <input type="text" x-model="pixPlusDialog.sdk_code"
+                           placeholder="BX-XXXXXXXX"
+                           :disabled="pixPlusDialog.submitting"
+                           @keydown.enter="!pixPlusDialog.submitting && submitPixPlus()"
+                           class="w-full px-3 py-1.5 border rounded text-sm mono-text disabled:bg-slate-100">
+                </div>
+                <ul class="text-[11px] text-slate-500 space-y-0.5 leading-relaxed">
+                    <li>· 仅支持带免费试用资格的账号（没开过 Plus 的新号）</li>
+                    <li>· 提交后自动处理，约 1–10 分钟；OpenAI 同步还需 1–5 分钟</li>
+                    <li>· token 仅用于本次开通，不入库</li>
+                    <li>· 开通成功后请<strong>确认 Plus 生效</strong>，再手动点「晋级 Plus」</li>
+                </ul>
+                <!-- 结果区 -->
+                <template x-if="pixPlusDialog.result">
+                    <div class="text-xs rounded p-2 border"
+                         :class="pixPlusDialog.result.success ? 'bg-success-50 border-success-200 text-success-700' : 'bg-danger-50 border-danger-200 text-danger-700'">
+                        <div class="font-medium" x-text="pixPlusDialog.result.message"></div>
+                        <div x-show="pixPlusDialog.result.success" class="mt-1 text-[11px] text-slate-600">
+                            ↳ baxigpt 已受理下单，但 <strong>Plus 是否真生效需等 5-10 分钟</strong>。
+                            稍后点列表里的 🔍「核验 Plus」按钮确认实时状态。
+                        </div>
+                        <div x-show="pixPlusDialog.result.detail" class="mt-1 text-[10px] text-slate-500 break-all"
+                             x-text="pixPlusDialog.result.detail"></div>
+                    </div>
+                </template>
+            </div>
+            <div class="flex justify-end gap-2 mt-4">
+                <button @click="closePixPlusDialog()"
+                        :disabled="pixPlusDialog.submitting"
+                        class="px-3 py-1.5 text-sm border rounded disabled:opacity-50">关闭</button>
+                <button @click="submitPixPlus()"
+                        :disabled="!pixPlusDialog.sdk_code.trim() || pixPlusDialog.submitting"
+                        class="px-4 py-1.5 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700 disabled:bg-slate-200">
+                    <span x-text="pixPlusDialog.submitting ? '开通中...' : '开通 Plus'"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- 导入弹窗 -->
     <div x-show="importDialog.open"
          x-transition.opacity
@@ -1189,6 +1279,19 @@ function accountsData() {
             note: '',
             submitting: false,
         },
+        // ⚡ PIX 渠道开通 Plus 弹窗（baxigpt 卡密）
+        pixPlusDialog: {
+            open: false,
+            run_id: '',
+            email: '',
+            sdk_code: '',
+            submitting: false,
+            result: null,
+        },
+        // 🔍 正在核验的 run_id（按钮 loading 态）
+        verifyingRunId: '',
+        // 🔄 正在刷新 token 的 run_id（按钮 loading 态）
+        refreshingRunId: '',
         // 链接模板缓存（弹窗打开时拉一次）
         linkTemplates: [],
         presets: [],  // is_preset=true 的模板子集，弹窗顶部快捷按钮渲染用（P3 模板化）
@@ -1261,6 +1364,32 @@ function accountsData() {
 
         isPartialSelected() {
             return this.selected.size > 0 && this.selected.size < this.accounts.length;
+        },
+
+        // 导出中标志（禁用按钮 + 转圈），防止重复点击
+        exporting: false,
+
+        // ── 导出执行（blob 下载，桌面 WebView 通用）──
+        // 复用全局 downloadFile()：fetch 拉附件 → Blob → createObjectURL 触发下载。
+        // 顶部主按钮、格式菜单、行内导出三处共用此方法。
+        async downloadExport(url) {
+            if (this.exporting) return;
+            this.exporting = true;
+            try {
+                const { skipped, savedPath } = await downloadFile(url, { fallbackName: 'codex-export.json' });
+                const where = savedPath ? `已保存到 ${savedPath}` : '导出完成';
+                if (skipped > 0) {
+                    showToast(`${where}，但有 ${skipped} 条因 token 解析失败被跳过（详见后端日志）`, 'warning');
+                } else {
+                    showToast(where, 'success');
+                }
+            } catch (error) {
+                // 桌面端用户主动取消保存对话框：不算失败，静默忽略。
+                if (error && error.cancelled) return;
+                showToast(`导出失败：${error.message || '未知错误'}`, 'error');
+            } finally {
+                this.exporting = false;
+            }
         },
 
         // ── 导出 URL 构造 ──
@@ -1541,6 +1670,132 @@ function accountsData() {
             } finally {
                 this.assignCardDialog.submitting = false;
             }
+        },
+
+        // ── ⚡ PIX 渠道开通 Plus 弹窗（baxigpt 卡密，同步阻塞跑浏览器） ──
+        openPixPlusDialog(acc) {
+            this.pixPlusDialog = {
+                open: true,
+                run_id: acc.run_id,
+                email: acc.email,
+                sdk_code: '',
+                submitting: false,
+                result: null,
+            };
+        },
+
+        closePixPlusDialog() {
+            this.pixPlusDialog.open = false;
+        },
+
+        async submitPixPlus() {
+            const sdk = this.pixPlusDialog.sdk_code.trim();
+            if (!sdk) {
+                showToast('请输入卡密', 'error');
+                return;
+            }
+            this.pixPlusDialog.submitting = true;
+            this.pixPlusDialog.result = null;
+            try {
+                const r = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(this.pixPlusDialog.run_id)}/pix-plus`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sdk_code: sdk }),
+                    }
+                );
+                this.pixPlusDialog.result = r;
+                showToast(
+                    r.success ? 'Plus 开通已提交（等 OpenAI 同步）' : ('开通失败：' + (r.message || '')),
+                    r.success ? 'success' : 'error',
+                );
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.pixPlusDialog.submitting = false;
+            }
+        },
+
+        // ── 🔍 核验 Plus（起浏览器读 chatgpt.com 实时订阅状态） ──
+        async verifyPlus(acc) {
+            if (this.verifyingRunId) {
+                showToast('已有核验在进行中，请稍候', 'error');
+                return;
+            }
+            this.verifyingRunId = acc.run_id;
+            showToast('正在起浏览器核验（未登录会自动登录，约 10-120 秒）...', 'info');
+            try {
+                const r = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(acc.run_id)}/verify-plus`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+                );
+                if (r.account_deactivated) {
+                    showToast(r.message || '该号已被 OpenAI 停用，已自动归档', 'error');
+                } else {
+                    showToast(r.message || '核验完成', r.is_plus ? 'success' : (r.logged_in ? 'info' : 'error'));
+                }
+                await this.fetchAccounts();  // 刷新列表，状态列更新
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.verifyingRunId = '';
+            }
+        },
+
+        // ── 🔄 刷新 token（token 过期时重新登录更新） ──
+        async refreshToken(acc) {
+            if (this.refreshingRunId) {
+                showToast('已有刷新在进行中，请稍候', 'error');
+                return;
+            }
+            this.refreshingRunId = acc.run_id;
+            showToast('正在起浏览器刷新 token（未登录会自动重新登录，约 30-120 秒）...', 'info');
+            try {
+                const r = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(acc.run_id)}/refresh-token`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+                );
+                // 停用号（account_deactivated）：已被自动归档到 abandoned 池，醒目提示
+                if (r.account_deactivated) {
+                    showToast(r.message || '该号已被 OpenAI 停用，已自动归档', 'error');
+                } else {
+                    showToast(r.message || '完成', r.token_refreshed ? 'success' : 'error');
+                }
+                await this.fetchAccounts();
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.refreshingRunId = '';
+            }
+        },
+
+        // ── Plus 状态列渲染辅助（读 acc.pix_status） ──
+        pixStatusLabel(st) {
+            if (!st) return '未开通';
+            switch (st.kind) {
+                case 'verified_plus': return '✅ 已是 Plus';
+                case 'verified_free': return '○ 仍是 free';
+                case 'submitted': return '⏳ 已提交';
+                case 'failed': return '✗ 开通失败';
+                default: return '未开通';
+            }
+        },
+        pixStatusClass(st) {
+            if (!st) return 'bg-slate-50 text-slate-400 border-slate-200';
+            switch (st.kind) {
+                case 'verified_plus': return 'bg-success-50 text-success-700 border-success-200';
+                case 'verified_free': return 'bg-amber-50 text-amber-700 border-amber-200';
+                case 'submitted': return 'bg-sky-50 text-sky-700 border-sky-200';
+                case 'failed': return 'bg-danger-50 text-danger-700 border-danger-200';
+                default: return 'bg-slate-50 text-slate-400 border-slate-200';
+            }
+        },
+        pixStatusTitle(st) {
+            if (!st) return '未发起开通';
+            const at = st.at ? new Date(st.at).toLocaleString(window._locale) : '';
+            const plan = st.plan ? ` plan=${st.plan}` : '';
+            return `${this.pixStatusLabel(st)}${plan}\n${at}`;
         },
 
         async markPromote(acc, tier) {
