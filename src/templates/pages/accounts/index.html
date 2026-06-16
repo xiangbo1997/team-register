@@ -197,7 +197,9 @@
                         <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">Plus 状态</th>
                         <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时间</th>
                         <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时 IP</th>
-                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right">操作</th>
+                        {# 操作列固定右侧：横向滚动时常驻可见。z-20 高于 thead 自身 z-10，
+                           避免与左侧表头单元格层叠；bg-subtle 与 thead 同底色不透出内容。 #}
+                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right sticky right-0 z-20 bg-subtle">操作</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-border">
@@ -270,7 +272,11 @@
                                     <span class="mono-text text-sm text-border">—</span>
                                 </template>
                             </td>
-                            <td class="px-4 py-3 whitespace-nowrap">
+                            {# 操作列固定右侧：sticky right-0 横向滚动常驻。固定 bg-white 打底
+                               （普通行 tr 透明，bg-inherit 会透出下方内容叠字），并加左侧细分隔
+                               线区分行身。z-[5] 低于固定表头(z-20)。特殊态行(红/绿/蓝)下操作列
+                               保持白底，作为功能区反而更清晰。 #}
+                            <td class="px-4 py-3 whitespace-nowrap sticky right-0 z-[5] bg-white shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.06)]">
                             <!-- 操作 icon 栏：tooltip 用 title 属性原生显示 -->
                             <div class="flex items-center gap-0.5">
                                 {# 🧾 生成 checkout 链接 — receipt_long 票据语义比"链子"更贴合"生成结账单" #}
@@ -317,6 +323,17 @@
                                         <span class="material-symbols-outlined text-[18px]"
                                               :class="refreshingRunId === acc.run_id ? 'animate-spin' : ''"
                                               x-text="refreshingRunId === acc.run_id ? 'progress_activity' : 'sync'"></span>
+                                    </button>
+                                </template>
+                                {# 📋 复制 access_token — 取明文 token 到剪贴板，喂 codex / 调试用；仅有 token 的号显示 #}
+                                <template x-if="acc.has_access_token">
+                                    <button @click="copyAccessToken(acc)"
+                                            :disabled="copyingTokenRunId === acc.run_id"
+                                            title="复制 access_token"
+                                            class="p-1.5 text-teal-600 hover:bg-teal-50 rounded transition disabled:opacity-40">
+                                        <span class="material-symbols-outlined text-[18px]"
+                                              :class="copyingTokenRunId === acc.run_id ? 'animate-spin' : ''"
+                                              x-text="copyingTokenRunId === acc.run_id ? 'progress_activity' : 'content_copy'"></span>
                                     </button>
                                 </template>
                                 {# 🏅 晋级 Plus — workspace_premium 高级徽章；改用 sky secondary 与 Checkout 的 indigo 区分 #}
@@ -1292,6 +1309,8 @@ function accountsData() {
         verifyingRunId: '',
         // 🔄 正在刷新 token 的 run_id（按钮 loading 态）
         refreshingRunId: '',
+        // 📋 正在复制 access_token 的 run_id（按钮 loading 态）
+        copyingTokenRunId: '',
         // 链接模板缓存（弹窗打开时拉一次）
         linkTemplates: [],
         presets: [],  // is_preset=true 的模板子集，弹窗顶部快捷按钮渲染用（P3 模板化）
@@ -1625,10 +1644,30 @@ function accountsData() {
 
         copyText(text) {
             if (!text) return;
-            navigator.clipboard.writeText(text).then(
+            copyToClipboard(text).then(
                 () => showToast('已复制', 'success'),
                 () => showToast('复制失败，请手动选中', 'error'),
             );
+        },
+
+        // 📋 复制单号 access_token：列表不含明文 token（脱敏），先调后端取再写剪贴板。
+        async copyAccessToken(acc) {
+            if (this.copyingTokenRunId) return;
+            this.copyingTokenRunId = acc.run_id;
+            try {
+                const data = await fetchJson(`/api/accounts/${acc.run_id}/access-token`);
+                const token = (data && data.access_token) || '';
+                if (!token) {
+                    showToast('该号 access_token 不可用，请先刷新 token', 'error');
+                    return;
+                }
+                await copyToClipboard(token);
+                showToast(`已复制 ${acc.email} 的 access_token`, 'success');
+            } catch (error) {
+                showToast(error.message || '复制失败', 'error');
+            } finally {
+                this.copyingTokenRunId = '';
+            }
         },
 
         // ── 💳 绑卡弹窗 ──

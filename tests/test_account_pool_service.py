@@ -32,6 +32,7 @@ from src.services.account_pool_service import (
     export_pool,
     generate_bind_link,
     generate_link,
+    get_access_token,
     get_account_detail,
     import_pool,
     list_pool,
@@ -451,6 +452,46 @@ def _parse_export_to_entries(content, content_type: str, filename: str) -> list[
     return [data]  # 单账号 object → wrap
 
 
+class GetAccessTokenTest(unittest.TestCase):
+    """覆盖 get_access_token —— /accounts 行内"复制 token"按钮的取数函数。"""
+
+    def setUp(self):
+        self.engine = _build_threadsafe_engine()
+        self._original = engine_mod._engine
+        engine_mod._engine = self.engine
+
+    def tearDown(self):
+        engine_mod._engine = self._original
+
+    def test_returns_token_from_openai_tokens(self):
+        with get_session() as s:
+            s.add(_make_run(run_id="t1" + "a" * 14, email="has@x.com",
+                            tokens={"access_token": "ey-abc-123"}))
+            s.commit()
+        res = get_access_token("t1" + "a" * 14)
+        self.assertEqual(res["access_token"], "ey-abc-123")
+        self.assertEqual(res["email"], "has@x.com")
+
+    def test_falls_back_to_config_snapshot(self):
+        with get_session() as s:
+            s.add(_make_run(run_id="t2" + "a" * 14, email="snap@x.com",
+                            tokens={}, snapshot={"access_token": "ey-from-snapshot"}))
+            s.commit()
+        res = get_access_token("t2" + "a" * 14)
+        self.assertEqual(res["access_token"], "ey-from-snapshot")
+
+    def test_raises_when_no_token(self):
+        with get_session() as s:
+            s.add(_make_run(run_id="t3" + "a" * 14, email="empty@x.com", tokens={}))
+            s.commit()
+        with self.assertRaises(ValueError):
+            get_access_token("t3" + "a" * 14)
+
+    def test_raises_when_run_not_found(self):
+        with self.assertRaises(ValueError):
+            get_access_token("nonexistent-run-id")
+
+
 class ExportPoolTest(unittest.TestCase):
     """覆盖 export_pool 两种格式 + JOIN MailAccount。"""
 
@@ -490,6 +531,37 @@ class ExportPoolTest(unittest.TestCase):
         self.assertEqual(rows[0]["client_id"], "cid-123")
         self.assertEqual(rows[0]["refresh_token"], "rt-xyz")  # OAuth refresh
         self.assertEqual(rows[0]["mail_provider"], "applemail")
+
+    def test_export_full_json_includes_operational_metadata(self):
+        """full_json 必须补全运维元数据：平台 / profile / 卡商 / IP / 段位 / 注册名 / 创建时间。
+
+        回归锁：导出曾经只含凭证 + token，丢了列表页展示的这些元数据（"导出内容不全"）。
+        """
+        with get_session() as s:
+            s.add(_make_run(
+                run_id="m" + "1" * 15, email="meta@x.com",
+                platform=PLATFORM_GROK,
+                ip_address="203.0.113.7", ip_country="JP",
+                snapshot={"identity": {"full_name": "Taro Yamada"}},
+            ))
+            s.commit()
+
+        content, content_type, filename, skipped = export_pool(TIER_REGISTERED, FMT_FULL_JSON)
+        rows = _parse_export_to_entries(content, content_type, filename)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        # 运维元数据组（与列表页 _account_to_dict 对齐）
+        self.assertEqual(row["platform"], PLATFORM_GROK)
+        self.assertEqual(row["profile_id"], "prof-1")
+        self.assertEqual(row["ip_address"], "203.0.113.7")
+        self.assertEqual(row["ip_country"], "JP")
+        self.assertEqual(row["account_tier"], TIER_REGISTERED)
+        self.assertEqual(row["register_name"], "Taro Yamada")
+        self.assertEqual(row["run_id"], "m" + "1" * 15)
+        self.assertTrue(row["created_at"], "created_at 不应为空")
+        # 字段齐全（卡商/浏览器 provider 即使为空也应作为 key 存在，便于消费方稳定解析）
+        for key in ("card_provider", "browser_provider"):
+            self.assertIn(key, row)
 
     # ── Codex CLI 兼容 cpa_json 测试 ──────────────────────
     # 真实 access_token JWT 样本：含 chatgpt_account_id=1bf12f2f-7414-4885-8ee4-980f3fd9d779

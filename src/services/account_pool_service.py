@@ -80,20 +80,29 @@ def _redact_email(email: str) -> str:
     return f"{masked}@{domain}"
 
 
-def _account_to_dict(run: Run) -> dict[str, Any]:
-    """脱敏序列化（不暴露 password / token）。"""
-    # 注册 ChatGPT 时实际填写的姓名（"About you" 表单），存在 config_snapshot.identity
-    # JSON 里而非独立 DB 列；历史 Run 无 identity 时为空，前端显示 —。
+def _extract_register_name(run: Run) -> str:
+    """注册 ChatGPT 时实际填写的姓名（"About you" 表单），存在 config_snapshot.identity
+    JSON 里而非独立 DB 列；历史 Run 无 identity 时返回空串。
+
+    列表页（_account_to_dict）与导出（_serialize_full_json_entries）共用此逻辑，
+    避免两处提取规则漂移。
+    """
     snapshot = run.config_snapshot or {}
     identity = snapshot.get("identity") or {}
-    register_name = ""
-    if isinstance(identity, dict):
-        register_name = str(identity.get("full_name") or "").strip()
-        if not register_name:
-            # full_name 缺失时用 first + last 兜底拼接
-            fn = str(identity.get("first_name") or "").strip()
-            ln = str(identity.get("last_name") or "").strip()
-            register_name = (fn + " " + ln).strip()
+    if not isinstance(identity, dict):
+        return ""
+    register_name = str(identity.get("full_name") or "").strip()
+    if not register_name:
+        # full_name 缺失时用 first + last 兜底拼接
+        fn = str(identity.get("first_name") or "").strip()
+        ln = str(identity.get("last_name") or "").strip()
+        register_name = (fn + " " + ln).strip()
+    return register_name
+
+
+def _account_to_dict(run: Run) -> dict[str, Any]:
+    """脱敏序列化（不暴露 password / token）。"""
+    register_name = _extract_register_name(run)
     return {
         "run_id": run.id,
         "email": run.email,
@@ -143,7 +152,13 @@ def list_pool(
             stmt = stmt.where(Run.platform == platform_filter)
         stmt = stmt.order_by(Run.created_at.desc()).limit(max(1, min(limit, 200)))  # type: ignore
         rows = list(session.exec(stmt).all())
-        return [_account_to_dict(r) for r in rows]
+        dicts = [_account_to_dict(r) for r in rows]
+
+    # 合并每行的「最后一次 PIX 开通/核验」状态（列表状态列展示用）
+    status_map = get_pix_status_map([d["run_id"] for d in dicts])
+    for d in dicts:
+        d["pix_status"] = status_map.get(d["run_id"])  # 无记录则为 None → 前端渲染「未开通」
+    return dicts
 
 
 def get_account_detail(run_id: str) -> Optional[dict[str, Any]]:
@@ -257,6 +272,28 @@ def _resolve_access_token(run: Run) -> str:
     except Exception as exc:
         logger.warning("读 accounts.csv 失败 (run=%s): %s", run.id[:12], exc)
     return ""
+
+
+def get_access_token(run_id: str) -> dict[str, str]:
+    """取单个号的明文 access_token（供 /accounts 行内"复制 token"按钮用）。
+
+    复用 _resolve_access_token 的三级兜底（openai_tokens → config_snapshot →
+    accounts.csv）。admin 操作：导出本就能拿全部 token，单个复制不增加权限面。
+
+    Returns:
+        {"email": ..., "access_token": ...}
+
+    Raises:
+        ValueError: run 不存在 / 该号无可用 access_token（需先刷新 token）。
+    """
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError("账号不存在")
+        token = _resolve_access_token(run)
+        if not token:
+            raise ValueError("该号 access_token 不可用，请先刷新 token 后重试")
+        return {"email": run.email or "", "access_token": token}
 
 
 _VALID_LINK_PLANS = ("team", "plus", "pro", "pro_lite")
@@ -423,6 +460,372 @@ def generate_link(
         "plan": plan_normalized,
         "return_mode": mode,
     }
+
+
+def pix_plus_activate(run_id: str, sdk_code: str) -> dict[str, Any]:
+    """PIX 渠道（baxigpt.com 卡密）开通 Plus。
+
+    起账号自己的 AdsPower 浏览器 → 打开 baxigpt.com → 填卡密 → 验证 →
+    填该号 access token → 点开通 Plus。**同步阻塞**跑完整个流程再返回。
+
+    设计立场（与 generate_link 一致）：
+      - 仅 registered 段位的号可开通（避免重复绑/开）
+      - token 从 DB 自动取（_resolve_access_token 三级兜底）
+      - **不晋级**：baxigpt 异步处理（1-10 分钟）+ OpenAI 同步（1-5 分钟），
+        提交成功只代表「已下单」，晋级由运维确认 Plus 生效后手动点
+      - 成功/失败都写 RunEvent 留痕（仅留卡密前缀，不留全卡密）
+
+    Args:
+        run_id: Run 主键
+        sdk_code: 卡密（SDK），形如 BX-XXXXXXXX
+
+    Returns:
+        {"success": bool, "message": str, "detail": str}
+
+    Raises:
+        ValueError: run 不存在 / 段位不对 / token 缺失 / profile 缺失 / 卡密空
+    """
+    sdk = (sdk_code or "").strip()
+    if not sdk:
+        raise ValueError("卡密不能为空")
+
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError(f"run_id 不存在: {run_id}")
+        if run.account_tier != TIER_REGISTERED:
+            raise ValueError(
+                f"该号当前段位是 {run.account_tier!r}，"
+                f"只有 registered 段位才能开通 Plus（避免重复开）"
+            )
+        profile_id = (run.profile_id or "").strip()
+        access_token = _resolve_access_token(run)
+
+    if not access_token:
+        raise ValueError(
+            "找不到该号的 access_token（既不在 Run.openai_tokens / config_snapshot 也不在 accounts.csv）"
+        )
+    if not profile_id:
+        raise ValueError("该号缺少 AdsPower profile_id，无法起浏览器开通 Plus")
+
+    # 起浏览器跑 baxigpt 流程（不放在 session 块里，避免长事务持有）
+    from src.config import load_config
+    from src.orchestration.pix_plus import execute_pix_plus_activation
+    from playwright.sync_api import sync_playwright
+
+    config = load_config()
+    with sync_playwright() as p:
+        result = execute_pix_plus_activation(
+            config,
+            profile_id,
+            sdk,
+            access_token,
+            proxy_url=config.proxy or "",
+            playwright=p,
+        )
+
+    # 留痕（不晋级）：成功/失败各写一条对应 event
+    success = bool(result.get("success"))
+    with get_session() as session:
+        session.add(RunEvent(
+            run_id=run_id,
+            event_type="pix_plus_submitted" if success else "pix_plus_failed",
+            state="payment",
+            payload={
+                "channel": "baxigpt",
+                "sdk_prefix": sdk[:5],  # 仅留前缀，不留全卡密
+                "success": success,
+                "message": str(result.get("message") or "")[:200],
+            },
+        ))
+        session.commit()
+    logger.info(
+        "PIX 开通 Plus run=%s success=%s msg=%s",
+        run_id[:12], success, str(result.get("message") or "")[:60],
+    )
+    return result
+
+
+def _build_mail_api_for_run(run_id: str):
+    """按 run 构造能收**这个号自己邮箱**验证码的 MailManager（失败降级 None）。
+
+    刷新 token / 核验 Plus 未登录时走 magic link 自动登录，必须用该号注册时绑定的
+    邮箱凭据收信。复用注册流的 ``_resolve_runtime_config``（内部已按 mail_account_id
+    注入该号 client_id/refresh_token）+ ``_build_runtime_clients``，避免双处实现漂移。
+
+    Returns:
+        MailManager 实例；构造失败（缺 mail provider 配置 / 凭据异常等）则返回 None，
+        此时未登录会如实返回「缺邮箱凭据无法自动登录」。
+    """
+    try:
+        from src.api.worker import _resolve_runtime_config
+        from main import _build_runtime_clients
+        with get_session() as session:
+            run = session.get(Run, run_id)
+            if run is None:
+                return None
+            runtime_config = _resolve_runtime_config(run)
+        _, _, mail_api = _build_runtime_clients(runtime_config)
+        logger.info("号池操作：已为 run=%s 构造该号 mail_api", run_id[:12])
+        return mail_api
+    except Exception as exc:
+        logger.warning("号池操作：构造 mail_api 失败（未登录将无法自动登录）run=%s: %s", run_id[:12], exc)
+        return None
+
+
+def verify_plus(run_id: str) -> dict[str, Any]:
+    """核验账号当前订阅状态（起浏览器读 chatgpt.com session 拿实时 plan）。
+
+    未登录则用该号邮箱凭据自动 magic link 登录后再核验（缺凭据/登录失败如实报错）。
+    PIX 开通后 baxigpt 异步 + OpenAI 同步要几分钟，「开通已提交」不代表生效。
+    本函数起账号自己的 AdsPower 浏览器，读 session 接口拿**实时** plan，并把
+    刷新到的新 token 存回 Run.openai_tokens（解决 DB 旧 token 永远显示 free）。
+
+    Args:
+        run_id: Run 主键
+
+    Returns:
+        {"plan", "is_plus", "logged_in", "message", "detail", "token_refreshed"}
+        （不回传 fresh_token 本体，避免 token 进 API 响应体）
+
+    Raises:
+        ValueError: run 不存在 / profile 缺失
+    """
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError(f"run_id 不存在: {run_id}")
+        profile_id = (run.profile_id or "").strip()
+        email = (run.email or "").strip()
+        password = run.password or ""
+    if not profile_id:
+        raise ValueError("该号缺少 AdsPower profile_id，无法起浏览器核验")
+
+    from src.config import load_config
+    from src.orchestration.verify_plus import execute_plus_verification
+    from playwright.sync_api import sync_playwright
+
+    config = load_config()
+
+    # 构造该号的 mail_api（未登录时 magic link 自动登录拉验证码用）。
+    # 与 refresh_token() 同一套构造，确保 mail_api 带**这个号**的收信凭据；
+    # 失败则降级 None（此时未登录会如实返回「缺邮箱凭据无法自动登录」）。
+    mail_api = _build_mail_api_for_run(run_id)
+
+    with sync_playwright() as p:
+        result = execute_plus_verification(
+            config, profile_id,
+            email=email, password=password, mail_api=mail_api,
+            playwright=p,
+        )
+
+    # OpenAI 终态封禁（account_deactivated）：自动归档，与 refresh_token 同处理
+    if result.get("account_deactivated"):
+        logger.warning("核验 Plus 探测到停用号，自动归档 run=%s", run_id[:12])
+        try:
+            abandon(run_id, "account_deactivated")
+        except Exception as exc:
+            logger.error("停用号自动归档失败 run=%s: %s", run_id[:12], exc)
+        return {
+            "plan": result.get("plan") or "",
+            "is_plus": False,
+            "logged_in": False,
+            "relogged_in": False,
+            "message": str(result.get("message") or "该号已被 OpenAI 停用，已自动归档"),
+            "detail": "account_deactivated",
+            "token_refreshed": False,
+            "account_deactivated": True,
+        }
+
+    # 把刷新到的新 token 存回 DB（保留旧字段，只覆盖 access_token + extracted_at）
+    token_refreshed = False
+    fresh_token = str(result.get("fresh_token") or "").strip()
+    if fresh_token:
+        with get_session() as session:
+            run = session.get(Run, run_id)
+            if run is not None:
+                tokens = dict(run.openai_tokens or {})
+                tokens["access_token"] = fresh_token
+                tokens["extracted_at"] = datetime.now(timezone.utc).isoformat()
+                run.openai_tokens = tokens
+                run.updated_at = datetime.now(timezone.utc)
+                session.add(run)
+                session.commit()
+                token_refreshed = True
+
+    # 留痕
+    with get_session() as session:
+        session.add(RunEvent(
+            run_id=run_id,
+            event_type="plus_verified",
+            state="payment",
+            payload={
+                "plan": str(result.get("plan") or ""),
+                "is_plus": bool(result.get("is_plus")),
+                "logged_in": bool(result.get("logged_in")),
+                "relogged_in": bool(result.get("relogged_in")),
+                "token_refreshed": token_refreshed,
+            },
+        ))
+        session.commit()
+
+    return {
+        "plan": result.get("plan") or "",
+        "is_plus": bool(result.get("is_plus")),
+        "logged_in": bool(result.get("logged_in")),
+        "relogged_in": bool(result.get("relogged_in")),
+        "message": str(result.get("message") or ""),
+        "detail": str(result.get("detail") or ""),
+        "token_refreshed": token_refreshed,
+        "account_deactivated": False,
+    }
+
+
+def refresh_token(run_id: str) -> dict[str, Any]:
+    """刷新该号 access_token（token 过期时重新登录更新）。
+
+    起账号自己的 AdsPower 浏览器：已登录直接读 session 拿新 token；
+    **未登录则现场登录**（走 magic link，需该号邮箱凭据）后再读。
+    新 token 存回 Run.openai_tokens（号池导出 / 生成链接 / 核验都依赖它）。
+
+    Args:
+        run_id: Run 主键
+
+    Returns:
+        {"plan", "is_plus", "logged_in", "relogged_in", "token_refreshed", "message", "detail"}
+
+    Raises:
+        ValueError: run 不存在 / profile 缺失
+    """
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError(f"run_id 不存在: {run_id}")
+        profile_id = (run.profile_id or "").strip()
+        email = (run.email or "").strip()
+        password = run.password or ""
+    if not profile_id:
+        raise ValueError("该号缺少 AdsPower profile_id，无法起浏览器刷新 token")
+
+    from src.config import load_config
+    from src.orchestration.verify_plus import execute_token_refresh
+    from playwright.sync_api import sync_playwright
+
+    config = load_config()
+
+    # 构造该号的 mail_api（未登录时 magic link 拉验证码用）。
+    mail_api = _build_mail_api_for_run(run_id)
+
+    with sync_playwright() as p:
+        result = execute_token_refresh(
+            config, profile_id, email, password, mail_api=mail_api, playwright=p,
+        )
+
+    # OpenAI 终态封禁（account_deactivated）：自动归档号，不再占用可用池。
+    # 探测在浏览器侧已短路掉 magic link，这里只负责落库标记 + 返回提示运维。
+    if result.get("account_deactivated"):
+        logger.warning("刷新 token 探测到停用号，自动归档 run=%s", run_id[:12])
+        try:
+            abandon(run_id, "account_deactivated")
+        except Exception as exc:  # 归档失败不应吞掉「号已停用」这个关键结论
+            logger.error("停用号自动归档失败 run=%s: %s", run_id[:12], exc)
+        return {
+            "plan": result.get("plan") or "",
+            "is_plus": False,
+            "logged_in": False,
+            "relogged_in": False,
+            "token_refreshed": False,
+            "account_deactivated": True,
+            "message": str(result.get("message") or "该号已被 OpenAI 停用，已自动归档"),
+            "detail": "account_deactivated",
+        }
+
+    # 存回新 token
+    token_refreshed = False
+    fresh_token = str(result.get("fresh_token") or "").strip()
+    if fresh_token:
+        with get_session() as session:
+            run = session.get(Run, run_id)
+            if run is not None:
+                tokens = dict(run.openai_tokens or {})
+                tokens["access_token"] = fresh_token
+                tokens["extracted_at"] = datetime.now(timezone.utc).isoformat()
+                run.openai_tokens = tokens
+                run.updated_at = datetime.now(timezone.utc)
+                session.add(run)
+                session.commit()
+                token_refreshed = True
+
+    with get_session() as session:
+        session.add(RunEvent(
+            run_id=run_id,
+            event_type="token_refreshed",
+            state="payment",
+            payload={
+                "token_refreshed": token_refreshed,
+                "relogged_in": bool(result.get("relogged_in")),
+                "logged_in": bool(result.get("logged_in")),
+                "plan": str(result.get("plan") or ""),
+            },
+        ))
+        session.commit()
+
+    return {
+        "plan": result.get("plan") or "",
+        "is_plus": bool(result.get("is_plus")),
+        "logged_in": bool(result.get("logged_in")),
+        "relogged_in": bool(result.get("relogged_in")),
+        "token_refreshed": token_refreshed,
+        "account_deactivated": False,
+        "message": str(result.get("message") or ""),
+        "detail": str(result.get("detail") or ""),
+    }
+
+
+# pix_plus / plus_verified 事件类型常量（列表状态读取用）
+_PIX_PLUS_EVENT_TYPES = ("pix_plus_submitted", "pix_plus_failed", "plus_verified")
+
+
+def get_pix_status_map(run_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """批量取一组 run 的「最后一次 PIX 开通/核验」状态（列表展示用）。
+
+    Returns:
+        {run_id: {"kind", "is_plus", "plan", "at", "message"}}
+        kind: "submitted" | "failed" | "verified_plus" | "verified_free" | ""（无记录）
+        无记录的 run 不出现在返回 dict 里（前端按缺失渲染「未开通」）。
+    """
+    ids = [str(r).strip() for r in (run_ids or []) if str(r).strip()]
+    if not ids:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    with get_session() as session:
+        stmt = (
+            select(RunEvent)
+            .where(RunEvent.run_id.in_(ids))  # type: ignore
+            .where(RunEvent.event_type.in_(_PIX_PLUS_EVENT_TYPES))  # type: ignore
+            .order_by(RunEvent.timestamp.asc())  # type: ignore
+        )
+        rows = list(session.exec(stmt).all())
+    # 按 run_id 取时间最新的一条（asc 排序后后写覆盖前写）
+    for ev in rows:
+        payload = ev.payload or {}
+        if ev.event_type == "plus_verified":
+            is_plus = bool(payload.get("is_plus"))
+            kind = "verified_plus" if is_plus else "verified_free"
+        elif ev.event_type == "pix_plus_submitted":
+            kind = "submitted"
+            is_plus = False
+        else:  # pix_plus_failed
+            kind = "failed"
+            is_plus = False
+        out[ev.run_id] = {
+            "kind": kind,
+            "is_plus": is_plus,
+            "plan": str(payload.get("plan") or ""),
+            "at": ev.timestamp.isoformat() if ev.timestamp else "",
+            "message": str(payload.get("message") or ""),
+        }
+    return out
 
 
 def generate_link_standalone(
@@ -914,7 +1317,7 @@ def _serialize_cpa_json_entries(runs: list[Run]) -> tuple[list[dict[str, Any]], 
 def _serialize_full_json_entries(
     runs: list[Run], mail_map: dict[str, "MailAccount"],
 ) -> list[dict[str, Any]]:
-    """生成 full_json 每条账号的 dict（账号凭证组 + 令牌组）。
+    """生成 full_json 每条账号的 dict（账号凭证组 + 令牌组 + 运维元数据组）。
 
     每条结构：
         {
@@ -932,7 +1335,18 @@ def _serialize_full_json_entries(
           "id_token": "...",
           "account_id": "...",           # JWT 解出（失败留空）
           "expired": "...",              # JWT 解出（失败留空）
-          "last_refresh": "..."
+          "last_refresh": "...",
+          # 运维元数据组（与列表页 _account_to_dict 对齐，导出不再丢失这些字段）
+          "run_id": "...",               # Run 主键
+          "platform": "openai|grok",     # 注册平台
+          "account_tier": "registered|plus|team|abandoned",
+          "register_name": "...",        # 注册时实际填写的姓名（About you 表单）
+          "profile_id": "...",           # AdsPower profile
+          "browser_provider": "...",
+          "card_provider": "...",        # 绑卡用的卡商
+          "ip_address": "...",           # 创建时出口 IP
+          "ip_country": "...",           # 出口 IP 国家码
+          "created_at": "..."            # ISO8601
         }
 
     设计：JWT 解析失败也照常导出（账号 + 令牌仍有价值，只是 account_id / expired 留空）。
@@ -951,6 +1365,8 @@ def _serialize_full_json_entries(
                 pass
 
         mail = mail_map.get((r.email or "").lower())
+        # 注册姓名取自 config_snapshot.identity（与列表页 _account_to_dict 同一来源）
+        register_name = _extract_register_name(r)
         entries.append({
             "_filename_email": r.email or "",
             "_filename_plan": _extract_plan_type(access_token),
@@ -967,6 +1383,17 @@ def _serialize_full_json_entries(
             "account_id": account_id,
             "expired": expired_iso,
             "last_refresh": tokens.get("extracted_at") or "",
+            # 运维元数据组（导出补全：平台 / 段位 / profile / 卡商 / IP / 创建时间等）
+            "run_id": r.id or "",
+            "platform": r.platform or PLATFORM_OPENAI,
+            "account_tier": r.account_tier or "",
+            "register_name": register_name,
+            "profile_id": r.profile_id or "",
+            "browser_provider": r.browser_provider or "",
+            "card_provider": r.card_provider or "",
+            "ip_address": r.ip_address or "",
+            "ip_country": r.ip_country or "",
+            "created_at": r.created_at.isoformat() if r.created_at else "",
         })
     return entries
 
@@ -1168,6 +1595,10 @@ __all__ = [
     "promote",
     "abandon",
     "generate_link",
+    "pix_plus_activate",
+    "verify_plus",
+    "refresh_token",
+    "get_pix_status_map",
     "assign_card",
     "generate_bind_link",  # deprecated 但保留兼容
     "export_pool",

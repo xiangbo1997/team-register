@@ -32,10 +32,14 @@ from src.services.account_pool_service import (
     generate_bind_link as svc_bind_link,
     generate_link as svc_generate_link,
     generate_link_standalone as svc_generate_link_standalone,
+    get_access_token as svc_get_access_token,
     get_account_detail,
     import_pool as svc_import_pool,
     list_pool,
+    pix_plus_activate as svc_pix_plus,
     promote as svc_promote,
+    refresh_token as svc_refresh_token,
+    verify_plus as svc_verify_plus,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,10 @@ class PromoteRequest(BaseModel):
 
 class AbandonRequest(BaseModel):
     reason: str = "manual"
+
+
+class PixPlusRequest(BaseModel):
+    sdk_code: str = Field(..., min_length=1, max_length=64, description="卡密（SDK），形如 BX-XXXXXXXX")
 
 
 @router.get("")
@@ -245,6 +253,22 @@ def get_account(
     return detail
 
 
+@router.get("/{run_id}/access-token")
+def get_account_access_token(
+    run_id: str,
+    user: User = Depends(require_role("admin")),
+):
+    """取单号明文 access_token（供 /accounts 行内"复制 token"按钮用）。
+
+    admin only：导出本就能拿全部 token，单个复制不增加权限面。
+    token 不可用（未刷新 / 已失效）时返回 404 + 中文提示，前端弹 toast。
+    """
+    try:
+        return svc_get_access_token(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.post("/{run_id}/generate-link")
 def generate_checkout_link_endpoint(
     run_id: str,
@@ -342,6 +366,68 @@ def promote_account(
         return svc_promote(run_id, body.tier)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{run_id}/pix-plus")
+def pix_plus_endpoint(
+    run_id: str,
+    body: PixPlusRequest,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """PIX 渠道（baxigpt.com 卡密）开通 Plus：起浏览器自动填卡密 + token + 开通。
+
+    同步阻塞：跑完整个 baxigpt 流程再返回（流程约几秒到十几秒）。
+    成功仅代表「已下单」，不自动晋级；运维确认 Plus 生效后手动点「晋级 Plus」。
+    """
+    try:
+        return svc_pix_plus(run_id, body.sdk_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("PIX 开通 Plus 失败 run=%s", run_id[:12])
+        raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
+
+
+@router.post("/{run_id}/verify-plus")
+def verify_plus_endpoint(
+    run_id: str,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """核验账号当前订阅状态：起浏览器读 chatgpt.com session 拿实时 plan。
+
+    用于 PIX 开通后确认 Plus 是否真生效（开通已提交 ≠ 已生效）。
+    顺便把刷新到的新 token 存回 DB（解决旧 token 永远显示 free）。
+    未登录则用该号邮箱凭据自动 magic link 登录后再核验（缺凭据/登录失败如实报错）。
+    """
+    try:
+        return svc_verify_plus(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("核验 Plus 失败 run=%s", run_id[:12])
+        raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
+
+
+@router.post("/{run_id}/refresh-token")
+def refresh_token_endpoint(
+    run_id: str,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """刷新该号 access_token（token 过期时重新登录更新）。
+
+    起浏览器：已登录直接读 session 拿新 token；未登录则现场登录（magic link）后再读。
+    新 token 存回 Run.openai_tokens（号池导出 / 生成链接 / 核验都依赖它）。
+    """
+    try:
+        return svc_refresh_token(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("刷新 token 失败 run=%s", run_id[:12])
+        raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
 
 
 @router.post("/{run_id}/abandon")
