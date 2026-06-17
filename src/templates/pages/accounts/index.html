@@ -213,7 +213,7 @@
                         <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 / 邮件商</th>
                         <th x-show="visibleColumns.includes('tier')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">段位</th>
                         <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">Plus 状态</th>
-                        <th x-show="visibleColumns.includes('tags')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">标签</th>
+                        <th x-show="visibleColumns.includes('tags')" class="px-3 py-3 min-w-[120px] text-[11px] font-label font-bold text-muted uppercase whitespace-nowrap" title="给账号打自定义标签分类，可按标签筛选/搜索">标签</th>
                         <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时间</th>
                         <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时 IP</th>
                         {# 操作列固定右侧：横向滚动时常驻可见。z-20 高于 thead 自身 z-10，
@@ -278,22 +278,38 @@
                             </td>
                             {# 🏷 标签列：chip 展示 + 点击「+」内联编辑（输入即建 / 点 chip ×删）。
                                编辑器是 per-row popover，用 tagEditorRunId 跟踪当前展开行（同时只一个）。 #}
-                            <td x-show="visibleColumns.includes('tags')" class="px-4 py-3">
-                                <div class="relative flex items-center gap-1 flex-wrap max-w-[220px]">
-                                    <template x-for="tag in (acc.tags || [])" :key="tag">
-                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium border"
-                                              :class="tagBadgeClass(tag)"
-                                              :title="tag">
-                                            <span class="max-w-[80px] truncate" x-text="tag"></span>
-                                        </span>
+                            <td x-show="visibleColumns.includes('tags')" class="px-4 py-3 min-w-[120px]">
+                                <div class="relative max-w-[220px]">
+                                    {# 标签列交互重做（CleanShot 2026-06-17 用户反馈「丑 + 交互不合理」）：
+                                       旧版把标签 chip 与一支孤立铅笔垂直堆叠，又乱又看不懂。
+                                       新版「整区可点」：
+                                         · 有标签 → 整组 chip 包进一个 button，hover 整块变背景色 + 末尾
+                                           淡铅笔露出，点任意处进编辑（统一一个点击目标，去掉孤立铅笔）；
+                                         · 无标签 → 一个明确的「+ 标签」虚线按钮，一眼可见可点。 #}
+                                    <template x-if="acc.tags && acc.tags.length">
+                                        <button @click="openTagEditor(acc)"
+                                                type="button"
+                                                title="点击编辑标签（可按标签筛选/搜索）"
+                                                class="group/tags inline-flex items-center gap-1 flex-nowrap whitespace-nowrap max-w-full -mx-1 px-1 py-0.5 rounded-md hover:bg-slate-50 transition text-left">
+                                            <template x-for="tag in acc.tags" :key="tag">
+                                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium border shrink-0"
+                                                      :class="tagBadgeClass(tag)"
+                                                      :title="tag">
+                                                    <span class="max-w-[72px] truncate" x-text="tag"></span>
+                                                </span>
+                                            </template>
+                                            <span class="material-symbols-outlined text-[14px] text-slate-300 group-hover/tags:text-primary transition shrink-0">edit</span>
+                                        </button>
                                     </template>
-                                    <button @click="openTagEditor(acc)"
-                                            type="button"
-                                            title="编辑标签"
-                                            class="inline-flex items-center justify-center w-5 h-5 rounded text-muted hover:bg-subtle hover:text-primary transition shrink-0">
-                                        <span class="material-symbols-outlined text-[15px]"
-                                              x-text="(acc.tags && acc.tags.length) ? 'edit' : 'add'"></span>
-                                    </button>
+                                    <template x-if="!(acc.tags && acc.tags.length)">
+                                        <button @click="openTagEditor(acc)"
+                                                type="button"
+                                                title="给该号打标签分类（可按标签筛选/搜索）"
+                                                class="inline-flex items-center gap-1 whitespace-nowrap px-2.5 h-6 rounded-full border border-dashed border-slate-300 text-[11px] font-medium text-slate-400 hover:border-primary hover:text-primary hover:bg-primary-50 transition shrink-0">
+                                            <span class="material-symbols-outlined text-[14px]">add</span>
+                                            <span>标签</span>
+                                        </button>
+                                    </template>
 
                                     {# 内联标签编辑器 popover #}
                                     <div x-show="tagEditorRunId === acc.run_id" x-cloak x-transition.opacity
@@ -357,8 +373,13 @@
                             {# 操作列固定右侧：sticky right-0 横向滚动常驻。固定 bg-white 打底
                                （普通行 tr 透明，bg-inherit 会透出下方内容叠字），并加左侧细分隔
                                线区分行身。z-[5] 低于固定表头(z-20)。特殊态行(红/绿/蓝)下操作列
-                               保持白底，作为功能区反而更清晰。 #}
-                            <td class="px-4 py-3 whitespace-nowrap sticky right-0 z-[5] bg-white shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.06)]">
+                               保持白底，作为功能区反而更清晰。
+                               展开导出下拉时把本行操作 td 提到 z-[60]：每个 sticky td 是独立层叠
+                               上下文，下拉的 z-50 只在本 td 内生效，跨行比较时 DOM 靠后的行天然
+                               压在前面行之上 → 下拉被下一行图标遮挡（CleanShot 2026-06-17 实证）。
+                               故把「正展开行」的整个 td 提到高 z，让本行浮到后续行之上。 #}
+                            <td class="px-4 py-3 whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.06)]"
+                                :class="rowExportOpenId === acc.run_id ? 'z-[60]' : 'z-[5]'">
                             <!-- 操作 icon 栏：tooltip 用 title 属性原生显示 -->
                             <div class="flex items-center gap-0.5">
                                 {# 🧾 生成 checkout 链接 — receipt_long 票据语义比"链子"更贴合"生成结账单" #}
