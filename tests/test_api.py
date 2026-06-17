@@ -334,6 +334,61 @@ class TestAPI(unittest.TestCase):
         resp = admin.get("/api/accounts?tier=registered&platform=meta")
         self.assertEqual(resp.status_code, 422)
 
+    # ── 🏷 账号标签（tags）功能 ──
+
+    def test_account_tags_default_empty_and_list_pool_exposes_field(self):
+        """新号 tags 默认空列表，list_pool 透出 tags 字段。"""
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        rows = admin.get("/api/accounts?tier=registered").json()
+        self.assertTrue(all("tags" in r for r in rows))
+        self.assertTrue(all(r["tags"] == [] for r in rows))
+
+    def test_set_account_tags_cleans_and_persists(self):
+        """PUT /{run_id}/tags 去空/去重/限长，持久化并在列表回读。"""
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        run_id = "gpt" + "a" * 13
+        resp = admin.put(
+            f"/api/accounts/{run_id}/tags",
+            json={"tags": ["UK", " UK ", "", "待核验", "x" * 40]},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        # 去重("UK"/" UK ")、去空串、限长(24)
+        self.assertEqual(resp.json()["tags"], ["UK", "待核验", "x" * 24])
+        # 列表回读一致
+        rows = admin.get("/api/accounts?tier=registered").json()
+        gpt = next(r for r in rows if r["run_id"] == run_id)
+        self.assertEqual(gpt["tags"], ["UK", "待核验", "x" * 24])
+
+    def test_list_all_tags_aggregates_sorted_unique(self):
+        """GET /tags 汇总全池标签，去重 + 字典序。"""
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        admin.put(f"/api/accounts/{'gpt' + 'a' * 13}/tags", json={"tags": ["beta", "alpha"]})
+        admin.put(f"/api/accounts/{'grk' + 'a' * 13}/tags", json={"tags": ["alpha", "gamma"]})
+        resp = admin.get("/api/accounts/tags")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["tags"], ["alpha", "beta", "gamma"])
+
+    def test_set_tags_missing_run_returns_404(self):
+        admin = self._new_client()
+        self._login_admin(admin)
+        resp = admin.put("/api/accounts/nonexistent123/tags", json={"tags": ["x"]})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_set_tags_without_csrf_is_rejected(self):
+        """标签写入需 CSRF（与其它 admin 写操作一致）。"""
+        admin = self._new_client()
+        self._login_admin(admin)
+        self._seed_platform_runs()
+        admin.headers.pop("X-CSRF-Token", None)
+        resp = admin.put(f"/api/accounts/{'gpt' + 'a' * 13}/tags", json={"tags": ["x"]})
+        self.assertIn(resp.status_code, (401, 403))
+
     def test_accounts_export_platform_filter_only_grok(self):
         admin = self._new_client()
         self._login_admin(admin)

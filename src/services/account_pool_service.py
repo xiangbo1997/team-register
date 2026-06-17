@@ -122,6 +122,8 @@ def _account_to_dict(run: Run) -> dict[str, Any]:
         "is_card_warmed_up": bool(run.is_card_warmed_up),
         "ip_address": run.ip_address or "",
         "ip_country": run.ip_country or "",
+        # 运维自定义标签（账号池分类标记）；旧行 / 空值统一回退空列表，前端无需判 null
+        "tags": list(run.tags or []),
         "error_reason": run.error_reason,
         "created_at": run.created_at.isoformat() if run.created_at else "",
         "updated_at": run.updated_at.isoformat() if run.updated_at else "",
@@ -231,6 +233,69 @@ def abandon(run_id: str, reason: str) -> dict[str, Any]:
         session.refresh(run)
         logger.info("账号放弃 run_id=%s reason=%s", run_id[:12], run.error_reason)
         return _account_to_dict(run)
+
+
+# ── 标签：运维自定义分类标记 ─────────────────────────────
+
+# 单标签最长 24 字符、单号最多 20 个标签 —— 防止运维误粘大段文本撑爆 JSON 列。
+_MAX_TAG_LEN = 24
+_MAX_TAGS_PER_RUN = 20
+
+
+def _normalize_tags(tags: list[str]) -> list[str]:
+    """清洗标签列表：去首尾空白、去空串、去重保序、限长限量。
+
+    去重大小写敏感（"UK" 与 "uk" 视为不同标签，由运维自行约束），
+    仅按字符串完全相等去重。
+    """
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in tags or []:
+        tag = str(raw or "").strip()[:_MAX_TAG_LEN]
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        cleaned.append(tag)
+        if len(cleaned) >= _MAX_TAGS_PER_RUN:
+            break
+    return cleaned
+
+
+def set_tags(run_id: str, tags: list[str]) -> dict[str, Any]:
+    """全量覆盖某个号的标签列表（前端编辑器一次提交完整列表）。
+
+    Run 不存在 → 抛 ValueError。返回更新后的账号字典（含 tags）。
+    """
+    cleaned = _normalize_tags(tags)
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError(f"run_id 不存在: {run_id}")
+        run.tags = cleaned
+        run.updated_at = datetime.now(timezone.utc)
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        logger.info("账号标签更新 run_id=%s tags=%s", run_id[:12], cleaned)
+        return _account_to_dict(run)
+
+
+def list_all_tags() -> list[str]:
+    """汇总账号池里出现过的全部标签（去重 + 按字典序），供前端快捷筛选 chip 渲染。
+
+    只统计 status=success 的号（与 list_pool 口径一致），跨全部 tier / platform。
+    """
+    with get_session() as session:
+        rows = session.exec(
+            select(Run.tags).where(Run.status == "success")  # type: ignore
+        ).all()
+    bag: set[str] = set()
+    for row in rows:
+        for tag in (row or []):
+            t = str(tag or "").strip()
+            if t:
+                bag.add(t)
+    return sorted(bag)
 
 
 # ── 一键绑卡：生成 checkout link（运维手动点击完成绑卡） ─────
@@ -1594,6 +1659,8 @@ __all__ = [
     "get_account_detail",
     "promote",
     "abandon",
+    "set_tags",
+    "list_all_tags",
     "generate_link",
     "pix_plus_activate",
     "verify_plus",

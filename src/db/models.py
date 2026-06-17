@@ -118,6 +118,13 @@ class Run(SQLModel, table=True):
         default="",
         sa_column=Column(EncryptedString(2048), nullable=False, server_default=""),
     )
+    # 账号池自定义标签（运维手动打的分类标记）：字符串列表，如 ["UK", "已绑卡", "待核验"]。
+    # 仅用于账号池前端展示 / 搜索 / 快捷筛选，不参与自动化流程；非加密（标签非敏感）。
+    # server_default="[]" 保证旧库 ALTER 后 raw SQL INSERT 仍可省略此列。
+    tags: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, server_default="[]"),
+    )
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 

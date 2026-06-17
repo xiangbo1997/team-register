@@ -95,6 +95,8 @@ def _run_schema_migrations(engine: Engine) -> None:
         # Grok (x.ai) 注册（feat/grok-register 引入）：platform 区分 openai/grok，sso_token 存 Grok 产物
         "platform": "ALTER TABLE runs ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'openai'",
         "sso_token": "ALTER TABLE runs ADD COLUMN sso_token TEXT NOT NULL DEFAULT ''",
+        # 账号池自定义标签（运维手动分类标记，JSON 字符串数组），前端展示/搜索/快捷筛选用
+        "tags": "ALTER TABLE runs ADD COLUMN tags JSON NOT NULL DEFAULT '[]'",
     }
     # mail_accounts.role 列（消除 Ambiguity #2）+ pro_warmup 号池调度字段
     mail_columns = _table_columns(engine, "mail_accounts")

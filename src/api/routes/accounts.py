@@ -35,10 +35,12 @@ from src.services.account_pool_service import (
     get_access_token as svc_get_access_token,
     get_account_detail,
     import_pool as svc_import_pool,
+    list_all_tags as svc_list_all_tags,
     list_pool,
     pix_plus_activate as svc_pix_plus,
     promote as svc_promote,
     refresh_token as svc_refresh_token,
+    set_tags as svc_set_tags,
     verify_plus as svc_verify_plus,
 )
 
@@ -107,6 +109,12 @@ class AbandonRequest(BaseModel):
 
 class PixPlusRequest(BaseModel):
     sdk_code: str = Field(..., min_length=1, max_length=64, description="卡密（SDK），形如 BX-XXXXXXXX")
+
+
+class SetTagsRequest(BaseModel):
+    """全量覆盖某个号的标签列表。服务层会做去空/去重/限长/限量清洗。"""
+
+    tags: list[str] = Field(default_factory=list, max_length=20, description="标签字符串列表（最多 20 个，单个 ≤24 字符）")
 
 
 @router.get("")
@@ -187,6 +195,18 @@ async def import_accounts(
         logger.exception("号池导入失败 fmt=%s", fmt)
         raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
     return result
+
+
+@router.get("/tags")
+def list_tags(
+    user: User = Depends(require_role("admin")),
+):
+    """汇总账号池里出现过的全部标签（去重排序），供前端快捷筛选 chip 渲染。
+
+    路由顺序关键：必须声明在 ``GET /{run_id}`` 之上，否则 "tags" 会被当作
+    run_id 路径参数匹配（与 ``/checkout-link`` 同理）。
+    """
+    return {"tags": svc_list_all_tags()}
 
 
 @router.post("/checkout-link")
@@ -442,3 +462,21 @@ def abandon_account(
         return svc_abandon(run_id, (body.reason if body else "manual") or "manual")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.put("/{run_id}/tags")
+def set_account_tags(
+    run_id: str,
+    body: SetTagsRequest,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """全量覆盖某个号的标签列表（运维自定义分类标记）。
+
+    前端标签编辑器每次提交完整列表；服务层做去空/去重/限长(24)/限量(20)清洗。
+    返回更新后的账号字典（含清洗后的 tags）。
+    """
+    try:
+        return svc_set_tags(run_id, body.tags)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

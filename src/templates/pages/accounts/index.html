@@ -173,6 +173,24 @@
         </div>
     </div>
 
+    {# 🏷 标签快捷筛选行：点 chip 按该标签过滤（前端过滤，再点取消）。无标签时整行不渲染。 #}
+    <div x-show="allTags.length > 0" x-cloak class="flex items-center gap-2 flex-wrap mb-4 -mt-2">
+        <span class="text-[11px] font-semibold text-muted uppercase tracking-wider flex items-center gap-1">
+            <span class="material-symbols-outlined text-[15px]">label</span>标签筛选
+        </span>
+        <template x-for="t in allTags" :key="t">
+            <button @click="toggleTagFilter(t)"
+                    type="button"
+                    :class="tagFilter === t
+                        ? 'bg-primary text-white border-primary shadow-token-sm'
+                        : 'bg-white text-body border-border hover:bg-subtle'"
+                    class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border transition"
+                    x-text="t"></button>
+        </template>
+        <button x-show="tagFilter" @click="tagFilter = ''" type="button"
+                class="text-[11px] text-muted hover:text-danger underline ml-1">清除筛选</button>
+    </div>
+
     {# Data Grid —— 严格按 Stitch #}
     <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
         <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
@@ -195,6 +213,7 @@
                         <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 / 邮件商</th>
                         <th x-show="visibleColumns.includes('tier')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">段位</th>
                         <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">Plus 状态</th>
+                        <th x-show="visibleColumns.includes('tags')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">标签</th>
                         <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时间</th>
                         <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时 IP</th>
                         {# 操作列固定右侧：横向滚动时常驻可见。z-20 高于 thead 自身 z-10，
@@ -256,6 +275,69 @@
                                       :class="pixStatusClass(acc.pix_status)"
                                       :title="acc.pix_status ? (pixStatusTitle(acc.pix_status)) : '未发起开通'"
                                       x-text="pixStatusLabel(acc.pix_status)"></span>
+                            </td>
+                            {# 🏷 标签列：chip 展示 + 点击「+」内联编辑（输入即建 / 点 chip ×删）。
+                               编辑器是 per-row popover，用 tagEditorRunId 跟踪当前展开行（同时只一个）。 #}
+                            <td x-show="visibleColumns.includes('tags')" class="px-4 py-3">
+                                <div class="relative flex items-center gap-1 flex-wrap max-w-[220px]">
+                                    <template x-for="tag in (acc.tags || [])" :key="tag">
+                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium border"
+                                              :class="tagBadgeClass(tag)"
+                                              :title="tag">
+                                            <span class="max-w-[80px] truncate" x-text="tag"></span>
+                                        </span>
+                                    </template>
+                                    <button @click="openTagEditor(acc)"
+                                            type="button"
+                                            title="编辑标签"
+                                            class="inline-flex items-center justify-center w-5 h-5 rounded text-muted hover:bg-subtle hover:text-primary transition shrink-0">
+                                        <span class="material-symbols-outlined text-[15px]"
+                                              x-text="(acc.tags && acc.tags.length) ? 'edit' : 'add'"></span>
+                                    </button>
+
+                                    {# 内联标签编辑器 popover #}
+                                    <div x-show="tagEditorRunId === acc.run_id" x-cloak x-transition.opacity
+                                         @click.outside="if (tagEditorRunId === acc.run_id) closeTagEditor()"
+                                         class="absolute left-0 top-full mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 p-3">
+                                        <div class="text-[11px] font-semibold text-slate-500 mb-2">编辑标签 · <span class="font-mono" x-text="acc.email"></span></div>
+                                        {# 已有标签（点 × 删） #}
+                                        <div class="flex items-center gap-1 flex-wrap mb-2 min-h-[20px]">
+                                            <template x-for="(tag, idx) in tagDraft" :key="idx">
+                                                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border"
+                                                      :class="tagBadgeClass(tag)">
+                                                    <span class="max-w-[100px] truncate" x-text="tag"></span>
+                                                    <button @click="removeTagFromDraft(idx)" type="button"
+                                                            class="hover:opacity-60">
+                                                        <span class="material-symbols-outlined text-[13px]">close</span>
+                                                    </button>
+                                                </span>
+                                            </template>
+                                            <span x-show="tagDraft.length === 0" class="text-[11px] text-slate-400">暂无标签</span>
+                                        </div>
+                                        {# 新建标签输入（回车 / 逗号添加；datalist 提示已有标签复用） #}
+                                        <input type="text" x-model="tagInput"
+                                               @keydown.enter.prevent="addTagFromInput()"
+                                               @keydown="if ($event.key === ',') { $event.preventDefault(); addTagFromInput(); }"
+                                               list="account-tag-suggestions"
+                                               placeholder="输入标签后回车…"
+                                               maxlength="24"
+                                               class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                                        <datalist id="account-tag-suggestions">
+                                            <template x-for="t in allTags" :key="t">
+                                                <option :value="t"></option>
+                                            </template>
+                                        </datalist>
+                                        <div class="flex justify-end gap-2 mt-2.5">
+                                            <button @click="closeTagEditor()" type="button"
+                                                    class="px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">取消</button>
+                                            <button @click="saveTagDraft(acc)" type="button"
+                                                    :disabled="tagSaving"
+                                                    class="px-3 py-1 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50">
+                                                <span x-text="tagSaving ? '保存中…' : '保存'"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </td>
                             <td x-show="visibleColumns.includes('created_at')" class="px-4 py-3">
                                 <span class="text-sm text-muted mono-text tabular-nums"
@@ -325,8 +407,12 @@
                                               x-text="refreshingRunId === acc.run_id ? 'progress_activity' : 'sync'"></span>
                                     </button>
                                 </template>
-                                {# 📋 复制 access_token — 取明文 token 到剪贴板，喂 codex / 调试用；仅有 token 的号显示 #}
-                                <template x-if="acc.has_access_token">
+                                {# 📋 复制 access_token — 取明文 token 到剪贴板，喂 codex / 调试用。
+                                   常显（与「刷新 token」同条件 openai）：列表接口不返回 has_access_token，
+                                   旧的 x-if="acc.has_access_token" 在列表里恒 false 导致按钮永不出现；
+                                   改为按平台常显，点击时后端实时取 token，无 token 走 copyAccessToken 内
+                                   的「请先刷新 token」提示兜底。 #}
+                                <template x-if="acc.platform === 'openai'">
                                     <button @click="copyAccessToken(acc)"
                                             :disabled="copyingTokenRunId === acc.run_id"
                                             title="复制 access_token"
@@ -370,7 +456,7 @@
                                     </button>
                                     <div x-show="rowExportOpenId === acc.run_id" x-transition.opacity x-cloak
                                          @click.outside="if (rowExportOpenId === acc.run_id) rowExportOpenId = ''"
-                                         class="absolute right-0 mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-lg z-30 overflow-hidden">
+                                         class="absolute right-0 mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-lg z-50 overflow-hidden">
                                         <div class="px-3 py-2 text-[11px] text-slate-500 bg-slate-50 border-b truncate"
                                              x-text="`导出 ${acc.email}`"></div>
                                         <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
@@ -391,7 +477,7 @@
                     </tr>
                 </template>
                     <tr x-show="accounts.length === 0">
-                        <td colspan="12" class="px-4 py-16 text-center">
+                        <td colspan="13" class="px-4 py-16 text-center">
                             <div class="inline-flex flex-col items-center gap-2 text-muted">
                                 <span class="material-symbols-outlined text-5xl text-border">group_off</span>
                                 <span class="text-sm" x-text="emptyMessage"></span>
@@ -428,6 +514,7 @@
          - 卡片内边距小一档（p-4），减少视觉拥挤
     #}
     <div x-show="linkDialog.open"
+         x-cloak
          x-transition.opacity
          class="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
          @keydown.escape="closeLinkDialog()">
@@ -804,6 +891,7 @@
 
     <!-- 💳 绑卡弹窗（拆自旧 bindDialog；只选卡 + 留痕，不调 ChatGPT）-->
     <div x-show="assignCardDialog.open"
+         x-cloak
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="closeAssignCardDialog()">
@@ -847,6 +935,7 @@
 
     <!-- ⚡ PIX 渠道开通 Plus 弹窗（baxigpt 卡密自助开通；同步阻塞跑浏览器） -->
     <div x-show="pixPlusDialog.open"
+         x-cloak
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="!pixPlusDialog.submitting && closePixPlusDialog()">
@@ -900,6 +989,7 @@
 
     <!-- 导入弹窗 -->
     <div x-show="importDialog.open"
+         x-cloak
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="closeImportDialog()">
@@ -1034,7 +1124,7 @@ function accountsData() {
         searchTerm: '',
         searchExpanded: false,
         visibleColumns: (() => {
-            const _DEFAULT = ['run_id', 'platform', 'register_name', 'profile', 'providers', 'tier', 'created_at', 'ip'];
+            const _DEFAULT = ['run_id', 'platform', 'register_name', 'profile', 'providers', 'tier', 'tags', 'created_at', 'ip'];
             try { const raw = localStorage.getItem('accounts.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT; }
             catch (_) { return _DEFAULT; }
         })(),
@@ -1045,6 +1135,7 @@ function accountsData() {
             { key: 'profile',       label: 'Profile' },
             { key: 'providers',  label: '卡商 / 邮件商' },
             { key: 'tier',       label: '段位' },
+            { key: 'tags',       label: '标签' },
             { key: 'created_at', label: '创建时间' },
             { key: 'ip',         label: '创建时 IP' },
         ],
@@ -1055,9 +1146,14 @@ function accountsData() {
         },
         get filteredAccounts() {
             const q = (this.searchTerm || '').trim().toLowerCase();
-            if (!q) return this.accounts;
+            const tagF = this.tagFilter;
             return this.accounts.filter(a => {
-                const haystack = `${a.email || ''} ${a.run_id || ''} ${a.profile_id || ''} ${a.card_provider || ''} ${a.mail_provider || ''}`.toLowerCase();
+                // 标签快捷筛选：选中某 chip 后只留含该标签的号
+                if (tagF && !(a.tags || []).includes(tagF)) return false;
+                if (!q) return true;
+                // 搜索框：邮箱 / Run ID / Profile / 卡商 / 邮件商 / 标签 全部纳入匹配
+                const tagsStr = (a.tags || []).join(' ');
+                const haystack = `${a.email || ''} ${a.run_id || ''} ${a.profile_id || ''} ${a.card_provider || ''} ${a.mail_provider || ''} ${tagsStr}`.toLowerCase();
                 return haystack.includes(q);
             });
         },
@@ -1333,6 +1429,15 @@ function accountsData() {
         // 同时只展开一个（避免多个 dropdown 同时叠在一起）
         rowExportOpenId: '',
 
+        // 🏷 标签：allTags 全量标签（快捷筛选 chip + datalist 提示），tagFilter 当前筛选标签，
+        // tagEditorRunId 当前展开编辑器的行，tagDraft/tagInput 编辑中草稿，tagSaving 保存态。
+        allTags: [],
+        tagFilter: '',
+        tagEditorRunId: '',
+        tagDraft: [],
+        tagInput: '',
+        tagSaving: false,
+
         get emptyMessage() {
             return {
                 registered: '普号池为空。先去 /tasks/create 用 mode=register_only 注册一批号',
@@ -1361,6 +1466,11 @@ function accountsData() {
                     } catch (_) { this.counts[t] = 0; }
                 }
             }
+            // 拉全量标签供快捷筛选 chip / 编辑器 datalist 用（失败不阻塞列表）
+            try {
+                const r = await fetchJson('/api/accounts/tags');
+                this.allTags = (r && r.tags) || [];
+            } catch (_) { /* 标签拉取失败不影响主列表 */ }
         },
 
         // ── 多选 helpers ──
@@ -1835,6 +1945,83 @@ function accountsData() {
             const at = st.at ? new Date(st.at).toLocaleString(window._locale) : '';
             const plan = st.plan ? ` plan=${st.plan}` : '';
             return `${this.pixStatusLabel(st)}${plan}\n${at}`;
+        },
+
+        // ── 🏷 标签：徽章配色 + 内联编辑器 + 快捷筛选 ──
+        // 标签无预定义色板，按字符串哈希稳定映射到一组柔和配色（同名标签恒同色）。
+        _TAG_PALETTE: [
+            'bg-primary/10 text-primary border-primary/20',
+            'bg-success/10 text-success border-success/20',
+            'bg-amber-100 text-amber-700 border-amber-200',
+            'bg-sky-100 text-sky-700 border-sky-200',
+            'bg-violet-100 text-violet-700 border-violet-200',
+            'bg-rose-100 text-rose-700 border-rose-200',
+            'bg-teal-100 text-teal-700 border-teal-200',
+            'bg-indigo-100 text-indigo-700 border-indigo-200',
+        ],
+        tagBadgeClass(tag) {
+            let h = 0;
+            const s = String(tag || '');
+            for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+            return this._TAG_PALETTE[h % this._TAG_PALETTE.length];
+        },
+        toggleTagFilter(tag) {
+            this.tagFilter = (this.tagFilter === tag) ? '' : tag;
+        },
+        openTagEditor(acc) {
+            this.tagEditorRunId = acc.run_id;
+            this.tagDraft = [...(acc.tags || [])];
+            this.tagInput = '';
+            this.tagSaving = false;
+        },
+        closeTagEditor() {
+            this.tagEditorRunId = '';
+            this.tagDraft = [];
+            this.tagInput = '';
+        },
+        addTagFromInput() {
+            const raw = (this.tagInput || '').trim().slice(0, 24);
+            this.tagInput = '';
+            if (!raw) return;
+            if (this.tagDraft.includes(raw)) return;  // 去重
+            if (this.tagDraft.length >= 20) {
+                showToast('单个号最多 20 个标签', 'error');
+                return;
+            }
+            this.tagDraft = [...this.tagDraft, raw];
+        },
+        removeTagFromDraft(idx) {
+            this.tagDraft = this.tagDraft.filter((_, i) => i !== idx);
+        },
+        async saveTagDraft(acc) {
+            if (this.tagSaving) return;
+            // 输入框还有未回车的内容时，一并并入（避免用户漏按回车丢标签）
+            const pending = (this.tagInput || '').trim().slice(0, 24);
+            let draft = [...this.tagDraft];
+            if (pending && !draft.includes(pending) && draft.length < 20) draft.push(pending);
+            this.tagSaving = true;
+            try {
+                const updated = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(acc.run_id)}/tags`,
+                    {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tags: draft }),
+                    }
+                );
+                // 就地更新该行 tags（避免整表刷新），并合并新标签进 allTags
+                acc.tags = updated.tags || [];
+                const merged = new Set([...this.allTags, ...acc.tags]);
+                this.allTags = [...merged].sort();
+                // 若被筛掉的标签已不存在了，清掉失效筛选
+                if (this.tagFilter && !this.allTags.includes(this.tagFilter)) this.tagFilter = '';
+                showToast('标签已保存', 'success');
+                this.closeTagEditor();
+            } catch (exc) {
+                showToast(`保存标签失败：${exc.message || exc}`, 'error');
+            } finally {
+                this.tagSaving = false;
+            }
         },
 
         async markPromote(acc, tier) {
