@@ -26,6 +26,7 @@ Grok (x.ai) 注册状态机
 from __future__ import annotations
 
 import logging
+import os
 import random
 import secrets
 import time
@@ -294,10 +295,19 @@ _JS_HAS_PROFILE_FORM = r"""() => {
 }"""
 
 # Turnstile state 检测（无 arg）
+# ready 双判据（修「被动验证已过但白等 20s」卡顿，run a36ee800 实证）：
+#   ① 隐藏 input cf-turnstile-response 有值（最终态，由 widget 回调异步写入，时机偏晚）；
+#   ② turnstile.getResponse() 返回非空 token（widget 内部 token，常先于 input.value 就绪）。
+# 任一就绪即 ready —— 被动验证真过时能立即返回，省掉等满 _wait_turnstile_ready 的 20s 墙钟。
+# input 不存在但 widget 已有 token 时也算 ready（DOM 变体下隐藏 input 可能尚未挂载）。
 _JS_TURNSTILE_STATE = r"""() => {
+  let widgetToken = '';
+  try { widgetToken = String(turnstile.getResponse() || '').trim(); } catch (e) {}
   const ci = document.querySelector('input[name="cf-turnstile-response"]');
+  const inputToken = ci ? String(ci.value || '').trim() : '';
+  if (inputToken || widgetToken) return 'ready';
   if (!ci) return 'not-found';
-  return String(ci.value || '').trim() ? 'ready' : 'pending';
+  return 'pending';
 }"""
 
 # Turnstile token 同步到隐藏 input（arg: token）
@@ -327,6 +337,180 @@ _JS_LS_SSO = r"""() => {
   }
   return '';
 }"""
+
+# ── CDP MouseEvent screenX/screenY 反检测 patch ──
+# 根因（移植自 TheFalloutOf76 / ObjectAscended 的 turnstilePatch，2026-06-17）：
+# Chrome 经 CDP（Input.dispatchMouseEvent）派发的鼠标事件有个固有特征——
+# MouseEvent.screenX/screenY 恒等于 clientX/clientY（相对视口坐标），而真人点击时
+# screenX = clientX + 浏览器窗口在物理屏幕的偏移，两者必然不同。Cloudflare 专门检测
+# 「screenX === clientX」（或 screenX 偏小）来识别 CDP 自动化 → Turnstile 拒发 token。
+#
+# 修法（从 JS 侧根治，补 Python 侧 _click_submit_real 真实坐标点击补不到的洞）：
+# 在每个 document 的脚本执行前（add_init_script），把 MouseEvent.prototype 的
+# screenX/screenY 重写成一个随机但固定的「伪屏幕偏移」，让 screenX !== clientX。
+# 必须改 prototype 的属性（拦截所有未来产生的 MouseEvent 实例），而非单个实例。
+# 取值 800-1200 / 400-600：覆盖常见窗口偏移量，且对 4K 屏也成立（原 patch 注释）。
+#
+# 范围：仅 Grok（run_grok_task 内注入），不动已跑通的 OpenAI 流程；只补 screenX/screenY
+# 这一个 Cloudflare 确定检测的缺口，不碰 navigator.webdriver 等（AdsPower 已做指纹伪装，
+# 重复 patch 反而可能与其伪装打架引入异常指纹）。
+#
+# 关键覆盖点（Playwright 官方文档实证 + 原版 manifest "all_frames":true 对齐）：检测**恰好
+# 发生在 Turnstile 的 cross-domain iframe 内部**（CF 复选框嵌在跨域 iframe，CDP 点击坐标相
+# 对 iframe → screenX<100）。Playwright 的 context.add_init_script 走 CDP
+# Page.addScriptToEvaluateOnNewDocument，「每个 child frame attach/navigate 时都注入」（含
+# cross-domain iframe，浏览器进程级注入不受同源策略限制）——等价原版插件 all_frames:true。
+# 故 patch 能打进 Turnstile iframe，这是它生效的前提（用 _verify_screen_patch 自检确认）。
+#
+# 已知风险（两个原版仓库都未处理，标记供真机验证）：
+#   ① 描述符指纹：MouseEvent.prototype.screenX 原生是 accessor(getter)。用 defineProperty
+#      重定义它本身是个「描述符被改」的动作，理论上可被 CF 二次检测（检查 getter 是否
+#      native code）。本实现保留 getter 形态（非 value 数据属性）以最小化形态差异，但无法
+#      消除「getter 不是 native」这一事实——若未来 CF 加此检测会失效。
+#   ② 真人点击副作用：patch 后**真人手动点击**（_wait_turnstile_manual_handoff 兜底场景）
+#      的 screenX 也变成伪造固定值。但伪造值落在「几百」区间(800-1200)正是 CF 认为真人的
+#      范围，故不冲突、甚至更一致（不会出现真人点击却 screenX<100 的矛盾）。
+#   ③ 军备竞赛：Chromium bug 40280325 的修复 2025-09 已写好但截至 2025-10 未 merge，
+#      stable Chrome 仍带此 bug → patch 当前有效；一旦 merge 进 AdsPower 用的内核即失效。
+#
+# 随机值语义：JS 在**每个 frame 内**各自执行 randInt（add_init_script 注入的是源码字符串，
+# 每个 document 求值一次）→ 天然 per-frame 随机，比原版「模块加载时算一次全局固定值」更自然。
+_TURNSTILE_SCREEN_PATCH = r"""
+(() => {
+  const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+  // old method wouldn't work on 4k screens —— 用固定随机偏移而非 0
+  const sx = randInt(800, 1200);
+  const sy = randInt(400, 600);
+  try {
+    // 用 getter 重定义（非 value 数据属性）：① 拦截所有未来 MouseEvent 实例；
+    // ② 保留 accessor 形态，最小化与原生「screenX 本就是 getter」的描述符差异。
+    Object.defineProperty(MouseEvent.prototype, 'screenX', { configurable: true, get: () => sx });
+    Object.defineProperty(MouseEvent.prototype, 'screenY', { configurable: true, get: () => sy });
+    // 标记位：供 _verify_screen_patch 自检确认 patch 真在本 frame 生效（含 iframe）。
+    try { window.__tsPatchApplied = { sx, sy }; } catch (e) {}
+  } catch (e) { /* 已被定义过 / 描述符不可配置则忽略，不抛 */ }
+})();
+"""
+
+# 自检探针 JS：读 patch 是否在当前 frame 生效。返回 dict 供 Python 判定。
+#   - applied:      window.__tsPatchApplied 标记是否存在（init script 是否跑过）
+#   - screenX/Y:    实例化一个 MouseEvent 读其 screenX/Y（验证 getter 真生效）
+#   - clientX:      同一实例的 clientX（用于确认 screenX !== clientX，即检测被规避）
+#   - bypassed:     screenX !== clientX（true = CF 的 screenX===clientX 检测被规避）
+_JS_VERIFY_SCREEN_PATCH = r"""() => {
+  let applied = false, mark = null;
+  try { applied = !!window.__tsPatchApplied; mark = window.__tsPatchApplied || null; } catch (e) {}
+  let sx = null, sy = null, cx = null, cy = null;
+  try {
+    const ev = new MouseEvent('mousemove', { clientX: 42, clientY: 42 });
+    sx = ev.screenX; sy = ev.screenY; cx = ev.clientX; cy = ev.clientY;
+  } catch (e) {}
+  return {
+    applied: applied,
+    mark: mark,
+    screenX: sx, screenY: sy, clientX: cx, clientY: cy,
+    bypassed: (sx !== null && cx !== null && sx !== cx),
+  };
+}"""
+
+
+def _install_screen_patch(context: Any, emit: Callable) -> None:
+    """在 context 上注入 MouseEvent screenX/screenY 反检测 patch（best-effort）。
+
+    用 add_init_script 而非浏览器插件：我们连的是已运行的 AdsPower CDP，改不了启动参数
+    （--load-extension 那条路走不通），但 add_init_script 在已连接的 context 上即可生效，
+    且在每个新 document（含 cross-domain iframe）的脚本执行前注入，正好赶在 Turnstile
+    widget 初始化之前 patch 好 MouseEvent.prototype。失败静默（不阻塞主流程）。
+    """
+    try:
+        context.add_init_script(_TURNSTILE_SCREEN_PATCH)
+        emit("action", "GROK_ENTRY", "已注入 MouseEvent screenX/screenY 反检测 patch",
+             action_id="screen_patch", result="ok")
+    except Exception as exc:
+        logger.warning("Grok screenX/screenY patch 注入失败（继续，退回原过盾率）: %s", exc)
+
+
+def _verify_screen_patch(page: Any, emit: Callable, *, in_iframe: bool = False) -> bool:
+    """自检 patch 是否在主框架 / Turnstile iframe 内真生效（A 项：可观测性）。
+
+    为什么需要：add_init_script 理论覆盖 cross-domain iframe（Playwright 官方文档），但检测
+    恰发生在 iframe 内——若那个 frame 因时序/变体没被注入，patch 就完全失效却无从察觉（只能
+    靠过没过盾盲猜）。本探针把「patch 是否生效 + screenX 是否已 !== clientX」做成事件流可见
+    信号，真机跑时直接看 GROK_ENTRY/screen_patch_verify 事件即可定位。
+
+    Args:
+        page: Playwright Page（主框架探测）。
+        emit: 事件回调。
+        in_iframe: 仅用于事件标签区分（主框架 vs 报告 iframe 覆盖意图）。
+
+    Returns:
+        True = patch 已生效且 screenX !== clientX（检测被规避）；False = 未生效 / 探测失败。
+    """
+    scope = "iframe" if in_iframe else "main"
+    try:
+        result = page.evaluate(_JS_VERIFY_SCREEN_PATCH)
+    except Exception as exc:
+        emit("action", "GROK_ENTRY", f"screenX patch 自检失败（{scope}）: {exc}",
+             action_id="screen_patch_verify", result="error")
+        return False
+    if not isinstance(result, dict):
+        return False
+    applied = bool(result.get("applied"))
+    bypassed = bool(result.get("bypassed"))
+    sx, cx = result.get("screenX"), result.get("clientX")
+    if applied and bypassed:
+        emit("action", "GROK_ENTRY",
+             f"screenX patch 已生效（{scope}）：screenX={sx} != clientX={cx}，CDP 检测已规避",
+             action_id="screen_patch_verify", result="ok")
+        return True
+    emit("action", "GROK_ENTRY",
+         f"screenX patch 未生效（{scope}）：applied={applied} screenX={sx} clientX={cx}，"
+         f"该 frame 可能未被注入（patch 失效，过盾率退回原状）",
+         action_id="screen_patch_verify", result="warning")
+    return False
+
+
+def _verify_screen_patch_in_turnstile_iframe(page: Any, emit: Callable) -> bool:
+    """在 Turnstile 的 cross-domain iframe 内自检 patch 是否生效（A 项核心）。
+
+    检测发生在 iframe 内，故这里才是 patch 必须生效的真正位置。用 frame_locator 拿到
+    Turnstile iframe 的 frame，在其内部 evaluate 探针。iframe 不存在（被动模式无交互式
+    widget / 尚未渲染）则跳过返回 True（无 iframe 即无此 frame 的检测面）。
+    """
+    try:
+        # 找 Turnstile iframe（复用 _TURNSTILE_IFRAME_SELECTOR）。frame_locator 拿不到
+        # 对应 Frame 对象时退回「主框架已生效即可」。
+        frames = page.frames if hasattr(page, "frames") else []
+        cf_frames = [
+            f for f in frames
+            if "challenges.cloudflare.com" in str(getattr(f, "url", "") or "").lower()
+            or "cloudflare" in str(getattr(f, "url", "") or "").lower()
+        ]
+        if not cf_frames:
+            # 没有 Cloudflare iframe（被动模式/未渲染）→ 无此检测面，视为通过
+            return True
+        ok_any = False
+        for fr in cf_frames:
+            try:
+                result = fr.evaluate(_JS_VERIFY_SCREEN_PATCH)
+            except Exception:
+                continue
+            if isinstance(result, dict) and result.get("applied") and result.get("bypassed"):
+                ok_any = True
+                emit("action", "GROK_PROFILE",
+                     f"screenX patch 已穿透 Turnstile iframe：screenX={result.get('screenX')} "
+                     f"!= clientX={result.get('clientX')}",
+                     action_id="screen_patch_verify", result="ok")
+                break
+        if not ok_any:
+            emit("action", "GROK_PROFILE",
+                 "screenX patch 未穿透 Turnstile iframe（检测面未覆盖，过盾率可能退回原状）",
+                 action_id="screen_patch_verify", result="warning")
+        return ok_any
+    except Exception as exc:
+        logger.warning("Grok Turnstile iframe patch 自检异常: %s", exc)
+        return False
+
 
 # ── 语言无关：关闭 Cookie 同意弹窗 ──（真机实测会遮挡 OTP 框）
 # 策略：找含 cookie 文案的容器，点其中「接受类」按钮（多语言关键词），
@@ -528,6 +712,9 @@ def run_grok_task(
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(ws_url)
         context: "BrowserContext" = browser.contexts[0]
+        # 注入 CDP MouseEvent screenX/screenY 反检测 patch（必须在导航 sign-up 前装好，
+        # 让后续每个 document 的 Turnstile widget 初始化时 MouseEvent.prototype 已被 patch）。
+        _install_screen_patch(context, _emit)
         # 选一个干净 tab：profile 可能残留其他站点的 tab（尤其之前跑过 OpenAI 留下的
         # accounts/chatgpt 页 + 「セッションが終了しました」），直接用 pages[0] 会在错的
         # tab 上操作 → 找不到 Grok 表单 → 「填写资料超时或表单未就绪」。
@@ -539,15 +726,18 @@ def run_grok_task(
         assist = {"llm": llm_provider, "exp": experience}
         try:
             _open_signup(page, _emit, assist, context=context)
+            # A 项自检：sign-up 主框架已加载，确认 screenX patch 真生效（screenX !== clientX）。
+            # 失败只记 warning 不阻塞——patch 缺失等于退回原过盾率，仍可走人工接管兜底。
+            _verify_screen_patch(page, _emit)
             _fill_email(page, email, _emit, assist)
             _wait_and_fill_code(page, mail_api, email, code_timeout, _emit, assist)
             _fill_profile(page, password, solver_runtime, try_solve_captcha, _emit, assist, config=config)
             sso = _extract_sso(page, context, sso_timeout, _emit)
         except GrokRegistrationError:
-            _screenshot(page, db_run_id, "grok_failure")
+            _screenshot(page, db_run_id, "grok_failure", config=config)
             raise
         except Exception as exc:
-            _screenshot(page, db_run_id, "grok_failure")
+            _screenshot(page, db_run_id, "grok_failure", config=config)
             raise GrokRegistrationError(f"Grok 注册异常: {exc}") from exc
 
         if not sso:
@@ -612,6 +802,37 @@ def _select_clean_grok_page(context: Any, emit: Callable) -> Any:
     return target
 
 
+def _safe_evaluate(page: Any, js: str, *args: Any, retries: int = 3, default: Any = None) -> Any:
+    """安全执行 page.evaluate，撞上导航（Execution context destroyed）时自动等 settle 重试。
+
+    根因（修 run 69939ddc「填邮箱超时」+「AI 辅助无候选元素」）：x.ai sign-up 走 OAuth
+    多跳重定向，goto(domcontentloaded) 返回时页面可能仍在跳转。此时 evaluate 撞上导航会抛
+    `Execution context was destroyed, most likely because of a navigation`，旧逻辑直接进
+    except 降级 → 跳过清登录态 → 脏 profile 带旧账号 → 注册表单永远出不来。
+
+    本函数：撞导航就 wait_for_load_state 等页面 settle 再重试，把竞态吸收在内部，
+    让调用方拿到稳定结果而非异常。重试耗尽仍失败则返回 default（不抛）。
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            return page.evaluate(js, *args) if args else page.evaluate(js)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            # 仅对「导航销毁上下文」类错误重试；其它错误（语法/超时）直接返回 default
+            if "execution context" in msg or "navigation" in msg or "destroyed" in msg:
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=8000)
+                except Exception:
+                    pass
+                time.sleep(0.8)
+                continue
+            break
+    logger.debug("Grok _safe_evaluate 多次重试仍失败（返回 default）: %s", last_exc)
+    return default
+
+
 def _clear_grok_session(page: Any, context: Any, emit: Callable) -> None:
     """清掉 profile 残留的 grok 登录态（cookies + storage），保证从干净注册态开始。
 
@@ -623,49 +844,78 @@ def _clear_grok_session(page: Any, context: Any, emit: Callable) -> None:
     except Exception as exc:
         logger.warning("Grok 清 cookies 失败（继续）: %s", exc)
     # storage 清理需在 grok 域上下文执行（localStorage 按域隔离）。
+    # 用 _safe_evaluate：清理常紧跟 goto，易撞导航，撞了等 settle 重试而非放弃。
+    _safe_evaluate(page, _JS_CLEAR_GROK_STORAGE, default=None)
+
+
+def _settle_after_goto(page: Any) -> None:
+    """goto 后等页面真正 settle（吸收 OAuth 多跳重定向），再做 evaluate。
+
+    x.ai sign-up 走 OAuth 重定向，domcontentloaded 返回时常仍在跳转。先等 networkidle
+    （重定向链跑完、网络静默），拿不到就退回 domcontentloaded + 固定 sleep 兜底。
+    """
     try:
-        page.evaluate(_JS_CLEAR_GROK_STORAGE)
-    except Exception as exc:
-        logger.debug("Grok 清 storage 失败（可能尚未导航到 grok 域，继续）: %s", exc)
+        page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        time.sleep(1.5)
 
 
 def _open_signup(page: Any, emit: Callable, assist: Optional[dict] = None, context: Any = None) -> None:
     emit("state_change", "GROK_ENTRY", f"打开 Grok 注册页 {SIGNUP_URL}")
-    # 进站前先清登录态：先导航到 grok 域才能清 localStorage（按域隔离），再清 cookies 重导航。
+    # 进站策略（修 run 69939ddc「填邮箱超时 / AI 辅助无候选元素」根因——脏 profile 没清空）：
+    # 注册是全新流程，进站前**无条件清一次登录态**（cookie + storage），不再依赖
+    # _JS_IS_LOGGED_IN_CHAT 检测「是否脏」。原因：
+    #   ① 检测 evaluate 会撞 OAuth 重定向抛 Execution context destroyed → 旧逻辑进 except
+    #      降级只 goto 不清理 → 脏号登录态残留 → 注册表单永远不渲染；
+    #   ② 无条件清理对全新注册无副作用，比「检测到脏才清」更稳健，天然绕过竞态。
+    # 流程：goto → settle → 清登录态 → 重新 goto → settle，全程 evaluate 走 _safe_evaluate。
     if context is not None:
         try:
             page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(1)
-            # 若 profile 脏（已登录被重定向到聊天页）→ 清登录态 + 重新导航到 sign-up
-            if page.evaluate(_JS_IS_LOGGED_IN_CHAT):
-                emit("action", "GROK_ENTRY", "检测到 profile 残留登录态（聊天页），清理后重新进注册页", action_id="clean_session", result="dirty_session")
+            _settle_after_goto(page)
+            # 无条件清：先清当前域 storage + cookies（此时已在 x.ai 域，localStorage 可清）
+            _clear_grok_session(page, context, emit)
+            emit("action", "GROK_ENTRY", "进站前已清理 profile 登录态（cookie+storage）",
+                 action_id="clean_session", result="cleared")
+            # 重新导航到干净 sign-up
+            page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
+            _settle_after_goto(page)
+            # 清理后仍被重定向到聊天页（cookie 域更深）→ 再清一次 + 刷新
+            if _safe_evaluate(page, _JS_IS_LOGGED_IN_CHAT, default=False):
+                emit("action", "GROK_ENTRY", "清理后仍残留登录态，二次清理并刷新",
+                     action_id="clean_session", result="dirty_again")
                 _clear_grok_session(page, context, emit)
                 page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
-                time.sleep(2)
-                # 二次仍是聊天页 → cookie 域可能更深，再清一次 storage 并刷新
-                if page.evaluate(_JS_IS_LOGGED_IN_CHAT):
-                    _clear_grok_session(page, context, emit)
-                    page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
-                    time.sleep(2)
+                _settle_after_goto(page)
         except Exception as exc:
-            logger.warning("Grok clean-start 导航异常（降级走原路径）: %s", exc)
+            # 降级路径也保证清理（修旧 bug：旧 except 只 goto 不清登录态）
+            logger.warning("Grok clean-start 异常，降级仍执行清理: %s", exc)
+            try:
+                _clear_grok_session(page, context, emit)
+            except Exception:
+                pass
             page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(2)
+            _settle_after_goto(page)
     else:
         page.goto(SIGNUP_URL, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(2)
+        _settle_after_goto(page)
     _dismiss_cookie(page, emit)  # 真机会弹 Cookie 同意框遮挡操作，先关掉
     # 语言无关：从 4 个 OAuth 按钮里挑 email 那个（多语言关键词 + 排除 Apple/Google/X + svg 兜底）。
     # 部分场景页面直接就是填邮箱页（无分流），探测到 email input 即可跳过点击。
     deadline = time.time() + 12
     while time.time() < deadline:
-        if page.evaluate(_JS_HAS_EMAIL_INPUT):
+        if _safe_evaluate(page, _JS_HAS_EMAIL_INPUT, default=False):
             emit("action", "GROK_ENTRY", "已在填邮箱页，跳过分流按钮", action_id="email_signup", result="skipped")
             return
-        try:
-            clicked = page.evaluate(_JS_CLICK_EMAIL_SIGNUP, {"emailKw": list(_EMAIL_KEYWORDS), "excludeKw": list(_OAUTH_EXCLUDE_KEYWORDS)})
-        except Exception:
-            clicked = False
+        clicked = _safe_evaluate(
+            page, _JS_CLICK_EMAIL_SIGNUP,
+            {"emailKw": list(_EMAIL_KEYWORDS), "excludeKw": list(_OAUTH_EXCLUDE_KEYWORDS)},
+            default=False,
+        )
         if clicked:
             emit("action", "GROK_ENTRY", "已点击邮箱注册入口", action_id="email_signup", result="ok")
             time.sleep(1.5)
@@ -673,18 +923,33 @@ def _open_signup(page: Any, emit: Callable, assist: Optional[dict] = None, conte
         time.sleep(0.5)
     # 硬规则失败 → AI 辅助决策（找一个可点的、像 email 入口的按钮），成功后固化
     if _try_assist(page, emit, assist, step="entry", want_fill=False,
-                   verify=lambda: bool(page.evaluate(_JS_HAS_EMAIL_INPUT))):
+                   verify=lambda: bool(_safe_evaluate(page, _JS_HAS_EMAIL_INPUT, default=False))):
         emit("action", "GROK_ENTRY", "AI 辅助点中邮箱注册入口", action_id="email_signup", result="assisted")
         return
     raise GrokRegistrationError("未找到邮箱注册入口按钮（硬规则+AI辅助均失败，已存证据截图）")
+
+
+# 邮箱输入框 selector（与 _JS_FILL_EMAIL 内 selector 对齐，真实键盘填充用）
+_GROK_EMAIL_SELECTOR = (
+    'input[data-testid="email"], input[name="email"], '
+    'input[type="email"], input[autocomplete="email"]'
+)
 
 
 def _fill_email(page: Any, email: str, emit: Callable, assist: Optional[dict] = None) -> None:
     emit("state_change", "GROK_FILL_EMAIL", f"填写邮箱 {email}")
     deadline = time.time() + 15
     while time.time() < deadline:
-        result = page.evaluate(_JS_FILL_EMAIL, email)
-        if result == "filled":
+        # 主路径：真实键盘填邮箱（isTrusted=true）。根因（修 run 2082cfd5「收到验证码但
+        # 停在空邮箱页、OTP 框始终不出现」）：x.ai 邮箱框是 react 受控组件，旧 _JS_FILL_EMAIL
+        # 用 setter+合成 InputEvent（isTrusted=false）→ 视觉填了、回读也过，但 react formState
+        # 不认 → 提交 onSubmit 拿到空邮箱 → x.ai 忽略提交，停在邮箱页，OTP 永不渲染。
+        # 与资料页/OTP/OpenAI 密码页同源修复（复用 _fill_one_field_real 的 press_sequentially）。
+        filled = _fill_one_field_real(page, _GROK_EMAIL_SELECTOR, email)
+        # 真实键盘失败再退回 JS 合成事件（某些非 react 场景仍有效）
+        if not filled:
+            filled = page.evaluate(_JS_FILL_EMAIL, email) == "filled"
+        if filled:
             time.sleep(0.8)
             # 语言无关提交：优先 button[type=submit]，失败再回退 Enter 键
             if not page.evaluate(_JS_CLICK_SUBMIT):
@@ -868,6 +1133,10 @@ def _fill_profile(page: Any, password: str, solver_runtime: Any, try_solve: Call
         # 改为 Playwright press_sequentially（真实键盘事件 isTrusted=true），与 OpenAI 创建密码页
         # /OTP 页同源修复（changelog 2026-06-02 react-aria isTrusted）。
         if _fill_profile_real_keyboard(page, first, last, password, emit):
+            # A 项核心自检：检测发生在 Turnstile 的 cross-domain iframe 内，过盾前确认 patch
+            # 真穿透到了那个 iframe（screenX !== clientX）。未穿透 → 事件流 warning 提示「检测面
+            # 未覆盖」，便于真机定位是 patch 没生效还是别的风控层卡住，不阻塞主流程。
+            _verify_screen_patch_in_turnstile_iframe(page, emit)
             # 过 Turnstile（提交前）：先尝试 solver（pending 时），再轮询等 token 就绪。
             # Turnstile 是被动异步验证，截图实证会自动 "成功しました!" 且 cf-turnstile-response
             # 隐藏 input 被填入完整 token；提交前轮询等 pending → ready（最多 ~20s）。
@@ -879,7 +1148,10 @@ def _fill_profile(page: Any, password: str, solver_runtime: Any, try_solve: Call
             # token 绑定 IP/指纹/sitekey，跨环境注入必被 siteverify 拒；交互式挑战
             # 唯一可靠的免费解是真人 isTrusted 点击。详见 captcha_solver.py 模块 docstring。
             if not _wait_turnstile_ready(page, emit, timeout=20):
-                _wait_turnstile_manual_handoff(page, emit, config=config)
+                # 被动验证超时（被降级成交互式）→ 先试自动点击复选框兜底（真实坐标鼠标，
+                # 半信任环境有非零成功率，失败无副作用）；仍不通过才等人工。
+                if not _try_click_turnstile_checkbox(page, emit):
+                    _wait_turnstile_manual_handoff(page, emit, config=config)
             # 提交资料：多策略 + 提交后验证页面真的前进（语言无关，不靠按钮文案）。
             # 修 run 44cd0531「Turnstile 过了 / finish=ok 但停在资料页拿不到 sso」：旧逻辑
             # 点一次 click() 就 return，从不验证 react 表单 onSubmit 是否真触发——按钮有
@@ -1138,6 +1410,103 @@ def _wait_turnstile_ready(page: Any, emit: Callable, *, timeout: int = 20) -> bo
     return False
 
 
+# Turnstile 复选框所在的 Cloudflare iframe（src 含 challenges.cloudflare.com）。
+# 真机 DOM：交互式 widget 是嵌套 iframe，复选框在 iframe 内部，主框架点不到，
+# 必须先定位 iframe 再在其 content frame 里点复选框。
+# Turnstile widget 的 iframe selector。真机 DOM（run 0117b60f 实证）：widget 渲染在
+# 资料页内嵌容器 `<div><input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-*">`，
+# 复选框 iframe 是该容器子节点。旧 selector 只认 challenges.cloudflare.com，漏判这次的
+# widget（src 不含该串）→ count()==0 → 误判被动模式跳过。放宽到 cloudflare 通用 + 容器内 iframe。
+_TURNSTILE_IFRAME_SELECTOR = (
+    'iframe[src*="challenges.cloudflare.com"], '
+    'iframe[src*="cloudflare"], '
+    'iframe[title*="Cloudflare"], '
+    'iframe[title*="Widget"], '
+    'iframe[title*="human"], '
+    'iframe[title*="ロボット"], '
+    '[id^="cf-chl-widget"] iframe, '
+    'div:has(> div > input[name="cf-turnstile-response"]) iframe'
+)
+# iframe 内复选框 selector（语言无关，多重兜底：role/type/class）
+_TURNSTILE_CHECKBOX_SELECTOR = (
+    'input[type="checkbox"], '
+    '[role="checkbox"], '
+    'label.cb-lb input, '
+    '.cb-i, '
+    '#challenge-stage input'
+)
+
+
+def _try_click_turnstile_checkbox(page: Any, emit: Callable, *, timeout: int = 8) -> bool:
+    """交互式 Turnstile 兜底：用真实坐标鼠标点击 iframe 内复选框，试着自动过。
+
+    设计取舍（务实，非保证）：
+      - 已知局限（captcha_solver.py docstring + 3-agent 调研 2026-06-04）：Cloudflare 行为层
+        会分析鼠标轨迹/isTrusted/自动化指纹，纯自动点击在「严环境」下大概率被识破不发 token。
+      - 但用 page.mouse.move(带轨迹)+ click(真实坐标) 比裸 CDP click 真实得多（与
+        _click_submit_real 同款，避开 screenX<100 检测），在「半信任环境」下有非零成功率。
+      - 故作为人工接管前的零成本兜底：试一次，token 就绪则省掉人工；不就绪则照常等人工。
+        失败无副作用（只是多点一下复选框，不影响后续人工再点）。
+
+    Returns:
+        True = 点击后 cf-turnstile-response 变 ready（自动过了）；False = 仍 pending（交人工）。
+    """
+    # 快速短路判据（修 run 0117b60f「widget 存在但被误判被动模式跳过」+ run a36ee800「真被动白等 4s」）：
+    # 用 cf-turnstile-response 隐藏 input 是否存在作为「有无 Turnstile widget」的**权威信号**
+    # （真机 DOM 实证 widget 一定带这个 input），而非依赖 iframe src 匹配（selector 易漏判变体）。
+    #   - input 不存在 → 真没有 Turnstile（纯被动/无挑战）→ 立即返回，不浪费时间；
+    #   - input 存在 → 有 widget（可能交互式复选框）→ 继续找复选框点击，找不到也由上层转人工。
+    try:
+        has_widget = bool(page.evaluate(
+            '() => !!document.querySelector(\'input[name="cf-turnstile-response"]\')'
+        ))
+    except Exception:
+        has_widget = True  # 检测异常时保守认为有 widget，宁可多试一次复选框
+    if not has_widget:
+        logger.info("Grok 无 cf-turnstile-response（无 Turnstile widget），跳过自动点击兜底")
+        return False
+    try:
+        frame_loc = page.frame_locator(_TURNSTILE_IFRAME_SELECTOR).first
+        checkbox = frame_loc.locator(_TURNSTILE_CHECKBOX_SELECTOR).first
+        checkbox.wait_for(state="visible", timeout=6000)
+        box = checkbox.bounding_box(timeout=2000)
+    except Exception as exc:
+        # 有 widget 但定位不到复选框 iframe（DOM 变体 / 仍在加载）→ 不在此点击，
+        # 返回 False 让上层进人工接管等待（你可在窗口手动点「Verify you are human」）。
+        logger.info("Grok Turnstile widget 存在但复选框未定位到，转人工接管: %s", exc)
+        return False
+
+    if not box:
+        return False
+
+    emit("action", "GROK_PROFILE", "Turnstile 交互式：尝试自动点击复选框（兜底，失败转人工）",
+         action_id="turnstile", result="pending")
+    try:
+        cx = box["x"] + box["width"] / 2
+        cy = box["y"] + box["height"] / 2
+        # 真人感：先把鼠标移到附近再移到目标（产生移动轨迹），停顿后点击
+        page.mouse.move(cx - 30, cy - 12)
+        time.sleep(0.15)
+        page.mouse.move(cx, cy)
+        time.sleep(0.2)
+        page.mouse.click(cx, cy)
+    except Exception as exc:
+        logger.warning("Grok Turnstile 自动点击异常（转人工）: %s", exc)
+        return False
+
+    # 点击后轮询等 token 就绪（Cloudflare 验证需要 1-3s）
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _turnstile_token_present(page):
+            emit("action", "GROK_PROFILE", "Turnstile 自动点击成功（兜底生效，省去人工）",
+                 action_id="turnstile", result="ok")
+            return True
+        time.sleep(0.5)
+    emit("action", "GROK_PROFILE", "Turnstile 自动点击未通过（转人工接管）",
+         action_id="turnstile", result="failed")
+    return False
+
+
 # 人工接管等待 Turnstile 的默认时长（秒）。被动验证超时即视为降级成交互式，
 # 给运维在 AdsPower 窗口手动点复选框的时间窗口；可被 config.grok_turnstile_manual_handoff_sec 覆盖。
 _TURNSTILE_MANUAL_HANDOFF_SEC = 180
@@ -1318,17 +1687,45 @@ def _click_text(page: Any, text: Any, *, timeout: int = 10) -> bool:
     return False
 
 
-def _screenshot(page: Any, db_run_id: Optional[str], name: str) -> None:
-    """失败截图到证据包目录（best-effort，失败静默）。"""
-    if not db_run_id:
-        return
+def _resolve_artifacts_base(config: Any = None) -> str:
+    """解析证据包根目录（绝对路径），与 ArtifactRecorder 的 base_dir 同源。
+
+    根因（修「桌面 app 失败从不截图」）：桌面 app 进程 cwd=`/`，旧 _screenshot 用相对路径
+    `artifacts/runs/<id>` 会解析成 `/artifacts/...`（无写权限）→ 静默写失败，导致失败现场
+    既无截图也无 AI 辅助可用的视觉证据。
+
+    优先级（与 ArtifactRecorder 一致，落到 base_dir/<run_id>，**不再多套 runs 层**）：
+      ① config.run_artifacts_dir（注册流证据包同源 base_dir）；
+      ② env RUN_ARTIFACTS_DIR（桌面 app 由 desktop_app._bootstrap_env 锚定为绝对路径）；
+      ③ 兜底 "artifacts/runs"（CLI 直跑场景，cwd 在项目根可用）。
+    """
+    base = ""
+    if config is not None:
+        base = (getattr(config, "run_artifacts_dir", "") or "").strip()
+    if not base:
+        base = (os.getenv("RUN_ARTIFACTS_DIR", "") or "").strip()
+    if not base:
+        base = "artifacts/runs"
+    return base
+
+
+def _screenshot(page: Any, db_run_id: Optional[str], name: str, config: Any = None) -> None:
+    """失败截图到证据包目录（best-effort）。
+
+    与 run 的其它证据同目录（base_dir/<run_id>/<name>.png）。失败不抛，但**记 warning**
+    （旧版静默吞异常 → 出问题时无从排查「为啥没截图」）。db_run_id 为空时用时间戳兜底文件名，
+    保证任何失败都有现场快照。
+    """
+    base = _resolve_artifacts_base(config)
+    run_id = db_run_id or f"grok-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
     try:
-        import os
-        run_dir = os.path.join("artifacts", "runs", db_run_id)
+        run_dir = os.path.join(base, run_id)
         os.makedirs(run_dir, exist_ok=True)
-        page.screenshot(path=os.path.join(run_dir, f"{name}.png"), full_page=False)
-    except Exception:
-        pass
+        out_path = os.path.join(run_dir, f"{name}.png")
+        page.screenshot(path=out_path, full_page=False)
+        logger.info("Grok 失败截图已保存: %s", out_path)
+    except Exception as exc:
+        logger.warning("Grok 失败截图保存失败 (base=%s run=%s): %s", base, run_id, exc)
 
 
 __all__ = ["run_grok_task", "GrokRegistrationError", "SIGNUP_URL"]
