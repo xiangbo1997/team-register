@@ -100,6 +100,38 @@ class _DesktopBridge:
         except Exception as exc:  # 桥接异常不能崩窗口，回报给前端提示
             return {"ok": False, "error": str(exc)}
 
+    def copy_to_clipboard(self, text: str) -> dict:
+        """把文本写入系统剪贴板（桌面端复制 token / 链接用）。
+
+        存在原因：macOS WKWebView（pywebview 默认后端）在 http://localhost（非安全
+        上下文）下，``navigator.clipboard`` 被拒、``execCommand('copy')`` 也被新版
+        WebKit 弃用并返回 false——前端两层降级全失败，复制 token 报"复制失败，请
+        手动选中"。这里下沉到 Python 用系统 ``pbcopy`` 直接写剪贴板，绕开浏览器沙箱
+        （与 save_file 同思路：WKWebView 干不了的事交给原生）。
+
+        Web 端（浏览器访问 uvicorn）无 ``window.pywebview``，前端走浏览器剪贴板 API，
+        本桥不参与。
+
+        Returns:
+            ``{"ok": True}`` 成功；``{"ok": False, "error": "..."}`` 失败（前端回退提示）。
+        """
+        try:
+            import subprocess
+
+            payload = (text or "").encode("utf-8")
+            if sys.platform == "darwin":
+                cmd = ["pbcopy"]
+            elif sys.platform.startswith("win"):
+                cmd = ["clip"]
+            else:  # Linux：优先 xclip，没有则 xsel
+                cmd = ["xclip", "-selection", "clipboard"]
+            proc = subprocess.run(cmd, input=payload, timeout=5)
+            if proc.returncode != 0:
+                return {"ok": False, "error": f"剪贴板命令退出码 {proc.returncode}"}
+            return {"ok": True}
+        except Exception as exc:  # 桥接异常不能崩窗口，回报给前端
+            return {"ok": False, "error": str(exc)}
+
 
 # 模块级单例：create_window 时绑定 window，供 save_file 调用对话框
 _DESKTOP_BRIDGE = _DesktopBridge()

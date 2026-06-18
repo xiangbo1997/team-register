@@ -17,6 +17,12 @@ error_debug.png
 *.pyc
 config.json
 log.txt
+# 桌面应用打包产物（PyInstaller / dmg，体积大且含运行态文件，绝不入库）
+dist/
+build/
+build_app.log
+# 应用图标资源例外：图标 PNG 需要随 spec 入库（覆盖上面的 *.png 全局忽略）
+!assets/*.png
 # 个人 IDE / 编辑器配置
 .vscode/
 *.code-workspace

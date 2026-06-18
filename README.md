@@ -94,6 +94,39 @@ python -m unittest discover -s tests -v
 - 受控 commit：必须基于 preview_id，不接受自然语言直接提交
 - 高风险流程（注册自动化、浏览器/CDP、token、支付/绑卡/3DS）当前只说明，不直接 commit
 
+详见 `docs/usage-manual.md` §5「AI 助手使用说明」。
+
+## 号池运维说明（/accounts 页）
+
+### 双击复制
+
+`/accounts` 列表中，「注册名」和「邮箱」两列支持**双击复制**单元格内容，复用页面全局 `copyText()` 函数。
+
+### 刷新 Token / 验证 Plus 的防串号机制
+
+AdsPower profile 允许多号共用。为防止上一个号的 session cookie 残留导致刷新操作读错 token（静默串号），操作前会读 `chatgpt.com/api/auth/session` 校验 `session.user.email` 是否与目标号一致：
+
+- 一致：直接复用当前登录态读 session。
+- 不一致 / 取不到邮箱：全清主域 cookie（`prepare_clean_start_page`）+ magic link 重新登录目标号。
+
+详细逻辑见 `src/orchestration/verify_plus.py:_ensure_logged_in`（`verify_plus.py:92-167`）。
+
+### 未登录自动登录
+
+「刷新 Token」和「验证 Plus」两个操作，遇到未登录状态时均会用该号绑定的邮箱凭据（从 `MailAccount` 按 `Run.mail_account_id` 查询）自动走 magic link 登录，成功后继续操作。无邮箱凭据时返回 `not_logged_in_no_mail_credentials` 错误，登录失败返回 `relogin_failed` 错误。
+
+### 日志路径（排障用）
+
+控制面所有日志（含刷新 token / 核验 Plus / 号池调度等 INFO 级别步骤日志）写入以下路径：
+
+| 平台 | 路径 |
+|------|------|
+| macOS | `~/Library/Application Support/team-register/control-plane.log` |
+| Windows | `%APPDATA%\team-register\control-plane.log` |
+| Linux | `~/.local/share/team-register/control-plane.log` |
+
+若设置了 `RUN_ARTIFACTS_DIR` 环境变量，日志文件改写到该目录的**父目录**（与证据包同源）。桌面 app 看不到 stderr 时，请直接查看此文件排障。
+
 ## 控制台配置与任务级 Provider
 
 - `/config`：维护系统级默认值、运行阈值、邮件服务连接地址/API Key，以及默认 browser/card/mail provider。
@@ -125,6 +158,32 @@ python -m unittest discover -s tests -v
 - `TRACE_ON_FAILURE`：失败时是否保留额外追踪产物
 - `CLEAN_CONTEXT_MODE`：当前默认 `reuse_and_clean`
 - `MAX_NAVIGATION_RETRIES` / `MAX_EMAIL_ATTEMPTS` / `MAX_PROFILE_RECONNECTS` / `MAX_MANUAL_HANDOFFS`：恢复与人工兜底阈值
+
+## 桌面应用打包与分发（macOS / Apple Silicon）
+
+把控制面打成免安装、双击即用的原生 `.app`，再封成 `.dmg` 发给别人。入口是 `desktop_app.py`（pywebview 包一层 WKWebView，后台起 uvicorn）。
+
+```bash
+# ① 装打包依赖（与运行时 requirements.txt 分开）
+pip install -r requirements.txt -r requirements-build.txt
+
+# ②（可选）重新生成应用图标 assets/icon.icns
+python scripts/make_app_icon.py
+
+# ③ PyInstaller 打包 → dist/Team Register.app
+bash build_app.sh
+
+# ④ 封装拖拽安装镜像 → dist/Team-Register-arm64.dmg
+bash build_dmg.sh
+```
+
+分发与首次打开要点：
+
+- **架构限定**：产物是 `arm64`，仅限 Apple Silicon Mac。给 Intel 用户需把 `team-register.spec` 的 `target_arch` 改 `universal2` 重新打包。
+- **不含密钥**：bundle 内**不打入** `.env` 与 `team_register.db`（PyInstaller 只收指定包资源），分发包是干净的。对方首次启动起空库、空配置，需在应用内「配置」页自行填 API key。可写数据落在 `~/Library/Application Support/team-register/`。
+- **Chromium 已排除**：浏览器走本机 AdsPower（CDP 端口 50325），spec 只收 Playwright 的 Python 客户端栈、排除 `.local-browsers` 二进制（省约 150MB；切勿 exclude `playwright._impl._driver`，否则刷 token 会崩 `No module named`）。
+- **Gatekeeper 解除隔离**：adhoc 签名 app 跨机分发首次打开会被拦。dmg 内附「打开说明.txt」教对方执行 `xattr -dr com.apple.quarantine "/Applications/Team Register.app"` 或右键→打开。
+- **AdsPower 前置**：账号池的开通 Plus / 核验 / 刷新 token 依赖本机已启动的 AdsPower 客户端。
 
 ## 兼容说明
 
