@@ -134,7 +134,7 @@ def list_accounts(
 @router.get("/export")
 def export_accounts(
     tier: str = Query(default=TIER_REGISTERED, description="registered / plus / team / abandoned"),
-    fmt: str = Query(default=FMT_CREDENTIALS_CSV, description="credentials_csv / cpa_json"),
+    fmt: str = Query(default=FMT_CREDENTIALS_CSV, description="full_json / cpa_json / sso_text"),
     run_ids: Optional[str] = Query(
         default=None,
         description="可选：逗号分隔的 run_id 列表（仅导出选中行）；不传则导出整个 tier",

@@ -65,12 +65,16 @@ class _DesktopBridge:
     def bind_window(self, window) -> None:
         self._window = window
 
-    def save_file(self, filename: str, content: str) -> dict:
-        """弹原生保存对话框，把文本内容写到用户选定路径。
+    def save_file(self, filename: str, content: str, is_base64: bool = False) -> dict:
+        """弹原生保存对话框，把内容写到用户选定路径。
 
         Args:
-            filename: 建议的文件名（如 ``accounts_registered.csv``）。
-            content: 要保存的文本内容（导出均为 UTF-8 文本：CSV / JSON）。
+            filename: 建议的文件名（如 ``accounts_registered.csv`` / ``codex-xxx.zip``）。
+            content: 要保存的内容。``is_base64=False`` 时为 UTF-8 文本（CSV / JSON / TXT）；
+                     ``is_base64=True`` 时为 base64 编码的二进制（zip 多账号导出）。
+            is_base64: 内容是否为 base64 编码的二进制。**zip 等二进制必须走此路径**——
+                       若按文本 ``response.text()`` 传输，二进制字节会被 UTF-8 解码替换成
+                       U+FFFD 而损坏（多账号导出 zip 解压后为空即此因）。
 
         Returns:
             ``{"ok": True, "path": "/选定/路径"}`` 成功；
@@ -94,8 +98,16 @@ class _DesktopBridge:
             if not target:
                 return {"ok": False, "cancelled": True}
 
-            with open(target, "w", encoding="utf-8", newline="") as fh:
-                fh.write(content or "")
+            if is_base64:
+                # 二进制：base64 解码后以二进制模式写入，无损保真（zip 等）
+                import base64
+
+                raw = base64.b64decode(content or "")
+                with open(target, "wb") as fh:
+                    fh.write(raw)
+            else:
+                with open(target, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(content or "")
             return {"ok": True, "path": target}
         except Exception as exc:  # 桥接异常不能崩窗口，回报给前端提示
             return {"ok": False, "error": str(exc)}

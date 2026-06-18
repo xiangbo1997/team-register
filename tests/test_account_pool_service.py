@@ -20,6 +20,7 @@ from src.services.account_pool_service import (
     FMT_CPA_JSON,
     FMT_CREDENTIALS_CSV,
     FMT_FULL_JSON,
+    FMT_SSO_TEXT,
     PLATFORM_GROK,
     PLATFORM_OPENAI,
     TIER_ABANDONED,
@@ -64,6 +65,7 @@ def _make_run(
     ip_address: str = "",
     ip_country: str = "",
     platform: str = PLATFORM_OPENAI,
+    sso_token: str = "",
 ) -> Run:
     now = datetime.now(timezone.utc)
     return Run(
@@ -81,6 +83,7 @@ def _make_run(
         card_key=card_key,
         ip_address=ip_address,
         ip_country=ip_country,
+        sso_token=sso_token,
         created_at=now,
         updated_at=now,
     )
@@ -974,6 +977,161 @@ class ExportPoolTest(unittest.TestCase):
         # 只剩 1 条 success → 单 JSON object
         rows = _parse_export_to_entries(content, ctype, filename)
         self.assertEqual([r["email"] for r in rows], ["ok@x.com"])
+
+    # ── Grok sso_token 导出（feat/grok-register 后补：单 SSO/全信息 + 多选纯文本）──
+    def test_export_full_json_includes_sso_token_for_grok(self):
+        """full_json 必须带 sso_token 字段（Grok 账号全信息导出含 SSO）。
+
+        回归锁：导出曾只面向 OpenAI，full_json 不含 sso_token，Grok"账号全信息"丢 SSO。
+        """
+        with get_session() as s:
+            s.add(_make_run(
+                run_id="gs" + "0" * 14, email="grok@x.com",
+                platform=PLATFORM_GROK, sso_token="sso-ABC-123",
+            ))
+            s.commit()
+        content, ctype, filename, skipped = export_pool(TIER_REGISTERED, FMT_FULL_JSON)
+        rows = _parse_export_to_entries(content, ctype, filename)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sso_token"], "sso-ABC-123")
+
+    def test_export_full_json_sso_token_empty_for_openai(self):
+        """OpenAI 账号无 sso_token：full_json 该字段恒在但为空字符串（消费方稳定解析）。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="os" + "0" * 14, email="gpt@x.com", platform=PLATFORM_OPENAI))
+            s.commit()
+        content, ctype, filename, _ = export_pool(TIER_REGISTERED, FMT_FULL_JSON)
+        rows = _parse_export_to_entries(content, ctype, filename)
+        self.assertIn("sso_token", rows[0])
+        self.assertEqual(rows[0]["sso_token"], "")
+
+    def test_export_sso_text_single_account_plain_text(self):
+        """单 Grok 账号 sso_text → text/plain，文件名 grok-sso-{email}.txt，内容仅 token。"""
+        with get_session() as s:
+            s.add(_make_run(
+                run_id="s1" + "0" * 14, email="solo@x.com",
+                platform=PLATFORM_GROK, sso_token="sso-SOLO",
+            ))
+            s.commit()
+        content, ctype, filename, skipped = export_pool(TIER_REGISTERED, FMT_SSO_TEXT)
+        self.assertIn("text/plain", ctype)
+        self.assertEqual(filename, "grok-sso-solo@x.com.txt")
+        self.assertEqual(content, "sso-SOLO")
+        self.assertEqual(skipped, [])
+
+    def test_export_sso_text_multi_account_one_token_per_line(self):
+        """多 Grok 账号 sso_text → 单个 .txt（非 zip），每行一个 sso_token。
+
+        回归锁：用户报告"多选导出是一个文件，每个 ssotoken 一行"——这里固化该契约。
+        """
+        with get_session() as s:
+            s.add(_make_run(run_id="m1" + "0" * 14, email="a@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok-A"))
+            s.add(_make_run(run_id="m2" + "0" * 14, email="b@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok-B"))
+            s.add(_make_run(run_id="m3" + "0" * 14, email="c@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok-C"))
+            s.commit()
+        content, ctype, filename, skipped = export_pool(
+            TIER_REGISTERED, FMT_SSO_TEXT,
+            run_ids=["m1" + "0" * 14, "m2" + "0" * 14, "m3" + "0" * 14],
+        )
+        # 关键：是单个 .txt 而非 zip
+        self.assertIn("text/plain", ctype)
+        self.assertTrue(filename.endswith(".txt"), f"filename={filename}")
+        self.assertNotIn("zip", ctype)
+        # 每行一个 token（顺序按 created_at desc，与 export_pool 查询一致）
+        self.assertEqual(set(content.split("\n")), {"tok-A", "tok-B", "tok-C"})
+        self.assertEqual(len(content.split("\n")), 3)
+        self.assertEqual(skipped, [])
+
+    def test_export_sso_text_skips_runs_without_sso_token(self):
+        """sso_token 为空的 Run 跳过并记入 skipped（与 cpa_json 缺 access_token 同理）。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="h1" + "0" * 14, email="has@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok-HAS"))
+            s.add(_make_run(run_id="h2" + "0" * 14, email="empty@x.com",
+                            platform=PLATFORM_GROK, sso_token=""))
+            s.commit()
+        content, ctype, filename, skipped = export_pool(TIER_REGISTERED, FMT_SSO_TEXT)
+        # 只剩 1 条有 token → 单账号文件名
+        self.assertEqual(content, "tok-HAS")
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["email"], "empty@x.com")
+        self.assertIn("sso_token", skipped[0]["reason"])
+
+    def test_export_sso_text_empty_returns_empty_text(self):
+        """全部无 sso_token → 空文本（非空数组 JSON），文件名带 empty 标记。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="e1" + "0" * 14, email="none@x.com",
+                            platform=PLATFORM_GROK, sso_token=""))
+            s.commit()
+        content, ctype, filename, skipped = export_pool(TIER_REGISTERED, FMT_SSO_TEXT)
+        self.assertIn("text/plain", ctype)
+        self.assertEqual(content, "")
+        self.assertTrue(filename.startswith("grok-sso-empty-"), f"filename={filename}")
+        self.assertEqual(len(skipped), 1)
+
+    # ── 文件名平台前缀（codex- vs grok-）──────────────────
+    def test_export_filename_grok_uses_grok_prefix_single(self):
+        """单 Grok 账号 full_json：文件名用 grok- 前缀（不是 codex-）。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="gp" + "0" * 14, email="solo@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok"))
+            s.commit()
+        _, _, filename, _ = export_pool(TIER_REGISTERED, FMT_FULL_JSON, platform=PLATFORM_GROK)
+        self.assertEqual(filename, "grok-solo@x.com.json")
+
+    def test_export_filename_openai_keeps_codex_prefix_single(self):
+        """单 OpenAI 账号 full_json：保持历史 codex- 前缀（喂 Codex CLI）。"""
+        with get_session() as s:
+            s.add(_make_run(run_id="op" + "0" * 14, email="bob@x.com",
+                            platform=PLATFORM_OPENAI,
+                            tokens={"access_token": self._SAMPLE_JWT}))
+            s.commit()
+        _, _, filename, _ = export_pool(TIER_REGISTERED, FMT_FULL_JSON, platform=PLATFORM_OPENAI)
+        self.assertEqual(filename, "codex-bob@x.com-free.json")
+
+    def test_export_filename_grok_zip_uses_grok_prefix(self):
+        """多 Grok 账号 zip：zip 名 + 内部文件名都用 grok- 前缀。"""
+        import io as _io
+        import zipfile
+        with get_session() as s:
+            s.add(_make_run(run_id="gz1" + "0" * 13, email="a@x.com",
+                            platform=PLATFORM_GROK, sso_token="t1"))
+            s.add(_make_run(run_id="gz2" + "0" * 13, email="b@x.com",
+                            platform=PLATFORM_GROK, sso_token="t2"))
+            s.commit()
+        content, ctype, filename, _ = export_pool(
+            TIER_REGISTERED, FMT_FULL_JSON, platform=PLATFORM_GROK
+        )
+        self.assertEqual(ctype, "application/zip")
+        self.assertTrue(filename.startswith("grok-registered-2-"), f"filename={filename}")
+        with zipfile.ZipFile(_io.BytesIO(content)) as zf:
+            names = sorted(zf.namelist())
+        self.assertEqual(names, ["grok-a@x.com.json", "grok-b@x.com.json"])
+
+    def test_export_filename_mixed_platform_zip_uses_neutral_prefix(self):
+        """全部 tab 跨平台多选 → zip 用中性 accounts- 前缀，内部各自按平台。"""
+        import io as _io
+        import zipfile
+        with get_session() as s:
+            s.add(_make_run(run_id="mx1" + "0" * 13, email="gpt@x.com",
+                            platform=PLATFORM_OPENAI,
+                            tokens={"access_token": self._SAMPLE_JWT}))
+            s.add(_make_run(run_id="mx2" + "0" * 13, email="grok@x.com",
+                            platform=PLATFORM_GROK, sso_token="tok"))
+            s.commit()
+        # 不传 platform（全部 tab）+ 选中两条
+        content, ctype, filename, _ = export_pool(
+            TIER_REGISTERED, FMT_FULL_JSON,
+            run_ids=["mx1" + "0" * 13, "mx2" + "0" * 13],
+        )
+        self.assertTrue(filename.startswith("accounts-registered-2-"), f"filename={filename}")
+        with zipfile.ZipFile(_io.BytesIO(content)) as zf:
+            names = sorted(zf.namelist())
+        # 内部文件名各自按平台前缀
+        self.assertEqual(names, ["codex-gpt@x.com-free.json", "grok-grok@x.com.json"])
 
 
 class ImportPoolTest(unittest.TestCase):

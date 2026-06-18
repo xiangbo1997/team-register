@@ -17,7 +17,7 @@
                     <h3 class="text-3xl font-bold text-body tabular-nums" x-text="stats.total ?? '–'">–</h3>
                     <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-success/10 text-success text-[11px] font-medium">
                         <span class="material-symbols-outlined text-xs mr-0.5">trending_up</span>
-                        +{{ '{:.0f}'.format(0) }} 今日
+                        <span>+{{ '{:.0f}'.format(0) }} {{ _('overview.today') }}</span>
                     </div>
                 </div>
                 <div class="w-16 h-8 text-success opacity-50">
@@ -35,7 +35,7 @@
                 <div>
                     <h3 class="text-3xl font-bold text-body tabular-nums" x-text="stats.by_status?.running ?? 0">0</h3>
                     <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-secondary/10 text-secondary text-[11px] font-medium">
-                        <span x-text="(stats.by_status?.running ?? 0)"></span> 任务排队
+                        <span x-text="(stats.by_status?.running ?? 0)"></span> <span x-text="i18n('overview.tasks_queued')"></span>
                     </div>
                 </div>
                 <div class="w-16 h-8 text-secondary opacity-30">
@@ -53,7 +53,7 @@
                 <div>
                     <h3 class="text-3xl font-bold text-success tabular-nums" x-text="stats.by_status?.success ?? 0">0</h3>
                     <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-success/10 text-success text-[11px] font-medium"
-                         x-text="(stats.success_rate || '0%') + ' 通过'"></div>
+                         x-text="(stats.success_rate || '0%') + ' ' + i18n('overview.passed')"></div>
                 </div>
                 <div class="w-16 h-8 text-success opacity-50">
                     <svg class="w-full h-full" viewBox="0 0 100 40">
@@ -71,7 +71,7 @@
                     <h3 class="text-3xl font-bold text-danger tabular-nums" x-text="stats.by_status?.failed ?? 0">0</h3>
                     <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-danger/10 text-danger text-[11px] font-medium">
                         <span class="material-symbols-outlined text-xs mr-0.5">trending_down</span>
-                        <span x-text="(stats.by_status?.failed ?? 0) > 0 ? '需关注' : '稳定'"></span>
+                        <span x-text="(stats.by_status?.failed ?? 0) > 0 ? i18n('overview.needs_attention') : i18n('overview.stable')"></span>
                     </div>
                 </div>
                 <div class="w-16 h-8 text-danger opacity-50">
@@ -88,7 +88,7 @@
             <div class="flex items-center justify-between">
                 <div>
                     <h3 class="text-3xl font-bold text-primary tabular-nums" x-text="stats.success_rate || '0%'">0%</h3>
-                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium">目标 85%</div>
+                    <div class="mt-2 inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium" x-text="i18n('overview.target_85')"></div>
                 </div>
                 <div class="relative w-12 h-12 flex items-center justify-center">
                     <svg class="w-full h-full transform -rotate-90">
@@ -111,7 +111,7 @@
         <div class="flex items-center justify-between">
             <div>
                 <h3 class="text-lg font-semibold text-body" x-text="i18n('overview.quick_actions')"></h3>
-                <p class="text-sm text-muted">常用操作快速入口</p>
+                <p class="text-sm text-muted" x-text="i18n('overview.quick_actions_subtitle')"></p>
             </div>
             <div class="flex items-center gap-3">
                 <a href="/tasks/create"
@@ -150,16 +150,16 @@
         {# Inline filter chips + density/settings #}
         <div class="px-6 py-3 bg-subtle/30 flex items-center gap-4">
             <button @click="filterChip = ''" :class="filterChip === '' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
-                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">全部</button>
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors" x-text="i18n('tasks.list.filter_all')"></button>
             <button @click="filterChip = 'running'" :class="filterChip === 'running' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
-                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">running</button>
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors" x-text="i18n('status.running')"></button>
             <button @click="filterChip = 'success'" :class="filterChip === 'success' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
-                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">success</button>
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors" x-text="i18n('status.success')"></button>
             <button @click="filterChip = 'failed'" :class="filterChip === 'failed' ? 'text-primary bg-primary/10' : 'text-muted hover:text-body'"
-                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors">failed</button>
+                    class="text-sm font-medium px-3 py-1 rounded-full transition-colors" x-text="i18n('status.failed')"></button>
             <div class="ml-auto flex items-center gap-3">
-                {{ ui.grid_search(placeholder='搜索 邮箱 / Run ID / 阶段...') }}
-                <span class="material-symbols-outlined text-lg text-muted cursor-default" title="密度">density_medium</span>
+                {{ ui.grid_search(placeholder=_('overview.search_placeholder')) }}
+                <span class="material-symbols-outlined text-lg text-muted cursor-default" title="{{ _('common.density') }}">density_medium</span>
                 {{ ui.grid_columns_settings() }}
             </div>
         </div>
@@ -187,7 +187,7 @@
                             @click="window.location = '/tasks/' + task.id">
                             <td x-show="visibleColumns.includes('email')" class="px-6">
                                 <span x-show="task.email" class="mono-text text-sm" x-text="task.email"></span>
-                                <span x-show="!task.email" class="text-muted italic text-sm">(空邮箱)</span>
+                                <span x-show="!task.email" class="text-muted italic text-sm" x-text="i18n('overview.empty_email')"></span>
                             </td>
                             <td x-show="visibleColumns.includes('status')" class="px-6">
                                 <span :class="statusBadgeClass(task.status)"
@@ -210,27 +210,15 @@
             </table>
         </div>
 
-        {# Pagination footer #}
+        {# 预览页脚：最近任务只展示最新 N 条（dashboard 预览，非完整列表）。
+           完整浏览 + 分页在 /tasks，故这里不做假分页，只显示「展示最新 N 条 / 共 M」+ 查看全部 CTA。 #}
         <div class="px-6 py-4 flex items-center justify-between border-t border-border bg-subtle/10 text-sm">
-            <div class="text-muted tabular-nums">
-                <span x-text="filteredTasks.length"></span> of <span x-text="stats.total || 0"></span> rows ·
-                <span class="text-body font-medium ml-1">25 / page</span>
-            </div>
-            <div class="flex items-center gap-4">
-                <button disabled class="text-muted hover:text-body disabled:opacity-50 flex items-center gap-1">
-                    <span class="material-symbols-outlined text-lg">chevron_left</span>
-                    Prev
-                </button>
-                <div class="flex items-center gap-1">
-                    <button class="w-8 h-8 rounded bg-primary text-white font-medium shadow-token-sm tabular-nums">1</button>
-                    <button class="w-8 h-8 rounded hover:bg-subtle transition-colors text-muted hover:text-body tabular-nums">2</button>
-                    <button class="w-8 h-8 rounded hover:bg-subtle transition-colors text-muted hover:text-body tabular-nums">3</button>
-                </div>
-                <a href="/tasks" class="text-body hover:text-primary flex items-center gap-1">
-                    Next
-                    <span class="material-symbols-outlined text-lg">chevron_right</span>
-                </a>
-            </div>
+            <div class="text-muted tabular-nums"
+                 x-text="i18n('overview.showing_recent').replace('{n}', filteredTasks.length).replace('{total}', stats.total || 0)"></div>
+            <a href="/tasks" class="text-primary hover:text-primary-hover font-medium flex items-center gap-1">
+                <span x-text="i18n('overview.view_all_tasks')"></span>
+                <span class="material-symbols-outlined text-lg">chevron_right</span>
+            </a>
         </div>
     </div>
 </div>

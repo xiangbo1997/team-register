@@ -63,6 +63,30 @@
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    {# i18n 基础设施前置到 <head>：必须早于 body 内各页面的内联 <script>（它们在顶层就调 window.i18n
+       构建 EXPORT_FORMATS / tiers / columnOptions 等数据）。若放到 content 之后定义，页面脚本顶层求值时
+       window.i18n 尚未定义 → TypeError → 整个 x-data 组件崩溃（症状：表格列/段位 tab/按钮全空）。#}
+    <script>
+    window._translations = {{ _translations() | tojson }};
+    window._locale = '{{ current_locale() }}';
+    window.__csrfToken = {{ (csrf_token or '') | tojson }};
+    window.i18n = function(key, params, fallback) {
+        let current = window._translations;
+        for (const part of key.split('.')) {
+            if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
+            current = current[part];
+        }
+        if (typeof current !== 'string') return fallback != null ? fallback : key;
+        if (params) {
+            for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
+        }
+        return current;
+    };
+    window.translateEnum = function(namespace, value, fallback) {
+        if (value == null || value === '') return fallback || '';
+        return window.i18n(namespace + '.' + value, null, fallback != null ? fallback : value);
+    };
+    </script>
     <style>
         /* ──── 主题语义色 CSS 变量：亮色（默认）+ 暗色（html.dark）──── */
         /* 通过 Tailwind 中的 var(--color-*) 引用，所有 bg-app/text-body/bg-surface/border-border
@@ -263,8 +287,8 @@
     {# Rail-toggle 按钮：浮贴 sidebar 右边缘（Linear/Notion 风格），不再挤在 header 里
        icon 用 CSS rotate 切换方向（不依赖 Alpine 响应式 → 零闪烁）#}
     <button onclick="window.toggleSidebar()"
-            class="sidebar-rail-toggle absolute top-[72px] -right-3 w-6 h-6 rounded-full bg-white border border-border shadow-token-md flex items-center justify-center text-muted hover:border-primary hover:text-primary hover:scale-105 active:scale-95 transition-all z-[61]"
-            aria-label="切换侧栏" title="切换侧栏">
+            class="sidebar-rail-toggle absolute top-[72px] -right-3 w-6 h-6 rounded-full bg-surface border border-border shadow-token-md flex items-center justify-center text-muted hover:border-primary hover:text-primary hover:scale-105 active:scale-95 transition-all z-[61]"
+            aria-label="{{ _('common.toggle_sidebar') }}" title="{{ _('common.toggle_sidebar') }}">
         <span class="material-symbols-outlined text-[16px] sidebar-toggle-icon">chevron_left</span>
     </button>
 
@@ -273,7 +297,7 @@
 
         {# Group: 工作流 #}
         <div class="px-3 pt-2 pb-1 sidebar-section-header">
-            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">工作流</span>
+            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">{{ _('nav.group_workflow') }}</span>
         </div>
 
         <a href="/" data-tooltip="{{ _('nav.overview') }}"
@@ -290,19 +314,19 @@
                 <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#10A37F] leading-none">openai</span>
             </span>
         </a>
-        <a href="/grok" data-tooltip="Grok 注册"
+        <a href="/grok" data-tooltip="{{ _('nav.grok') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_grok %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">rocket_launch</span>
-            <span class="sidebar-label truncate flex items-center gap-1.5">Grok 注册
+            <span class="sidebar-label truncate flex items-center gap-1.5">{{ _('nav.grok') }}
                 <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#0EA5E9] leading-none">x.ai</span>
             </span>
         </a>
-        <a href="/checkout-link" data-tooltip="生成 Checkout"
+        <a href="/checkout-link" data-tooltip="{{ _('nav.checkout_link') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_checkout_link %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">rocket_launch</span>
-            <span class="sidebar-label truncate">生成 Checkout</span>
+            <span class="sidebar-label truncate">{{ _('nav.checkout_link') }}</span>
         </a>
         <a href="/config" data-tooltip="{{ _('nav.config') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
@@ -313,7 +337,7 @@
 
         {# Group: 资源管理 #}
         <div class="px-3 pt-4 pb-1 sidebar-section-header">
-            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">资源管理</span>
+            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">{{ _('nav.group_resources') }}</span>
         </div>
 
         <a href="/providers" data-tooltip="{{ _('nav.providers') }}"
@@ -334,41 +358,41 @@
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">mail</span>
             <span class="sidebar-label truncate">{{ _('nav.mail_accounts') }}</span>
         </a>
-        <a href="/cards" data-tooltip="卡池"
+        <a href="/cards" data-tooltip="{{ _('nav.cards') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_cards %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">credit_card</span>
-            <span class="sidebar-label truncate">卡池</span>
+            <span class="sidebar-label truncate">{{ _('nav.cards') }}</span>
         </a>
-        <a href="/workflows" data-tooltip="自进化经验"
+        <a href="/workflows" data-tooltip="{{ _('nav.workflows') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_workflows %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">neurology</span>
-            <span class="sidebar-label truncate">自进化经验</span>
+            <span class="sidebar-label truncate">{{ _('nav.workflows') }}</span>
         </a>
-        <a href="/proxies" data-tooltip="代理池"
+        <a href="/proxies" data-tooltip="{{ _('nav.proxies') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_proxies %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">vpn_lock</span>
-            <span class="sidebar-label truncate">代理池</span>
+            <span class="sidebar-label truncate">{{ _('nav.proxies') }}</span>
         </a>
-        <a href="/proxy-providers" data-tooltip="动态供应商"
+        <a href="/proxy-providers" data-tooltip="{{ _('nav.proxy_providers') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_proxy_providers %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">cloud_sync</span>
-            <span class="sidebar-label truncate">动态供应商</span>
+            <span class="sidebar-label truncate">{{ _('nav.proxy_providers') }}</span>
         </a>
-        <a href="/promo-codes" data-tooltip="促销码"
+        <a href="/promo-codes" data-tooltip="{{ _('nav.promo_codes') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_promo_codes %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">confirmation_number</span>
-            <span class="sidebar-label truncate">促销码</span>
+            <span class="sidebar-label truncate">{{ _('nav.promo_codes') }}</span>
         </a>
-        <a href="/accounts" data-tooltip="账号池"
+        <a href="/accounts" data-tooltip="{{ _('nav.accounts') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
                           {% block nav_accounts %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">group</span>
-            <span class="sidebar-label truncate">账号池</span>
+            <span class="sidebar-label truncate">{{ _('nav.accounts') }}</span>
         </a>
     </nav>
 
@@ -380,15 +404,15 @@
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">help</span>
             <span class="sidebar-label truncate">{{ _('nav.help') }}</span>
         </a>
-        <a href="/manual" target="_blank" data-tooltip="使用手册"
+        <a href="/manual" target="_blank" data-tooltip="{{ _('nav.manual') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-[#94A3B8] hover:bg-white/[0.06] hover:text-white text-sm transition-colors">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">menu_book</span>
-            <span class="sidebar-label truncate">使用手册</span>
+            <span class="sidebar-label truncate">{{ _('nav.manual') }}</span>
         </a>
-        <a href="/docs" target="_blank" data-tooltip="API 文档"
+        <a href="/docs" target="_blank" data-tooltip="{{ _('nav.api_docs') }}"
            class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-[#94A3B8] hover:bg-white/[0.06] hover:text-white text-sm transition-colors">
             <span class="material-symbols-outlined text-[20px] flex-shrink-0">api</span>
-            <span class="sidebar-label truncate">API 文档</span>
+            <span class="sidebar-label truncate">{{ _('nav.api_docs') }}</span>
         </a>
         {# Status pill：展开态显示版本号 + 健康 dot，收起态只留 dot 居中 #}
         <div class="flex items-center justify-between px-3 pt-2 mt-1 border-t border-white/5 sidebar-status">
@@ -412,8 +436,8 @@
             x-init="window.addEventListener('tr:theme', e => dark = e.detail.dark)"
             @click="window.toggleTheme()"
             class="w-8 h-8 flex items-center justify-center rounded-full bg-subtle text-muted hover:text-primary hover:scale-105 active:scale-95 transition-all"
-            :aria-label="dark ? '切换到亮色主题' : '切换到暗色主题'"
-            :title="dark ? '切换到亮色主题' : '切换到暗色主题'"
+            :aria-label="dark ? i18n('common.theme_to_light') : i18n('common.theme_to_dark')"
+            :title="dark ? i18n('common.theme_to_light') : i18n('common.theme_to_dark')"
         >
             <span class="material-symbols-outlined text-[18px]" x-text="dark ? 'light_mode' : 'dark_mode'"></span>
         </button>
@@ -478,7 +502,7 @@
         @touchstart="startDrag($event)"
         @click="onLauncherClick()"
         type="button"
-        title="可拖拽移动；单击打开"
+        title="{{ _('assistant.drag_hint') }}"
         class="bg-primary text-white flex items-center gap-3 px-5 py-3 rounded-full shadow-token-lg hover:bg-primary-hover active:scale-95 transition-all cursor-grab active:cursor-grabbing select-none"
     >
         <div class="relative pointer-events-none">
@@ -506,8 +530,8 @@
                 @click.stop="open = false"
                 @mousedown.stop
                 type="button"
-                aria-label="关闭 AI 助手"
-                title="关闭 (Esc)"
+                aria-label="{{ _('assistant.close_widget') }}"
+                title="{{ _('assistant.close_esc') }}"
                 class="relative z-[72] rounded-md p-1 text-muted hover:bg-subtle hover:text-body cursor-pointer pointer-events-auto"
             >
                 <span class="material-symbols-outlined text-base pointer-events-none">close</span>
@@ -611,7 +635,7 @@
 
                     <template x-if="item.suggested_actions && item.suggested_actions.length">
                         <div class="mt-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-700">
-                            <div class="font-medium mb-2">建议模板（点击预填到下方表单）</div>
+                            <div class="font-medium mb-2">{{ _('assistant.suggested_templates') }}</div>
                             <div class="flex flex-wrap gap-2">
                                 <template x-for="sa in item.suggested_actions" :key="sa.label">
                                     <button
@@ -624,7 +648,7 @@
                             </div>
                             <template x-if="item.suggested_actions.some(a => a.warning)">
                                 <div class="mt-2 text-[11px] text-warning">
-                                    ⚠ 部分模板含占位符，应用后请先修改再 Preview
+                                    ⚠ {{ _('assistant.template_placeholder_warning') }}
                                 </div>
                             </template>
                         </div>
@@ -675,27 +699,7 @@
 <div id="feedback-modal-root" class="hidden"></div>
 
 <script>
-window._translations = {{ _translations() | tojson }};
-window._locale = '{{ current_locale() }}';
-window.__csrfToken = {{ (csrf_token or '') | tojson }};
-window.i18n = function(key, params, fallback) {
-    let current = window._translations;
-    for (const part of key.split('.')) {
-        if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
-        current = current[part];
-    }
-    if (typeof current !== 'string') return fallback != null ? fallback : key;
-    if (params) {
-        for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
-    }
-    return current;
-};
-
-window.translateEnum = function(namespace, value, fallback) {
-    if (value == null || value === '') return fallback || '';
-    return window.i18n(namespace + '.' + value, null, fallback != null ? fallback : value);
-};
-
+{# window._translations / i18n / translateEnum 已前移到 <head>（见上方注释），此处不再重复定义。#}
 function langSwitcher() {
     return {
         currentLang: window._locale,
@@ -756,6 +760,18 @@ function _parseDownloadFilename(headers, fallback) {
     return fallback || 'download';
 }
 
+// ArrayBuffer → base64 字符串（桌面端二进制经 Python 桥另存为时无损传输用）。
+// 分块处理避免 String.fromCharCode 对大 buffer 触发栈溢出。
+function _arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunk = 0x8000;  // 32KB 一块
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
 // 用 fetch 拉取附件并通过 Blob + createObjectURL 触发浏览器下载。
 //
 // 为什么不用 <a href> 直接指向下载 URL：桌面应用（pywebview/WebView）没有内置
@@ -778,13 +794,25 @@ async function downloadFile(url, { fallbackName = 'download' } = {}) {
 
     // 桌面端（pywebview / macOS WKWebView）：<a download> 与 blob URL 不触发下载，
     // 点击会被 WebView 当页面导航把 CSV/JSON 平铺渲染。改走 Python 桥的原生保存
-    // 对话框，把文本内容交给系统另存为。导出均为 UTF-8 文本（CSV / JSON），用
-    // response.text() 取内容即可。
+    // 对话框，把内容交给系统另存为。
+    //
+    // 文本（CSV / JSON / TXT）直接传字符串；二进制（多账号导出 zip）必须 base64 传输——
+    // 否则 response.text() 会把 zip 字节按 UTF-8 解码替换成 U+FFFD 损坏文件（症状：
+    // 多账号导出 zip 解压后为空）。按 Content-Type 判定是否二进制。
     const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.save_file
         ? window.pywebview.api : null;
     if (bridge) {
-        const text = await response.text();
-        const res = await bridge.save_file(filename, text);
+        const ctype = (response.headers.get('Content-Type') || '').toLowerCase();
+        const isBinary = ctype.includes('zip') || ctype.includes('octet-stream');
+        let res;
+        if (isBinary) {
+            const buf = await response.arrayBuffer();
+            const b64 = _arrayBufferToBase64(buf);
+            res = await bridge.save_file(filename, b64, true);
+        } else {
+            const text = await response.text();
+            res = await bridge.save_file(filename, text, false);
+        }
         if (res && res.ok) {
             return { filename, skipped: skippedCount, savedPath: res.path };
         }
@@ -794,7 +822,7 @@ async function downloadFile(url, { fallbackName = 'download' } = {}) {
             err.cancelled = true;
             throw err;
         }
-        throw new Error((res && res.error) || '原生保存失败');
+        throw new Error((res && res.error) || i18n('common.save_failed_native'));
     }
 
     // Web 端（浏览器访问）：标准 blob 下载，行为不变。
@@ -817,6 +845,15 @@ async function downloadFile(url, { fallbackName = 'download' } = {}) {
 // 临时 textarea，保证桌面端也能复制。
 async function copyToClipboard(text) {
     if (!text) return;
+    // 桌面端（pywebview WKWebView）：navigator.clipboard 非安全上下文被拒、
+    // execCommand 已被新版 WebKit 弃用，两层降级都失败。优先走 Python 原生桥
+    // （pbcopy / clip / xclip 写系统剪贴板），绕开浏览器沙箱。Web 端无此桥，跳过。
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.copy_to_clipboard) {
+        try {
+            const res = await window.pywebview.api.copy_to_clipboard(text);
+            if (res && res.ok) return;
+        } catch (_) { /* 桥失败则落到浏览器 API 降级 */ }
+    }
     if (navigator.clipboard && window.isSecureContext) {
         try {
             await navigator.clipboard.writeText(text);
@@ -835,7 +872,7 @@ async function copyToClipboard(text) {
     let ok = false;
     try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
     ta.remove();
-    if (!ok) throw new Error('复制失败，请手动选中');
+    if (!ok) throw new Error(i18n('accounts.copy_failed_manual'));
 }
 
 async function logoutConsole() {
@@ -868,31 +905,15 @@ function assistantWidget({ enabled, backendReady }) {
             i18n('assistant.quick_preview'),
             i18n('assistant.quick_scope'),
         ],
-        pageAwarePrompts: {
-            '/config': [
-                'L1 .env / L2 provider profile / L3 任务级 三层优先级是什么？',
-                'efuncard_token 在 .env 和 /providers 都设了，谁赢？',
-                '改了 /config 没生效，怎么排查？',
-                'WARMUP_ACCOUNT_POOL 怎么填？',
-            ],
-            '/providers': [
-                '我想加一个新的 card provider 档案，该填什么？',
-                'provider profile 的 driver 字段支持哪些值？',
-                '改 provider profile 会立即生效吗？需要重启吗？',
-                'provider 改错了能回滚吗？',
-            ],
-            '/mail-accounts': [
-                'mail_accounts 和 WARMUP_ACCOUNT_POOL 有什么区别？',
-                '凭据账号的 role 字段什么意思？',
-                '如何为任务绑定特定的邮箱账号？',
-                'credentialed 模式邮箱账号怎么配？',
-            ],
-            '/tasks': [
-                '创建任务时 card_provider / mail_provider 下拉是哪里来的？',
-                '任务级 provider 选择会覆盖全局配置吗？',
-                'mail_account_id 是必填吗？',
-                '任务跑起来用的是 .env 还是 provider profile？',
-            ],
+        // 页面感知建议：从语言包 assistant.page_prompts.* 取（随 locale 切换；key 去掉前导斜杠并把 - 转 _）
+        get pageAwarePrompts() {
+            const pp = (window._translations && window._translations.assistant && window._translations.assistant.page_prompts) || {};
+            return {
+                '/config': pp.config || [],
+                '/providers': pp.providers || [],
+                '/mail-accounts': pp.mail_accounts || [],
+                '/tasks': pp.tasks || [],
+            };
         },
         messages: [
             { role: 'assistant', content: i18n('assistant.welcome'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' }
@@ -1031,11 +1052,12 @@ function assistantWidget({ enabled, backendReady }) {
         _maybePushPageHint() {
             const matched = this._matchPagePrefix();
             if (!matched) return;
+            const ph = (window._translations && window._translations.assistant && window._translations.assistant.page_hints) || {};
             const hintMap = {
-                '/config': '我熟悉 docs/architecture/provider-config-flow.md，可以帮你判断 .env / provider profile / 任务级 三层配置该改哪里。',
-                '/providers': '我熟悉 provider 档案的字段含义和优先级，可以帮你判断改这里会不会被 .env 或任务级覆盖。',
-                '/mail-accounts': '我可以解释 mail_accounts 和 WARMUP_ACCOUNT_POOL 的区别，以及 role 字段（regular / pro_warmup）的语义。',
-                '/tasks': '我可以解释任务级 provider 下拉是怎么工作的，以及 mail_account_id 在 credentialed 模式下的语义。',
+                '/config': ph.config,
+                '/providers': ph.providers,
+                '/mail-accounts': ph.mail_accounts,
+                '/tasks': ph.tasks,
             };
             const hint = hintMap[matched];
             if (!hint) return;
@@ -1103,7 +1125,7 @@ function assistantWidget({ enabled, backendReady }) {
             const payload = { action_type: sa.action_type, payload: sa.payload || {}, title: sa.title || sa.label };
             this.draftActionText = JSON.stringify(payload, null, 2);
             this.intentMode = 'action';
-            showToast(`模板「${sa.label}」已填入下方表单${sa.warning ? '；' + sa.warning : ''}`, 'info');
+            showToast(i18n('assistant.template_filled').replace('{label}', sa.label).replace('{warning}', sa.warning ? '；' + sa.warning : ''), 'info');
         },
 
         async commitPreview(previewId) {

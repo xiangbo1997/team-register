@@ -1078,11 +1078,15 @@ def generate_bind_link(
 
 # 格式标识
 FMT_CREDENTIALS_CSV = "credentials_csv"  # 历史 CSV 格式，仅保留导入端兼容老文件
-FMT_CPA_JSON = "cpa_json"                # Codex CLI 兼容 JSON
+FMT_CPA_JSON = "cpa_json"                # Codex CLI 兼容 JSON（OpenAI 专用）
 FMT_FULL_JSON = "full_json"              # 账号全信息 JSON（账号凭证 + 令牌组）
+FMT_SSO_TEXT = "sso_text"                # Grok sso_token 纯文本（多账号每行一个 token）
 
-# 导出菜单只暴露 2 个 JSON 格式（CSV 字段表达力不够嵌套结构）
-_VALID_EXPORT_FORMATS = (FMT_FULL_JSON, FMT_CPA_JSON)
+# 导出菜单暴露的格式（CSV 字段表达力不够嵌套结构，不出现在导出菜单）：
+# - full_json / cpa_json：OpenAI 账号（cpa_json 解 OpenAI JWT）
+# - full_json / sso_text：Grok 账号（sso_text 直出 sso_token）
+# 前端按所选 platform tab 决定展示哪两个；后端只校验是否在合法集合内。
+_VALID_EXPORT_FORMATS = (FMT_FULL_JSON, FMT_CPA_JSON, FMT_SSO_TEXT)
 # 导入仍接受 CSV（向后兼容外部脚本写的历史 CSV 文件）
 _VALID_IMPORT_FORMATS = (FMT_FULL_JSON, FMT_CPA_JSON, FMT_CREDENTIALS_CSV)
 
@@ -1172,24 +1176,47 @@ def export_pool(
         skipped: list[dict[str, str]] = []
         if fmt == FMT_FULL_JSON:
             entries = _serialize_full_json_entries(runs, mail_map)
+        elif fmt == FMT_SSO_TEXT:
+            entries, skipped = _serialize_sso_text_entries(runs)
         else:  # FMT_CPA_JSON
             entries, skipped = _serialize_cpa_json_entries(runs)
 
-        # ── 单账号 vs 多账号分支 ──
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        # ── sso_text 专属：始终输出单个纯文本文件（每行一个 sso_token）──
+        # 与 JSON 格式的"单 .json / 多 .zip"分支不同：sso_text 不论单/多账号都是一个 .txt。
+        if fmt == FMT_SSO_TEXT:
+            text = "\n".join(e["sso_token"] for e in entries)
+            if len(entries) == 1:
+                filename = f"grok-sso-{_safe_for_filename(entries[0]['_filename_email'], fallback='unknown')}.txt"
+            elif len(entries) == 0:
+                filename = f"grok-sso-empty-{tier}-{ts}.txt"
+            else:
+                filename = f"grok-sso-{len(entries)}-{ts}.txt"
+            return (
+                text,
+                "text/plain; charset=utf-8",
+                filename,
+                skipped,
+            )
+
+        # ── JSON 格式：单账号 vs 多账号分支 ──
         if len(entries) == 0:
-            # 空导出：返回空数组 + 兜底文件名
+            # 空导出：返回空数组 + 兜底文件名（前缀按平台过滤推断，过滤为 grok 时 grok-）
+            empty_prefix = "grok-" if platform_filter == PLATFORM_GROK else "codex-"
             return (
                 "[]",
                 "application/json; charset=utf-8",
-                f"codex-empty-{tier}-{ts}.json",
+                f"{empty_prefix}empty-{tier}-{ts}.json",
                 skipped,
             )
 
         if len(entries) == 1:
-            # 单账号：直接返回账号 object，文件名带 email + plan
+            # 单账号：直接返回账号 object，文件名带平台前缀 + email + plan
             entry = entries[0]
-            filename = _build_codex_filename(entry["_filename_email"], entry["_filename_plan"])
+            filename = _build_account_filename(
+                entry["_filename_email"], entry["_filename_plan"], entry["_filename_platform"]
+            )
             content_str = json.dumps(_strip_filename_meta(entry), ensure_ascii=False, indent=2)
             return (
                 content_str,
@@ -1198,9 +1225,9 @@ def export_pool(
                 skipped,
             )
 
-        # 多账号：打包成 zip，每条一个独立文件
+        # 多账号：打包成 zip，每条一个独立文件（zip 名前缀按平台集合推断）
         zip_bytes = _pack_zip(entries)
-        filename = f"codex-{tier}-{len(entries)}-{ts}.zip"
+        filename = f"{_zip_filename_prefix(entries)}{tier}-{len(entries)}-{ts}.zip"
         return (
             zip_bytes,
             "application/zip",
@@ -1310,12 +1337,39 @@ def _safe_for_filename(s: str, *, fallback: str = "unknown") -> str:
     return cleaned or fallback
 
 
-def _build_codex_filename(email: str, plan_type: str) -> str:
-    """codex-{email}-{plan}.json；plan 为空时省略，email 缺失用 unknown"""
+def _platform_filename_prefix(platform: str) -> str:
+    """按注册平台返回文件名前缀：
+
+    - grok（x.ai）→ ``grok-``
+    - openai 及其它 → ``codex-``（OpenAI 账号 JSON 喂 Codex CLI，沿用历史前缀）
+
+    Grok 账号不喂 Codex CLI，用 codex- 前缀语义不对，故单独区分。
+    """
+    return "grok-" if str(platform or "").strip().lower() == PLATFORM_GROK else "codex-"
+
+
+def _zip_filename_prefix(entries: list[dict[str, Any]]) -> str:
+    """zip 整包前缀：全 grok → grok-；全 openai → codex-；混合（全部 tab 跨平台多选）→ accounts-。"""
+    platforms = {
+        _platform_filename_prefix(e.get("_filename_platform", PLATFORM_OPENAI))
+        for e in entries
+    }
+    if platforms == {"grok-"}:
+        return "grok-"
+    if platforms == {"codex-"}:
+        return "codex-"
+    return "accounts-"  # 混合平台用中性前缀
+
+
+def _build_account_filename(email: str, plan_type: str, platform: str) -> str:
+    """{prefix}{email}-{plan}.json；plan 为空时省略，email 缺失用 unknown。
+    prefix 按平台：grok 账号 grok-，OpenAI 账号 codex-。
+    """
+    prefix = _platform_filename_prefix(platform)
     safe_email = _safe_for_filename(email, fallback="unknown")
     if plan_type:
-        return f"codex-{safe_email}-{plan_type}.json"
-    return f"codex-{safe_email}.json"
+        return f"{prefix}{safe_email}-{plan_type}.json"
+    return f"{prefix}{safe_email}.json"
 
 
 def _serialize_cpa_json_entries(runs: list[Run]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -1366,6 +1420,7 @@ def _serialize_cpa_json_entries(runs: list[Run]) -> tuple[list[dict[str, Any]], 
         entries.append({
             "_filename_email": r.email or "",
             "_filename_plan": _extract_plan_type(access_token),
+            "_filename_platform": r.platform or PLATFORM_OPENAI,
             "access_token": access_token,
             "account_id": account_id,
             "disabled": False,
@@ -1375,6 +1430,44 @@ def _serialize_cpa_json_entries(runs: list[Run]) -> tuple[list[dict[str, Any]], 
             "last_refresh": tokens.get("extracted_at") or "",
             "refresh_token": tokens.get("refresh_token") or "",
             "type": "codex",
+        })
+    return entries, skipped
+
+
+def _serialize_sso_text_entries(runs: list[Run]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """生成 sso_text 每条账号的 dict（Grok sso_token 纯文本导出）。
+
+    每条结构：
+        {
+          "_filename_email": "...",  # 内部用：单账号文件名取
+          "_filename_plan": "",      # sso 无 plan 概念，恒空
+          "sso_token": "ey...",      # 唯一有效载荷
+          "email": "...",            # 单账号导出文件名 / 排障用
+        }
+
+    设计：sso_token 为空的 Run **跳过不导出**（与 cpa_json 缺 access_token 同理）。
+    多账号打包为纯文本（每行一个 sso_token），见 ``_pack_sso_text``。
+
+    Returns:
+        (entries, skipped) —— entries 含内部 _filename_* 字段；skipped 记录无 token 的行。
+    """
+    entries: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for r in runs:
+        sso = str(r.sso_token or "").strip()
+        if not sso:
+            skipped.append({
+                "run_id": r.id or "",
+                "email": r.email or "",
+                "reason": "sso_token 为空（worker 未持久化 token，或非 Grok 账号）",
+            })
+            continue
+        entries.append({
+            "_filename_email": r.email or "",
+            "_filename_plan": "",
+            "_filename_platform": r.platform or PLATFORM_GROK,
+            "sso_token": sso,
+            "email": r.email or "",
         })
     return entries, skipped
 
@@ -1401,6 +1494,7 @@ def _serialize_full_json_entries(
           "account_id": "...",           # JWT 解出（失败留空）
           "expired": "...",              # JWT 解出（失败留空）
           "last_refresh": "...",
+          "sso_token": "...",            # Grok (x.ai) 产物；OpenAI 账号此字段为空
           # 运维元数据组（与列表页 _account_to_dict 对齐，导出不再丢失这些字段）
           "run_id": "...",               # Run 主键
           "platform": "openai|grok",     # 注册平台
@@ -1435,6 +1529,7 @@ def _serialize_full_json_entries(
         entries.append({
             "_filename_email": r.email or "",
             "_filename_plan": _extract_plan_type(access_token),
+            "_filename_platform": r.platform or PLATFORM_OPENAI,
             # 账号凭证组
             "email": r.email or "",
             "password": r.password or "",
@@ -1448,6 +1543,7 @@ def _serialize_full_json_entries(
             "account_id": account_id,
             "expired": expired_iso,
             "last_refresh": tokens.get("extracted_at") or "",
+            "sso_token": r.sso_token or "",  # Grok 产物；OpenAI 账号留空
             # 运维元数据组（导出补全：平台 / 段位 / profile / 卡商 / IP / 创建时间等）
             "run_id": r.id or "",
             "platform": r.platform or PLATFORM_OPENAI,
@@ -1469,7 +1565,8 @@ def _strip_filename_meta(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pack_zip(entries: list[dict[str, Any]]) -> bytes:
-    """把多条账号 entries 打包成 zip 字节流：每条一个 codex-{email}-{plan}.json"""
+    """把多条账号 entries 打包成 zip 字节流：每条一个 {prefix}{email}-{plan}.json
+    （prefix 按各 entry 的平台：grok 账号 grok-，OpenAI 账号 codex-）"""
     import io as _io
     import zipfile
 
@@ -1478,7 +1575,9 @@ def _pack_zip(entries: list[dict[str, Any]]) -> bytes:
     buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for entry in entries:
-            base_name = _build_codex_filename(entry["_filename_email"], entry["_filename_plan"])
+            base_name = _build_account_filename(
+                entry["_filename_email"], entry["_filename_plan"], entry["_filename_platform"]
+            )
             count = seen_names.get(base_name, 0)
             seen_names[base_name] = count + 1
             if count > 0:

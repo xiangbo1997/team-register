@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% import 'components/_ui.html' as ui %}
 {% from 'components/_country.html' import country_flag_card %}
-{% block title %}账号池 - Team Register{% endblock %}
+{% block title %}{{ _('accounts.title') }} - Team Register{% endblock %}
 {% block nav_accounts %}sidebar-active{% endblock %}
-{% block page_title %}账号池{% endblock %}
+{% block page_title %}{{ _('accounts.title') }}{% endblock %}
 
 {% block content %}
 
@@ -18,8 +18,8 @@
 
 <div x-data="accountsData()" x-init="initColumnWatcher(); fetchAccounts()" class="flex flex-col h-[calc(100vh-108px)]">
     <div class="flex items-center justify-between mb-4 gap-3">
-        <div class="text-sm text-slate-500 flex-1 min-w-0">
-            注册成功的号自动进 <strong>普号池</strong> → 选熟卡生成绑卡链接 → 手动绑卡 → 晋级 Plus / Team
+        <div class="text-sm text-muted flex-1 min-w-0">
+            {{ _('accounts.subtitle_prefix') }} <strong>{{ _('accounts.subtitle_pool') }}</strong> {{ _('accounts.subtitle_suffix') }}
         </div>
         <div class="flex items-center gap-2 shrink-0">
             <!-- 导出：统一 indigo pill（主操作 + 右侧格式 chevron 分段）—— Stitch 原型对齐
@@ -31,26 +31,26 @@
                 <button @click="downloadExport(buildExportUrl(exportFmt))"
                         type="button"
                         :disabled="exporting"
-                        :title="`下载 ${getExportMeta(exportFmt).label}${selected.size > 0 ? ` (${selected.size} 条)` : ' 全部'}`"
+                        :title="`${i18n('common.export')} ${getExportMeta(exportFmt).label}${selected.size > 0 ? ` (${selected.size})` : ''}`"
                         class="flex items-center gap-2 px-4 h-10 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-l-lg transition disabled:opacity-60 disabled:cursor-not-allowed">
                     <span class="material-symbols-outlined text-[18px]"
                           :class="exporting ? 'animate-pulse' : ''"
                           x-text="exporting ? 'progress_activity' : 'download'"></span>
-                    <span x-show="selected.size === 0">导出全部</span>
-                    <span x-show="selected.size > 0">导出选中 <span x-text="selected.size"></span> 条</span>
+                    <span x-show="selected.size === 0">{{ _('accounts.export_all') }}</span>
+                    <span x-show="selected.size > 0">{{ _('accounts.export_selected_prefix') }} <span x-text="selected.size"></span> {{ _('accounts.export_selected_suffix') }}</span>
                 </button>
                 <!-- 格式 chevron 分段（同一 pill 右侧，开格式菜单）-->
                 <button @click="exportDropdownOpen = !exportDropdownOpen"
                         type="button"
-                        title="选择导出格式"
+                        title="{{ _('accounts.select_export_format') }}"
                         class="flex items-center px-2 h-10 text-white bg-primary-600 hover:bg-primary-700 rounded-r-lg border-l border-white/20 transition">
                     <span class="material-symbols-outlined text-[18px] transition-transform"
                           :class="exportDropdownOpen ? 'rotate-180' : ''">keyboard_arrow_down</span>
                 </button>
                 <!-- 格式选择菜单 -->
                 <div x-show="exportDropdownOpen" x-transition.opacity x-cloak @click.outside="exportDropdownOpen = false"
-                     class="absolute right-0 top-full mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-lg z-30 py-1.5 overflow-hidden">
-                    <div class="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">导出格式</div>
+                     class="absolute right-0 top-full mt-1.5 w-72 bg-surface border border-border rounded-xl shadow-lg z-30 py-1.5 overflow-hidden">
+                    <div class="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">{{ _('accounts.export_format') }}</div>
                     <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
                         <button @click="exportFmt = meta.key; exportDropdownOpen = false"
                                 type="button"
@@ -59,10 +59,10 @@
                             <span x-text="meta.icon" class="text-xl shrink-0 mt-0.5"></span>
                             <div class="flex-1 min-w-0">
                                 <div class="flex items-center justify-between gap-2">
-                                    <span class="font-medium text-sm text-slate-900" x-text="meta.label"></span>
+                                    <span class="font-medium text-sm text-body" x-text="meta.label"></span>
                                     <span x-show="exportFmt === meta.key" class="material-symbols-outlined text-[16px] text-primary-600">check</span>
                                 </div>
-                                <div class="text-[11px] text-slate-500 mt-0.5" x-text="meta.desc"></div>
+                                <div class="text-[11px] text-muted mt-0.5" x-text="meta.desc"></div>
                             </div>
                         </button>
                     </template>
@@ -70,14 +70,14 @@
             </div>
             <!-- 导入按钮（次级 slate 描边）-->
             <button @click="openImportDialog()"
-                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">
+                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-body bg-surface border border-border rounded-lg hover:bg-slate-50 transition">
                 <span class="material-symbols-outlined text-[18px]">upload</span>
-                导入
+                {{ _('accounts.import') }}
             </button>
             <button @click="fetchAccounts()"
-                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">
+                    class="flex items-center gap-1.5 px-3 h-10 text-sm font-medium text-body bg-surface border border-border rounded-lg hover:bg-slate-50 transition">
                 <span class="material-symbols-outlined text-[18px]">refresh</span>
-                刷新
+                {{ _('common.refresh') }}
             </button>
             <!-- 须知 ℹ️ 浮层（取代底部常驻说明）-->
             <div class="relative" @click.outside="showHints = false">
@@ -85,36 +85,36 @@
                         type="button"
                         :class="showHints ? 'bg-primary-50 text-primary-700 border-primary-200' : 'bg-white text-slate-500 hover:bg-slate-50 border-slate-300'"
                         class="flex items-center justify-center w-9 h-9 border rounded-md transition"
-                        title="账号池说明">
+                        title="{{ _('accounts.pool_help') }}">
                     <span class="material-symbols-outlined text-lg">info</span>
                 </button>
                 <div x-show="showHints" x-cloak x-transition.opacity
-                     class="absolute right-0 top-full mt-2 w-[440px] max-w-[calc(100vw-3rem)] bg-white border border-slate-200 rounded-xl shadow-lg p-4 z-30">
+                     class="absolute right-0 top-full mt-2 w-[440px] max-w-[calc(100vw-3rem)] bg-surface border border-border rounded-xl shadow-lg p-4 z-30">
                     <div class="flex items-center justify-between mb-3">
-                        <h4 class="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                        <h4 class="text-sm font-semibold text-body flex items-center gap-2">
                             <span class="material-symbols-outlined text-base text-primary-600">tips_and_updates</span>
-                            账号池说明
+                            {{ _('accounts.pool_help') }}
                         </h4>
-                        <button @click="showHints = false" class="text-slate-400 hover:text-slate-600">
+                        <button @click="showHints = false" class="text-muted hover:text-slate-600">
                             <span class="material-symbols-outlined text-base">close</span>
                         </button>
                     </div>
-                    <ul class="text-xs text-slate-600 space-y-2">
+                    <ul class="text-xs text-muted space-y-2">
                         <li class="flex items-start gap-2">
-                            <span class="material-symbols-outlined text-sm text-slate-500 mt-px">label</span>
-                            <span><strong class="text-slate-800">普号池 (registered)</strong>：纯注册任务跑完后落到这里，等待绑卡</span>
+                            <span class="material-symbols-outlined text-sm text-muted mt-px">label</span>
+                            <span><strong class="text-body">{{ _('accounts.hint_registered_title') }}</strong>{{ _('accounts.hint_registered_desc') }}</span>
                         </li>
                         <li class="flex items-start gap-2">
                             <span class="material-symbols-outlined text-sm text-primary-600 mt-px">workspace_premium</span>
-                            <span><strong class="text-slate-800">Plus / Team 号池</strong>：绑卡成功后由运维点"晋级"按钮迁过来（手动确认）</span>
+                            <span><strong class="text-body">{{ _('accounts.hint_premium_title') }}</strong>{{ _('accounts.hint_premium_desc') }}</span>
                         </li>
                         <li class="flex items-start gap-2">
-                            <span class="material-symbols-outlined text-sm text-slate-500 mt-px">block</span>
-                            <span><strong class="text-slate-800">已放弃</strong>：绑卡失败或运维标记放弃；此号不再出现在普号池</span>
+                            <span class="material-symbols-outlined text-sm text-muted mt-px">block</span>
+                            <span><strong class="text-body">{{ _('accounts.hint_abandoned_title') }}</strong>{{ _('accounts.hint_abandoned_desc') }}</span>
                         </li>
                         <li class="flex items-start gap-2 p-2 -mx-2 bg-warning-50 border border-warning-200 rounded">
                             <span class="material-symbols-outlined text-sm text-warning-600 mt-px">warning</span>
-                            <span class="text-warning-700"><strong>注意</strong>：导出的 CSV 含明文密码和 OAuth 凭据，请妥善保管</span>
+                            <span class="text-warning-700"><strong>{{ _('accounts.hint_warning_title') }}</strong>{{ _('accounts.hint_warning_desc') }}</span>
                         </li>
                     </ul>
                 </div>
@@ -129,11 +129,11 @@
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M2.94 5.94a8 8 0 1111.31 11.31A8 8 0 012.94 5.94zm6.06 1.06a1 1 0 112 0v4a1 1 0 11-2 0v-4zm1 7a1 1 0 100 2 1 1 0 000-2z" clip-rule="evenodd"/>
             </svg>
-            <span>已选 <strong x-text="selected.size"></strong> 条 — 导出按钮已切换为「导出选中」</span>
+            <span>{{ _('accounts.selected_prefix') }} <strong x-text="selected.size"></strong> {{ _('accounts.selected_suffix') }}</span>
         </div>
         <button @click="selected = new Set()"
                 class="text-xs px-2 py-1 text-primary-700 hover:bg-primary-100 rounded transition">
-            清空选择
+            {{ _('accounts.clear_selection') }}
         </button>
     </div>
 
@@ -156,11 +156,11 @@
             </template>
         </div>
         <div class="flex items-center gap-3 pb-3">
-            {{ ui.grid_search(placeholder='搜索 邮箱 / Run ID / Profile...') }}
+            {{ ui.grid_search(placeholder=_('accounts.search_placeholder')) }}
             {# 平台分段控件（全部 / GPT / Grok）—— 服务端筛选，切换即重新拉取 #}
             <div class="flex items-center gap-0.5 p-0.5 bg-subtle rounded-lg">
                 <template x-for="p in platforms" :key="p.value">
-                    <button @click="currentPlatform = p.value; fetchAccounts()"
+                    <button @click="setPlatform(p.value)"
                             :class="currentPlatform === p.value
                                 ? 'bg-white text-primary shadow-token-sm font-semibold'
                                 : 'text-muted hover:text-body'"
@@ -176,7 +176,7 @@
     {# 🏷 标签快捷筛选行：点 chip 按该标签过滤（前端过滤，再点取消）。无标签时整行不渲染。 #}
     <div x-show="allTags.length > 0" x-cloak class="flex items-center gap-2 flex-wrap mb-4 -mt-2">
         <span class="text-[11px] font-semibold text-muted uppercase tracking-wider flex items-center gap-1">
-            <span class="material-symbols-outlined text-[15px]">label</span>标签筛选
+            <span class="material-symbols-outlined text-[15px]">label</span>{{ _('accounts.tag_filter') }}
         </span>
         <template x-for="t in allTags" :key="t">
             <button @click="toggleTagFilter(t)"
@@ -188,11 +188,11 @@
                     x-text="t"></button>
         </template>
         <button x-show="tagFilter" @click="tagFilter = ''" type="button"
-                class="text-[11px] text-muted hover:text-danger underline ml-1">清除筛选</button>
+                class="text-[11px] text-muted hover:text-danger underline ml-1">{{ _('accounts.clear_filter') }}</button>
     </div>
 
     {# Data Grid —— 严格按 Stitch #}
-    <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+    <div class="bg-surface rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
         <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
             <table class="w-full text-left border-collapse">
                 <thead class="sticky top-0 z-10 bg-subtle">
@@ -203,22 +203,22 @@
                                    :indeterminate.prop="isPartialSelected()"
                                    @change="toggleSelectAll($event.target.checked)"
                                    class="rounded border-border text-primary focus:ring-primary cursor-pointer"
-                                   title="全选 / 取消全选">
+                                   title="{{ _('common.select_all') }}">
                         </th>
                         <th x-show="visibleColumns.includes('run_id')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">Run ID</th>
-                        <th x-show="visibleColumns.includes('platform')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">平台</th>
-                        <th x-show="visibleColumns.includes('register_name')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">注册名</th>
-                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">邮箱</th>
+                        <th x-show="visibleColumns.includes('platform')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">{{ _('accounts.col_platform') }}</th>
+                        <th x-show="visibleColumns.includes('register_name')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">{{ _('accounts.col_register_name') }}</th>
+                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">{{ _('accounts.col_email') }}</th>
                         <th x-show="visibleColumns.includes('profile')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">Profile</th>
-                        <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">卡商 / 邮件商</th>
-                        <th x-show="visibleColumns.includes('tier')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">段位</th>
-                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">Plus 状态</th>
-                        <th x-show="visibleColumns.includes('tags')" class="px-3 py-3 min-w-[120px] text-[11px] font-label font-bold text-muted uppercase whitespace-nowrap" title="给账号打自定义标签分类，可按标签筛选/搜索">标签</th>
-                        <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时间</th>
-                        <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">创建时 IP</th>
+                        <th x-show="visibleColumns.includes('providers')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">{{ _('accounts.col_providers') }}</th>
+                        <th x-show="visibleColumns.includes('tier')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">{{ _('accounts.col_tier') }}</th>
+                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-center">{{ _('accounts.col_plus_status') }}</th>
+                        <th x-show="visibleColumns.includes('tags')" class="px-3 py-3 min-w-[120px] text-[11px] font-label font-bold text-muted uppercase whitespace-nowrap" title="{{ _('accounts.tags_col_hint') }}">{{ _('accounts.tags_col') }}</th>
+                        <th x-show="visibleColumns.includes('created_at')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">{{ _('accounts.col_created_at') }}</th>
+                        <th x-show="visibleColumns.includes('ip')" class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider">{{ _('accounts.col_created_ip') }}</th>
                         {# 操作列固定右侧：横向滚动时常驻可见。z-20 高于 thead 自身 z-10，
                            避免与左侧表头单元格层叠；bg-subtle 与 thead 同底色不透出内容。 #}
-                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right sticky right-0 z-20 bg-subtle">操作</th>
+                        <th class="px-4 py-3 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right sticky right-0 z-20 bg-subtle">{{ _('common.actions') }}</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-border">
@@ -244,12 +244,12 @@
                                       x-text="platformLabel(acc.platform)"></span>
                             </td>
                             <td x-show="visibleColumns.includes('register_name')" class="px-4 py-3 cursor-pointer select-none"
-                                title="双击复制注册名"
+                                title="{{ _('accounts.copy_reg_name') }}"
                                 @dblclick="acc.register_name && copyText(acc.register_name)">
                                 <span class="text-sm text-body" x-text="acc.register_name || '—'"></span>
                             </td>
                             <td class="px-4 py-3 cursor-pointer select-none"
-                                title="双击复制邮箱"
+                                title="{{ _('accounts.copy_email') }}"
                                 @dblclick="copyText(acc.email)">
                                 <span class="text-sm font-medium text-body" x-text="acc.email"></span>
                             </td>
@@ -273,7 +273,7 @@
                             <td class="px-4 py-3 text-center whitespace-nowrap">
                                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold border"
                                       :class="pixStatusClass(acc.pix_status)"
-                                      :title="acc.pix_status ? (pixStatusTitle(acc.pix_status)) : '未发起开通'"
+                                      :title="acc.pix_status ? (pixStatusTitle(acc.pix_status)) : i18n('accounts.pix_not_started')"
                                       x-text="pixStatusLabel(acc.pix_status)"></span>
                             </td>
                             {# 🏷 标签列：chip 展示 + 点击「+」内联编辑（输入即建 / 点 chip ×删）。
@@ -289,7 +289,7 @@
                                     <template x-if="acc.tags && acc.tags.length">
                                         <button @click="openTagEditor(acc)"
                                                 type="button"
-                                                title="点击编辑标签（可按标签筛选/搜索）"
+                                                title="{{ _('accounts.edit_tags') }}"
                                                 class="group/tags inline-flex items-center gap-1 flex-nowrap whitespace-nowrap max-w-full -mx-1 px-1 py-0.5 rounded-md hover:bg-slate-50 transition text-left">
                                             <template x-for="tag in acc.tags" :key="tag">
                                                 <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium border shrink-0"
@@ -304,18 +304,18 @@
                                     <template x-if="!(acc.tags && acc.tags.length)">
                                         <button @click="openTagEditor(acc)"
                                                 type="button"
-                                                title="给该号打标签分类（可按标签筛选/搜索）"
-                                                class="inline-flex items-center gap-1 whitespace-nowrap px-2.5 h-6 rounded-full border border-dashed border-slate-300 text-[11px] font-medium text-slate-400 hover:border-primary hover:text-primary hover:bg-primary-50 transition shrink-0">
+                                                title="{{ _('accounts.add_tags') }}"
+                                                class="inline-flex items-center gap-1 whitespace-nowrap px-2.5 h-6 rounded-full border border-dashed border-border text-[11px] font-medium text-muted hover:border-primary hover:text-primary hover:bg-primary-50 transition shrink-0">
                                             <span class="material-symbols-outlined text-[14px]">add</span>
-                                            <span>标签</span>
+                                            <span>{{ _('accounts.tags_col') }}</span>
                                         </button>
                                     </template>
 
                                     {# 内联标签编辑器 popover #}
                                     <div x-show="tagEditorRunId === acc.run_id" x-cloak x-transition.opacity
                                          @click.outside="if (tagEditorRunId === acc.run_id) closeTagEditor()"
-                                         class="absolute left-0 top-full mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50 p-3">
-                                        <div class="text-[11px] font-semibold text-slate-500 mb-2">编辑标签 · <span class="font-mono" x-text="acc.email"></span></div>
+                                         class="absolute left-0 top-full mt-1 w-64 bg-surface border border-border rounded-lg shadow-lg z-50 p-3">
+                                        <div class="text-[11px] font-semibold text-muted mb-2">{{ _('accounts.edit_tags') }} · <span class="font-mono" x-text="acc.email"></span></div>
                                         {# 已有标签（点 × 删） #}
                                         <div class="flex items-center gap-1 flex-wrap mb-2 min-h-[20px]">
                                             <template x-for="(tag, idx) in tagDraft" :key="idx">
@@ -328,16 +328,16 @@
                                                     </button>
                                                 </span>
                                             </template>
-                                            <span x-show="tagDraft.length === 0" class="text-[11px] text-slate-400">暂无标签</span>
+                                            <span x-show="tagDraft.length === 0" class="text-[11px] text-muted">{{ _('accounts.no_tags') }}</span>
                                         </div>
                                         {# 新建标签输入（回车 / 逗号添加；datalist 提示已有标签复用） #}
                                         <input type="text" x-model="tagInput"
                                                @keydown.enter.prevent="addTagFromInput()"
                                                @keydown="if ($event.key === ',') { $event.preventDefault(); addTagFromInput(); }"
                                                list="account-tag-suggestions"
-                                               placeholder="输入标签后回车…"
+                                               :placeholder="i18n('accounts.tags_input_placeholder')"
                                                maxlength="24"
-                                               class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
+                                               class="w-full px-2 py-1.5 border border-border rounded text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none">
                                         <datalist id="account-tag-suggestions">
                                             <template x-for="t in allTags" :key="t">
                                                 <option :value="t"></option>
@@ -345,11 +345,11 @@
                                         </datalist>
                                         <div class="flex justify-end gap-2 mt-2.5">
                                             <button @click="closeTagEditor()" type="button"
-                                                    class="px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">取消</button>
+                                                    class="px-2.5 py-1 text-xs text-muted hover:bg-slate-100 rounded">{{ _('common.cancel') }}</button>
                                             <button @click="saveTagDraft(acc)" type="button"
                                                     :disabled="tagSaving"
                                                     class="px-3 py-1 text-xs bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50">
-                                                <span x-text="tagSaving ? '保存中…' : '保存'"></span>
+                                                <span x-text="tagSaving ? i18n('accounts.saving') : i18n('common.save')"></span>
                                             </button>
                                         </div>
                                     </div>
@@ -378,14 +378,14 @@
                                上下文，下拉的 z-50 只在本 td 内生效，跨行比较时 DOM 靠后的行天然
                                压在前面行之上 → 下拉被下一行图标遮挡（CleanShot 2026-06-17 实证）。
                                故把「正展开行」的整个 td 提到高 z，让本行浮到后续行之上。 #}
-                            <td class="px-4 py-3 whitespace-nowrap sticky right-0 bg-white shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.06)]"
+                            <td class="px-4 py-3 whitespace-nowrap sticky right-0 bg-surface shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.06)]"
                                 :class="rowExportOpenId === acc.run_id ? 'z-[60]' : 'z-[5]'">
                             <!-- 操作 icon 栏：tooltip 用 title 属性原生显示 -->
                             <div class="flex items-center gap-0.5">
                                 {# 🧾 生成 checkout 链接 — receipt_long 票据语义比"链子"更贴合"生成结账单" #}
                                 <template x-if="acc.account_tier === 'registered'">
                                     <button @click="openLinkDialog(acc)"
-                                            title="生成 checkout 链接（Team/Plus/Pro，可填 promo）"
+                                            title="{{ _('accounts.gen_checkout_hint') }}"
                                             class="p-1.5 text-primary hover:bg-primary/10 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">receipt_long</span>
                                     </button>
@@ -393,7 +393,7 @@
                                 {# ✅💳 绑卡登记 — credit_score 卡片审核语义，比 credit_card 更能传达"登记/审核"动作 #}
                                 <template x-if="acc.account_tier === 'registered'">
                                     <button @click="openAssignCardDialog(acc)"
-                                            title="绑卡（登记这个号用了哪张卡）"
+                                            title="{{ _('accounts.bind_card_hint') }}"
                                             class="p-1.5 text-success hover:bg-success/10 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">credit_score</span>
                                     </button>
@@ -401,7 +401,7 @@
                                 {# ⚡ PIX 渠道开通 Plus — baxigpt 卡密自助开通；bolt 闪电语义"一键开通"，仅 openai 号显示 #}
                                 <template x-if="acc.account_tier === 'registered' && acc.platform === 'openai'">
                                     <button @click="openPixPlusDialog(acc)"
-                                            title="PIX 渠道开通 Plus（baxigpt 卡密）"
+                                            title="{{ _('accounts.pix_open_hint') }}"
                                             class="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">bolt</span>
                                     </button>
@@ -410,7 +410,7 @@
                                 <template x-if="acc.platform === 'openai'">
                                     <button @click="verifyPlus(acc)"
                                             :disabled="verifyingRunId === acc.run_id"
-                                            title="核验 Plus（起浏览器查该号实时订阅状态）"
+                                            title="{{ _('accounts.verify_plus_hint') }}"
                                             class="p-1.5 text-sky-600 hover:bg-sky-50 rounded transition disabled:opacity-40">
                                         <span class="material-symbols-outlined text-[18px]"
                                               :class="verifyingRunId === acc.run_id ? 'animate-spin' : ''"
@@ -421,7 +421,7 @@
                                 <template x-if="acc.platform === 'openai'">
                                     <button @click="refreshToken(acc)"
                                             :disabled="refreshingRunId === acc.run_id"
-                                            title="刷新 token（token 过期时重新登录更新）"
+                                            title="{{ _('accounts.refresh_token_hint') }}"
                                             class="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded transition disabled:opacity-40">
                                         <span class="material-symbols-outlined text-[18px]"
                                               :class="refreshingRunId === acc.run_id ? 'animate-spin' : ''"
@@ -436,7 +436,7 @@
                                 <template x-if="acc.platform === 'openai'">
                                     <button @click="copyAccessToken(acc)"
                                             :disabled="copyingTokenRunId === acc.run_id"
-                                            title="复制 access_token"
+                                            title="{{ _('accounts.copy_access_token') }}"
                                             class="p-1.5 text-teal-600 hover:bg-teal-50 rounded transition disabled:opacity-40">
                                         <span class="material-symbols-outlined text-[18px]"
                                               :class="copyingTokenRunId === acc.run_id ? 'animate-spin' : ''"
@@ -446,7 +446,7 @@
                                 {# 🏅 晋级 Plus — workspace_premium 高级徽章；改用 sky secondary 与 Checkout 的 indigo 区分 #}
                                 <template x-if="acc.account_tier === 'registered'">
                                     <button @click="markPromote(acc, 'plus')"
-                                            title="晋级 Plus"
+                                            title="{{ _('accounts.promote_plus') }}"
                                             class="p-1.5 text-secondary hover:bg-secondary/10 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">workspace_premium</span>
                                     </button>
@@ -454,7 +454,7 @@
                                 {# 👥 晋级 Team — diversity_3 多元团队，比 group 更现代；紫色保留与 Plus sky 形成"进阶→顶级"层级 #}
                                 <template x-if="acc.account_tier === 'registered'">
                                     <button @click="markPromote(acc, 'team')"
-                                            title="晋级 Team"
+                                            title="{{ _('accounts.promote_team') }}"
                                             class="p-1.5 text-violet-600 hover:bg-violet-50 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">diversity_3</span>
                                     </button>
@@ -462,7 +462,7 @@
                                 {# 🚫 放弃此号 — block 封禁语义比 trash 更准（账号不删除只标记，保留审计） #}
                                 <template x-if="acc.account_tier === 'registered'">
                                     <button @click="markAbandon(acc)"
-                                            title="放弃此号"
+                                            title="{{ _('accounts.abandon_account') }}"
                                             class="p-1.5 text-danger hover:bg-danger/10 rounded transition">
                                         <span class="material-symbols-outlined text-[18px]">block</span>
                                     </button>
@@ -471,24 +471,24 @@
                                 <div class="relative">
                                     <button @click="rowExportOpenId = rowExportOpenId === acc.run_id ? '' : acc.run_id"
                                             type="button"
-                                            title="导出此号"
+                                            title="{{ _('accounts.export_account') }}"
                                             class="p-1.5 text-muted hover:bg-subtle rounded transition flex items-center">
                                         <span class="material-symbols-outlined text-[18px]">file_download</span>
                                     </button>
                                     <div x-show="rowExportOpenId === acc.run_id" x-transition.opacity x-cloak
                                          @click.outside="if (rowExportOpenId === acc.run_id) rowExportOpenId = ''"
-                                         class="absolute right-0 mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-lg z-50 overflow-hidden">
-                                        <div class="px-3 py-2 text-[11px] text-slate-500 bg-slate-50 border-b truncate"
-                                             x-text="`导出 ${acc.email}`"></div>
-                                        <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
+                                         class="absolute right-0 mt-1 w-64 bg-surface border border-border rounded-md shadow-lg z-50 overflow-hidden">
+                                        <div class="px-3 py-2 text-[11px] text-muted bg-subtle border-b truncate"
+                                             x-text="i18n('accounts.export_account_of', { email: acc.email })"></div>
+                                        <template x-for="meta in rowExportFormats(acc)" :key="meta.key">
                                             <button @click="rowExportOpenId = ''; downloadExport(buildRowExportUrl(acc, meta.key))"
                                                type="button"
                                                class="block w-full text-left px-3 py-2 hover:bg-primary-50 transition border-b last:border-b-0">
                                                 <div class="flex items-center gap-2">
                                                     <span x-text="meta.icon" class="text-base"></span>
-                                                    <span class="font-medium text-sm text-slate-800" x-text="meta.label"></span>
+                                                    <span class="font-medium text-sm text-body" x-text="meta.label"></span>
                                                 </div>
-                                                <div class="text-[10px] text-slate-500 mt-0.5 pl-6" x-text="meta.desc"></div>
+                                                <div class="text-[10px] text-muted mt-0.5 pl-6" x-text="meta.desc"></div>
                                             </button>
                                         </template>
                                     </div>
@@ -539,7 +539,7 @@
          x-transition.opacity
          class="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4"
          @keydown.escape="closeLinkDialog()">
-        <div class="bg-white rounded-xl shadow-token-lg w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+        <div class="bg-surface rounded-xl shadow-token-lg w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
              @click.outside="closeLinkDialog()">
 
             {# ── 弹窗 Header（flex-shrink-0 不缩） ── #}
@@ -549,8 +549,8 @@
                         <span class="material-symbols-outlined">rocket_launch</span>
                     </div>
                     <div>
-                        <h2 class="text-base font-semibold text-body leading-tight">生成 Checkout 链接</h2>
-                        <p class="text-xs text-muted mt-0.5">为账号 <span class="font-mono text-body" x-text="linkDialog.email"></span></p>
+                        <h2 class="text-base font-semibold text-body leading-tight">{{ _('accounts.gen_link_title') }}</h2>
+                        <p class="text-xs text-muted mt-0.5">{{ _('accounts.gen_link_for') }} <span class="font-mono text-body" x-text="linkDialog.email"></span></p>
                     </div>
                 </div>
                 <button @click="closeLinkDialog()" class="text-muted hover:text-body p-1 rounded-md hover:bg-subtle transition-colors">
@@ -565,29 +565,29 @@
                 <div class="lg:flex-[7] min-h-0 overflow-y-auto custom-scrollbar pr-2 flex flex-col gap-4">
 
                     {# Card 1：链接配置（模板/快捷预设/Plan/Promo） #}
-                    <section class="bg-white rounded-lg shadow-token-sm border border-border p-4 flex flex-col gap-4">
+                    <section class="bg-surface rounded-lg shadow-token-sm border border-border p-4 flex flex-col gap-4">
                         <div class="flex items-center gap-3">
                             <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
                                 <span class="material-symbols-outlined">tune</span>
                             </div>
-                            <h3 class="text-base font-semibold text-body">业务配置</h3>
+                            <h3 class="text-base font-semibold text-body">{{ _('accounts.business_config') }}</h3>
                         </div>
 
                         {# 模板下拉 + 存为模板 #}
                         <div class="space-y-3">
                             <div class="flex items-center justify-between">
-                                <label class="text-xs font-semibold text-muted uppercase tracking-wider font-label">快捷模板</label>
+                                <label class="text-xs font-semibold text-muted uppercase tracking-wider font-label">{{ _('accounts.quick_template') }}</label>
                                 <button @click="saveCurrentAsTemplate()"
                                         class="text-[11px] font-bold text-primary hover:underline flex items-center gap-1">
                                     <span class="material-symbols-outlined text-sm">save</span>
-                                    存为模板
+                                    {{ _('accounts.save_as_template') }}
                                 </button>
                             </div>
 
                             <select x-model="linkDialog.selectedTemplateId"
                                     @change="applyTemplate($event.target.value)"
                                     class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
-                                <option value="">-- 不使用模板 --</option>
+                                <option value="">{{ _('accounts.no_template') }}</option>
                                 <template x-for="t in linkTemplates" :key="t.id">
                                     <option :value="t.id" x-text="formatTemplateOption(t)"></option>
                                 </template>
@@ -598,7 +598,7 @@
                                 <template x-for="preset in presets" :key="preset.id">
                                     <button @click="applyPresetTemplate(preset)"
                                             class="flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border border-border text-body hover:bg-subtle transition-all"
-                                            :title="`${preset.name} — plan=${preset.plan} country=${preset.aimizy_country || '默认'}`"
+                                            :title="`${preset.name} — plan=${preset.plan} country=${preset.aimizy_country || i18n('accounts.default')}`"
                                             x-text="preset.name"></button>
                                 </template>
                             </div>
@@ -607,17 +607,17 @@
                         {# Plan + Seats #}
                         <div class="grid grid-cols-12 gap-4">
                             <div class="col-span-12 sm:col-span-8">
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">计划 (Plan)</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('accounts.plan_label') }}</label>
                                 <select x-model="linkDialog.plan"
                                         class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
-                                    <option value="team">Team（默认，免费试用）</option>
+                                    <option value="team">{{ _('accounts.plan_team') }}</option>
                                     <option value="plus">Plus</option>
-                                    <option value="pro">⚠️ Pro（实验性）</option>
-                                    <option value="pro_lite">⚠️ Pro Lite（实验性）</option>
+                                    <option value="pro">⚠️ {{ _('accounts.plan_pro') }}</option>
+                                    <option value="pro_lite">⚠️ {{ _('accounts.plan_pro_lite') }}</option>
                                 </select>
                                 <p x-show="linkDialog.plan === 'pro' || linkDialog.plan === 'pro_lite'"
                                    class="mt-1 text-[11px] text-warning">
-                                    Pro 系列 payload 字段名待真实接口验证
+                                    {{ _('accounts.plan_pro_warning') }}
                                 </p>
                             </div>
                             <div class="col-span-12 sm:col-span-4" x-show="linkDialog.plan === 'team'">
@@ -629,7 +629,7 @@
 
                         {# Workspace（仅 Team） #}
                         <div x-show="linkDialog.plan === 'team'">
-                            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">Workspace 名（可空）</label>
+                            <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('accounts.workspace_name_label') }}</label>
                             <input type="text" x-model="linkDialog.workspace_name" placeholder="MyTeam"
                                    class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
                         </div>
@@ -637,12 +637,12 @@
                         {# Promo #}
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-border">
                             <div>
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">URL 优惠码 (Team)</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('accounts.url_promo_label') }}</label>
                                 <input type="text" x-model="linkDialog.promo_code" placeholder="datroaiuk"
                                        class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
                                 <p class="mt-1 text-[10px] text-muted">
-                                    <span x-show="linkDialog.plan === 'team'">Team 折扣码，进 payload promo_code</span>
-                                    <span x-show="linkDialog.plan === 'plus'" class="text-warning">Plus 自动用 plus-1-month-free，填了会被忽略</span>
+                                    <span x-show="linkDialog.plan === 'team'">{{ _('accounts.url_promo_team_hint') }}</span>
+                                    <span x-show="linkDialog.plan === 'plus'" class="text-warning">{{ _('accounts.url_promo_plus_hint') }}</span>
                                 </p>
                             </div>
                             <div>
@@ -652,45 +652,45 @@
                                        :placeholder="linkDialog.plan === 'plus' ? 'plus-1-month-free' : 'team-1-month-free'"
                                        class="w-full text-sm border border-border rounded-lg px-3 py-2 font-mono focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
                                 <datalist id="promo-campaign-suggestions">
-                                    <option value="plus-1-month-free">Plus 0 元试用 1 个月</option>
-                                    <option value="plus-1-month-50-pct-off">Plus 半价 1 个月（$10）</option>
-                                    <option value="team-1-month-free">Team 0 元试用 1 个月</option>
+                                    <option value="plus-1-month-free">{{ _('accounts.campaign_plus_free') }}</option>
+                                    <option value="plus-1-month-50-pct-off">{{ _('accounts.campaign_plus_half') }}</option>
+                                    <option value="team-1-month-free">{{ _('accounts.campaign_team_free') }}</option>
                                 </datalist>
-                                <p class="mt-1 text-[10px] text-muted">留空走默认</p>
+                                <p class="mt-1 text-[10px] text-muted">{{ _('accounts.leave_blank_default') }}</p>
                             </div>
                         </div>
                     </section>
 
                     {# Card 2：环境与支付（支付页 / 代理 / 国家 / 货币） #}
-                    <section class="bg-white rounded-lg shadow-token-sm border border-border p-4 flex flex-col gap-4">
+                    <section class="bg-surface rounded-lg shadow-token-sm border border-border p-4 flex flex-col gap-4">
                         <div class="flex items-center gap-3">
                             <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
                                 <span class="material-symbols-outlined">public</span>
                             </div>
-                            <h3 class="text-base font-semibold text-body">环境与支付</h3>
+                            <h3 class="text-base font-semibold text-body">{{ _('accounts.env_payment') }}</h3>
                         </div>
 
                         <div class="grid grid-cols-2 gap-4">
                             <div class="col-span-2">
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">支付页模式</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('accounts.checkout_ui_mode_label') }}</label>
                                 <select x-model="linkDialog.checkout_ui_mode"
                                         class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
-                                    <option value="hosted">hosted（pay.openai.com 长链）</option>
-                                    <option value="custom">custom（chatgpt.com 站内）</option>
+                                    <option value="hosted">{{ _('accounts.checkout_mode_hosted') }}</option>
+                                    <option value="custom">{{ _('accounts.checkout_mode_custom') }}</option>
                                 </select>
                             </div>
                             <div class="col-span-2">
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">代理服务器</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('accounts.proxy_server_label') }}</label>
                                 <select x-model="linkDialog.proxy_id"
                                         class="w-full text-sm border border-border rounded-lg px-3 py-2 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
-                                    <option value="">-- 用 .env 默认代理 --</option>
+                                    <option value="">{{ _('accounts.proxy_env_default') }}</option>
                                     <template x-for="p in proxyOptions" :key="p.id">
                                         <option :value="p.id" :disabled="!p.is_active"
-                                                x-text="`${p.country || '?'} · ${p.label}${p.is_active ? '' : ' (停用)'}`"></option>
+                                                x-text="`${p.country || '?'} · ${p.label}${p.is_active ? '' : ' ' + i18n('accounts.proxy_disabled_suffix')}`"></option>
                                     </template>
                                 </select>
                                 <p class="mt-1 text-[10px] text-muted">
-                                    管理代理：<a href="/proxies" target="_blank" class="text-primary underline">/proxies</a>
+                                    {{ _('accounts.manage_proxy') }}<a href="/proxies" target="_blank" class="text-primary underline">/proxies</a>
                                 </p>
                             </div>
 
@@ -724,9 +724,9 @@
                                              this.open = false; this.query = '';
                                            } }"
                                  @click.outside="open = false">
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">国家</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('checkout_link.country_label') }}</label>
                                 <button type="button" @click="toggleCountry()"
-                                        class="w-full flex items-center justify-between text-sm border border-border rounded-lg px-3 py-2 bg-white hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
+                                        class="w-full flex items-center justify-between text-sm border border-border rounded-lg px-3 py-2 bg-surface hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all">
                                     <span class="flex items-center gap-2 text-left truncate"
                                           :class="!linkDialog.aimizy_country ? 'text-muted' : 'text-body'">
                                         <span x-show="linkDialog.aimizy_country" x-text="flag(linkDialog.aimizy_country)"></span>
@@ -735,7 +735,7 @@
                                     <span class="material-symbols-outlined text-base text-muted" x-text="open ? 'expand_less' : 'expand_more'"></span>
                                 </button>
                                 <div x-show="open" x-cloak x-transition.opacity.duration.150ms
-                                     class="absolute z-30 mt-1 w-full bg-white border border-border rounded-lg shadow-token-md max-h-64 overflow-hidden flex flex-col">
+                                     class="absolute z-30 mt-1 w-full bg-surface border border-border rounded-lg shadow-token-md max-h-64 overflow-hidden flex flex-col">
                                     <input type="text" x-model="query" @click.stop x-ref="dlgCountrySearch"
                                            :placeholder="i18n('checkout_link.country_search_placeholder') || '搜索...'"
                                            class="px-3 py-2 border-b border-border text-sm focus:outline-none">
@@ -787,9 +787,9 @@
                                              this.open = false; this.query = '';
                                            } }"
                                  @click.outside="open = false">
-                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">货币</label>
+                                <label class="block text-xs font-semibold text-muted uppercase tracking-wider mb-2 font-label">{{ _('checkout_link.currency_label') }}</label>
                                 <button type="button" @click="toggleCurrency()"
-                                        class="w-full flex items-center justify-between text-sm border rounded-lg px-3 py-2 bg-white hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all"
+                                        class="w-full flex items-center justify-between text-sm border rounded-lg px-3 py-2 bg-surface hover:border-primary/40 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none transition-all"
                                         :class="linkDialog.currencyAutoFilled ? 'border-success/40' : 'border-border'">
                                     <span class="text-left truncate"
                                           :class="!linkDialog.aimizy_currency ? 'text-muted' : 'text-body'"
@@ -797,7 +797,7 @@
                                     <span class="material-symbols-outlined text-base text-muted" x-text="open ? 'expand_less' : 'expand_more'"></span>
                                 </button>
                                 <div x-show="open" x-cloak x-transition.opacity.duration.150ms
-                                     class="absolute z-30 mt-1 w-full bg-white border border-border rounded-lg shadow-token-md max-h-64 overflow-hidden flex flex-col">
+                                     class="absolute z-30 mt-1 w-full bg-surface border border-border rounded-lg shadow-token-md max-h-64 overflow-hidden flex flex-col">
                                     <input type="text" x-model="query" @click.stop x-ref="dlgCurrencySearch"
                                            :placeholder="i18n('checkout_link.currency_search_placeholder') || '搜索...'"
                                            class="px-3 py-2 border-b border-border text-sm focus:outline-none">
@@ -828,7 +828,7 @@
 
                 {# ═══════════ 右列：执行生成 + 结果（吸顶不滚动） ═══════════ #}
                 <div class="lg:flex-[5] flex-shrink-0 flex flex-col">
-                    <section class="bg-white rounded-lg shadow-token-sm border border-primary/10 p-4 flex flex-col gap-4 relative overflow-hidden lg:sticky lg:top-0">
+                    <section class="bg-surface rounded-lg shadow-token-sm border border-primary/10 p-4 flex flex-col gap-4 relative overflow-hidden lg:sticky lg:top-0">
                         <div class="absolute top-2 right-2">
                             <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-primary/10 text-primary uppercase tracking-tighter font-label">
                                 Live Output
@@ -839,7 +839,7 @@
                             <div class="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary">
                                 <span class="material-symbols-outlined">rocket_launch</span>
                             </div>
-                            <h3 class="text-base font-semibold text-body">执行生成</h3>
+                            <h3 class="text-base font-semibold text-body">{{ _('accounts.execute_generate') }}</h3>
                         </div>
 
                         {# 结果面板 #}
@@ -847,28 +847,28 @@
                              class="bg-subtle rounded-xl p-4 space-y-4 border border-border">
                             <div x-show="linkDialog.longLink" class="space-y-1.5">
                                 <div class="flex justify-between items-center">
-                                    <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">长链 (Hosted)</span>
+                                    <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">{{ _('accounts.long_link_hosted') }}</span>
                                     <button @click="copyText(linkDialog.longLink)"
                                             class="flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary-hover">
                                         <span class="material-symbols-outlined text-xs">content_copy</span>
-                                        复制
+                                        {{ _('common.copy') }}
                                     </button>
                                 </div>
                                 <a :href="linkDialog.longLink" target="_blank"
-                                   class="block bg-white border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
+                                   class="block bg-surface border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
                                    x-text="linkDialog.longLink"></a>
                             </div>
                             <div x-show="linkDialog.shortLink" class="space-y-1.5">
                                 <div class="flex justify-between items-center">
-                                    <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">短链 (Redirect)</span>
+                                    <span class="text-[10px] font-bold text-muted uppercase tracking-widest font-label">{{ _('accounts.short_link_redirect') }}</span>
                                     <button @click="copyText(linkDialog.shortLink)"
                                             class="flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary-hover">
                                         <span class="material-symbols-outlined text-xs">content_copy</span>
-                                        复制
+                                        {{ _('common.copy') }}
                                     </button>
                                 </div>
                                 <a :href="linkDialog.shortLink" target="_blank"
-                                   class="block bg-white border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
+                                   class="block bg-surface border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
                                    x-text="linkDialog.shortLink"></a>
                             </div>
                         </div>
@@ -877,7 +877,7 @@
                         <div x-show="!linkDialog.longLink && !linkDialog.shortLink"
                              class="text-center py-6 text-muted text-xs">
                             <span class="material-symbols-outlined text-4xl text-border block mb-1">link_off</span>
-                            <p>填好左侧配置，点下方按钮生成</p>
+                            <p>{{ _('accounts.gen_link_empty_hint') }}</p>
                         </div>
 
                         {# 按钮 —— 纵排满宽，长链主、短链次 #}
@@ -888,19 +888,19 @@
                                 <span class="material-symbols-outlined text-xl"
                                       x-text="linkDialog.submitting.long ? 'progress_activity' : 'play_circle'"
                                       :class="linkDialog.submitting.long ? 'animate-spin' : ''"></span>
-                                <span x-text="linkDialog.submitting.long ? '生成中...' : '立即生成 Checkout 长链'"></span>
+                                <span x-text="linkDialog.submitting.long ? i18n('accounts.generating') : i18n('accounts.gen_long_link_btn')"></span>
                             </button>
                             <button @click="submitGenerateLink('app')"
                                     :disabled="linkDialog.submitting.long || linkDialog.submitting.short"
-                                    class="w-full flex items-center justify-center gap-2 py-3 bg-white border border-border rounded-lg text-sm font-bold text-success hover:bg-success/5 hover:border-success/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
+                                    class="w-full flex items-center justify-center gap-2 py-3 bg-surface border border-border rounded-lg text-sm font-bold text-success hover:bg-success/5 hover:border-success/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
                                 <span class="material-symbols-outlined text-xl"
                                       x-text="linkDialog.submitting.short ? 'progress_activity' : 'bolt'"
                                       :class="linkDialog.submitting.short ? 'animate-spin' : ''"></span>
-                                <span x-text="linkDialog.submitting.short ? '生成中...' : '生成 Redirect 短链'"></span>
+                                <span x-text="linkDialog.submitting.short ? i18n('accounts.generating') : i18n('accounts.gen_short_link_btn')"></span>
                             </button>
                             <button @click="closeLinkDialog()"
                                     class="w-full text-center py-2 text-sm text-muted hover:text-body transition-colors">
-                                关闭
+                                {{ _('common.close') }}
                             </button>
                         </div>
                     </section>
@@ -916,39 +916,39 @@
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="closeAssignCardDialog()">
-        <div class="bg-white rounded-lg shadow-lg p-6 max-w-md w-full"
+        <div class="bg-surface rounded-lg shadow-lg p-6 max-w-md w-full"
              @click.outside="closeAssignCardDialog()">
-            <div class="text-lg font-medium mb-3">为账号 <span x-text="assignCardDialog.email"></span> 登记绑卡</div>
-            <div class="text-xs text-slate-500 mb-4">
-                选一张<strong>已成熟（warmup_count ≥ target）</strong>的卡 → 登记"这个号用了这张卡"。仅做留痕，不生成链接；链接请用 🔗 按钮单独生成。
+            <div class="text-lg font-medium mb-3">{{ _('accounts.bind_card_title_prefix') }} <span x-text="assignCardDialog.email"></span> {{ _('accounts.bind_card_title_suffix') }}</div>
+            <div class="text-xs text-muted mb-4">
+                {{ _('accounts.bind_card_desc_prefix') }}<strong>{{ _('accounts.bind_card_desc_strong') }}</strong>{{ _('accounts.bind_card_desc_suffix') }}
             </div>
             <div class="space-y-3">
                 <div>
-                    <label class="text-xs text-slate-600">从卡池选熟卡：</label>
+                    <label class="text-xs text-muted">{{ _('accounts.bind_card_select_label') }}</label>
                     <select x-model="assignCardDialog.card_key" class="w-full px-3 py-1.5 border rounded text-sm">
-                        <option value="">-- 请选择 --</option>
+                        <option value="">{{ _('accounts.please_select') }}</option>
                         <template x-for="c in readyCards" :key="c.card_key">
                             <option :value="c.card_key"
                                     x-text="`****${c.last4} ${c.bin_country || ''} ${c.card_provider} (${c.warmup_count}/${c.target_warmup_count})`"></option>
                         </template>
                     </select>
                     <div x-show="readyCards.length === 0" class="text-xs text-danger-500 mt-1">
-                        没有成熟卡，先到 <a href="/cards" class="underline">/cards</a> 入池 + 热卡
+                        {{ _('accounts.no_ready_card_prefix') }}<a href="/cards" class="underline">/cards</a>{{ _('accounts.no_ready_card_suffix') }}
                     </div>
                 </div>
                 <div>
-                    <label class="text-xs text-slate-600">备注（可选）：</label>
+                    <label class="text-xs text-muted">{{ _('accounts.note_label') }}</label>
                     <input type="text" x-model="assignCardDialog.note"
-                           placeholder="如：UK promo 已申请"
+                           placeholder="{{ _('accounts.note_placeholder') }}"
                            class="w-full px-3 py-1.5 border rounded text-sm">
                 </div>
             </div>
             <div class="flex justify-end gap-2 mt-4">
-                <button @click="closeAssignCardDialog()" class="px-3 py-1.5 text-sm border rounded">关闭</button>
+                <button @click="closeAssignCardDialog()" class="px-3 py-1.5 text-sm border rounded">{{ _('common.close') }}</button>
                 <button @click="submitAssignCard()"
                         :disabled="!assignCardDialog.card_key || assignCardDialog.submitting"
                         class="px-4 py-1.5 bg-success-600 text-white text-sm rounded hover:bg-success-700 disabled:bg-slate-200">
-                    <span x-text="assignCardDialog.submitting ? '登记中...' : '确认绑卡'"></span>
+                    <span x-text="assignCardDialog.submitting ? i18n('accounts.binding') : i18n('accounts.confirm_bind_card')"></span>
                 </button>
             </div>
         </div>
@@ -960,37 +960,36 @@
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="!pixPlusDialog.submitting && closePixPlusDialog()">
-        <div class="bg-white rounded-lg shadow-lg p-6 max-w-md w-full"
+        <div class="bg-surface rounded-lg shadow-lg p-6 max-w-md w-full"
              @click.outside="!pixPlusDialog.submitting && closePixPlusDialog()">
-            <div class="text-lg font-medium mb-3">PIX 渠道开通 Plus · <span x-text="pixPlusDialog.email"></span></div>
-            <div class="text-xs text-slate-500 mb-4">
-                输入卡密后，系统自动起浏览器打开 <code>baxigpt.com</code> → 填卡密 → 验证 → 填本号 token → 开通 Plus。
+            <div class="text-lg font-medium mb-3">{{ _('accounts.pix_dialog_title') }} · <span x-text="pixPlusDialog.email"></span></div>
+            <div class="text-xs text-muted mb-4">
+                {{ _('accounts.pix_dialog_desc_prefix') }}<code>baxigpt.com</code>{{ _('accounts.pix_dialog_desc_suffix') }}
             </div>
             <div class="space-y-3">
                 <div>
-                    <label class="text-xs text-slate-600 block mb-1">卡密（SDK）：</label>
+                    <label class="text-xs text-muted block mb-1">{{ _('accounts.pix_sdk_label') }}</label>
                     <input type="text" x-model="pixPlusDialog.sdk_code"
                            placeholder="BX-XXXXXXXX"
                            :disabled="pixPlusDialog.submitting"
                            @keydown.enter="!pixPlusDialog.submitting && submitPixPlus()"
                            class="w-full px-3 py-1.5 border rounded text-sm mono-text disabled:bg-slate-100">
                 </div>
-                <ul class="text-[11px] text-slate-500 space-y-0.5 leading-relaxed">
-                    <li>· 仅支持带免费试用资格的账号（没开过 Plus 的新号）</li>
-                    <li>· 提交后自动处理，约 1–10 分钟；OpenAI 同步还需 1–5 分钟</li>
-                    <li>· token 仅用于本次开通，不入库</li>
-                    <li>· 开通成功后请<strong>确认 Plus 生效</strong>，再手动点「晋级 Plus」</li>
+                <ul class="text-[11px] text-muted space-y-0.5 leading-relaxed">
+                    <li>· {{ _('accounts.pix_note_1') }}</li>
+                    <li>· {{ _('accounts.pix_note_2') }}</li>
+                    <li>· {{ _('accounts.pix_note_3') }}</li>
+                    <li>· {{ _('accounts.pix_note_4_prefix') }}<strong>{{ _('accounts.pix_note_4_strong') }}</strong>{{ _('accounts.pix_note_4_suffix') }}</li>
                 </ul>
                 <!-- 结果区 -->
                 <template x-if="pixPlusDialog.result">
                     <div class="text-xs rounded p-2 border"
                          :class="pixPlusDialog.result.success ? 'bg-success-50 border-success-200 text-success-700' : 'bg-danger-50 border-danger-200 text-danger-700'">
                         <div class="font-medium" x-text="pixPlusDialog.result.message"></div>
-                        <div x-show="pixPlusDialog.result.success" class="mt-1 text-[11px] text-slate-600">
-                            ↳ baxigpt 已受理下单，但 <strong>Plus 是否真生效需等 5-10 分钟</strong>。
-                            稍后点列表里的 🔍「核验 Plus」按钮确认实时状态。
+                        <div x-show="pixPlusDialog.result.success" class="mt-1 text-[11px] text-muted">
+                            ↳ {{ _('accounts.pix_result_prefix') }}<strong>{{ _('accounts.pix_result_strong') }}</strong>{{ _('accounts.pix_result_suffix') }}
                         </div>
-                        <div x-show="pixPlusDialog.result.detail" class="mt-1 text-[10px] text-slate-500 break-all"
+                        <div x-show="pixPlusDialog.result.detail" class="mt-1 text-[10px] text-muted break-all"
                              x-text="pixPlusDialog.result.detail"></div>
                     </div>
                 </template>
@@ -998,11 +997,11 @@
             <div class="flex justify-end gap-2 mt-4">
                 <button @click="closePixPlusDialog()"
                         :disabled="pixPlusDialog.submitting"
-                        class="px-3 py-1.5 text-sm border rounded disabled:opacity-50">关闭</button>
+                        class="px-3 py-1.5 text-sm border rounded disabled:opacity-50">{{ _('common.close') }}</button>
                 <button @click="submitPixPlus()"
                         :disabled="!pixPlusDialog.sdk_code.trim() || pixPlusDialog.submitting"
                         class="px-4 py-1.5 bg-emerald-600 text-white text-sm rounded hover:bg-emerald-700 disabled:bg-slate-200">
-                    <span x-text="pixPlusDialog.submitting ? '开通中...' : '开通 Plus'"></span>
+                    <span x-text="pixPlusDialog.submitting ? i18n('accounts.pix_opening') : i18n('accounts.pix_open_plus')"></span>
                 </button>
             </div>
         </div>
@@ -1014,17 +1013,17 @@
          x-transition.opacity
          class="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50"
          @keydown.escape="closeImportDialog()">
-        <div class="bg-white rounded-lg shadow-lg p-6 max-w-md w-full"
+        <div class="bg-surface rounded-lg shadow-lg p-6 max-w-md w-full"
              @click.outside="closeImportDialog()">
-            <div class="text-lg font-medium mb-3">导入号池</div>
-            <div class="text-xs text-slate-500 mb-4">
-                上传外部渠道的账号文件，按 <strong>email</strong> 判重；新号入库为 <code>registered</code> 段位，可直接生成绑卡链接 / 晋级。
+            <div class="text-lg font-medium mb-3">{{ _('accounts.import_title') }}</div>
+            <div class="text-xs text-muted mb-4">
+                {{ _('accounts.import_desc_prefix') }}<strong>email</strong>{{ _('accounts.import_desc_mid') }}<code>registered</code>{{ _('accounts.import_desc_suffix') }}
             </div>
             <div class="space-y-3">
                 <div>
-                    <label class="text-xs text-slate-600 block mb-1">导入格式：</label>
+                    <label class="text-xs text-muted block mb-1">{{ _('accounts.import_format_label') }}</label>
                     <div class="grid grid-cols-2 gap-2">
-                        <template x-for="meta in EXPORT_FORMATS" :key="meta.key">
+                        <template x-for="meta in IMPORT_FORMATS" :key="meta.key">
                             <button @click="importDialog.fmt = meta.key"
                                     type="button"
                                     class="border rounded p-2 text-left transition"
@@ -1033,25 +1032,25 @@
                                         : 'border-slate-300 hover:bg-slate-50'">
                                 <div class="flex items-center gap-2">
                                     <span x-text="meta.icon" class="text-base"></span>
-                                    <span class="font-medium text-xs text-slate-800" x-text="meta.label"></span>
+                                    <span class="font-medium text-xs text-body" x-text="meta.label"></span>
                                 </div>
-                                <div class="text-[10px] text-slate-500 mt-1 leading-tight" x-text="meta.desc"></div>
+                                <div class="text-[10px] text-muted mt-1 leading-tight" x-text="meta.desc"></div>
                             </button>
                         </template>
                     </div>
                 </div>
                 <div>
-                    <label class="text-xs text-slate-600">选择文件：</label>
+                    <label class="text-xs text-muted">{{ _('accounts.select_file_label') }}</label>
                     <input type="file" x-ref="importFile"
                            accept=".json,application/json"
                            class="w-full text-sm">
                 </div>
-                <div x-show="importDialog.result" class="bg-slate-50 p-3 rounded text-xs space-y-1">
-                    <div>导入：<span class="font-medium text-success-600" x-text="importDialog.result?.imported || 0"></span></div>
-                    <div>跳过（已存在或缺 email）：<span class="font-medium text-slate-600" x-text="importDialog.result?.skipped || 0"></span></div>
+                <div x-show="importDialog.result" class="bg-subtle p-3 rounded text-xs space-y-1">
+                    <div>{{ _('accounts.import_result_imported') }}<span class="font-medium text-success-600" x-text="importDialog.result?.imported || 0"></span></div>
+                    <div>{{ _('accounts.import_result_skipped') }}<span class="font-medium text-muted" x-text="importDialog.result?.skipped || 0"></span></div>
                     <template x-if="importDialog.result?.errors?.length">
                         <div>
-                            错误：
+                            {{ _('accounts.import_result_errors') }}
                             <ul class="list-disc list-inside text-danger-600">
                                 <template x-for="e in importDialog.result.errors" :key="e">
                                     <li x-text="e"></li>
@@ -1062,11 +1061,11 @@
                 </div>
             </div>
             <div class="flex justify-end gap-2 mt-4">
-                <button @click="closeImportDialog()" class="px-3 py-1.5 text-sm border rounded">关闭</button>
+                <button @click="closeImportDialog()" class="px-3 py-1.5 text-sm border rounded">{{ _('common.close') }}</button>
                 <button @click="submitImport()"
                         :disabled="importDialog.submitting"
                         class="px-4 py-1.5 bg-primary-600 text-white text-sm rounded hover:bg-primary-700 disabled:bg-slate-200">
-                    <span x-text="importDialog.submitting ? '导入中...' : '导入'"></span>
+                    <span x-text="importDialog.submitting ? i18n('accounts.importing') : i18n('accounts.import')"></span>
                 </button>
             </div>
         </div>
@@ -1078,29 +1077,53 @@
 // 导出格式元数据 —— 顶部、行内、导入对话框三处共用单一真理源
 // 放在 accountsData() 外部当顶层常量：避免 Alpine.js 3.x 对作为对象属性的数组
 // 在 x-for 渲染时偶尔触发的"non-iterable"识别 bug（症状：dropdown 展开但内容为空）
-const EXPORT_FORMATS = [
-    {
-        key: 'full_json',
-        icon: '📦',
-        label: '账号全信息 (JSON)',
-        desc: '账号凭证 + OAuth + access_token / refresh_token / id_token / account_id / expired',
-    },
-    {
-        key: 'cpa_json',
-        icon: '🔑',
-        label: 'Codex CPA (JSON)',
-        desc: 'access_token / refresh_token / account_id / expired ，可直接喂 Codex CLI',
-    },
-];
+//
+// 平台差异化：OpenAI(GPT) 产物是 OAuth/JWT token（cpa_json 喂 Codex CLI）；
+// Grok(x.ai) 产物是单个 sso_token（sso_text 每行一个 token）。两个平台的"账号全信息"
+// 都用 full_json（full_json 同时含 access_token 组与 sso_token 字段，按平台填充其一）。
+const EXPORT_FMT_FULL = {
+    key: 'full_json',
+    icon: '📦',
+    label: window.i18n('accounts.export_fmt_full_label'),
+    desc: window.i18n('accounts.export_fmt_full_desc'),
+};
+const EXPORT_FMT_CPA = {
+    key: 'cpa_json',
+    icon: '🔑',
+    label: window.i18n('accounts.export_fmt_cpa_label'),
+    desc: window.i18n('accounts.export_fmt_cpa_desc'),
+};
+const EXPORT_FMT_SSO = {
+    key: 'sso_text',
+    icon: '🔑',
+    label: window.i18n('accounts.export_fmt_sso_label'),
+    desc: window.i18n('accounts.export_fmt_sso_desc'),
+};
+
+// 按平台返回可选导出格式：grok → [全信息, SSO]；其余(openai/all) → [全信息, CPA]
+function exportFormatsForPlatform(platform) {
+    return platform === 'grok'
+        ? [EXPORT_FMT_FULL, EXPORT_FMT_SSO]
+        : [EXPORT_FMT_FULL, EXPORT_FMT_CPA];
+}
+
+// 导入只接受可还原账号的 JSON（full_json / cpa_json）；sso_text 是纯 token 转储、
+// 无 email/凭证无法重建 Run，故不出现在导入弹窗（与导出菜单解耦）。
+const IMPORT_FORMATS = [EXPORT_FMT_FULL, EXPORT_FMT_CPA];
 
 function getExportMeta(key) {
-    return EXPORT_FORMATS.find(f => f.key === key) || EXPORT_FORMATS[0];
+    const all = [EXPORT_FMT_FULL, EXPORT_FMT_CPA, EXPORT_FMT_SSO];
+    return all.find(f => f.key === key) || EXPORT_FMT_FULL;
 }
 
 function accountsData() {
     return {
         // 暴露给模板使用（必须放在 x-data scope 内才能被 x-for / x-text 访问）
-        EXPORT_FORMATS,
+        // EXPORT_FORMATS 是 getter：随 currentPlatform 切换（grok 出 SSO，其余出 CPA）。
+        get EXPORT_FORMATS() {
+            return exportFormatsForPlatform(this.currentPlatform);
+        },
+        IMPORT_FORMATS,  // 导入弹窗专用（固定 full/cpa，不含 sso_text）
         getExportMeta,
 
         // ─── checkout 弹窗用：i18n / flag / 国家→货币联动 helper ───
@@ -1134,7 +1157,7 @@ function accountsData() {
         counts: {},
         // 平台分段控件（all=全部 / openai=GPT / grok=Grok），服务端筛选
         platforms: [
-            { value: 'all',    label: '全部' },
+            { value: 'all',    label: window.i18n('accounts.platform_all') },
             { value: 'openai', label: 'GPT' },
             { value: 'grok',   label: 'Grok' },
         ],
@@ -1151,14 +1174,14 @@ function accountsData() {
         })(),
         columnOptions: [
             { key: 'run_id',        label: 'Run ID' },
-            { key: 'platform',      label: '平台' },
-            { key: 'register_name', label: '注册名' },
+            { key: 'platform',      label: window.i18n('accounts.col_platform') },
+            { key: 'register_name', label: window.i18n('accounts.col_register_name') },
             { key: 'profile',       label: 'Profile' },
-            { key: 'providers',  label: '卡商 / 邮件商' },
-            { key: 'tier',       label: '段位' },
-            { key: 'tags',       label: '标签' },
-            { key: 'created_at', label: '创建时间' },
-            { key: 'ip',         label: '创建时 IP' },
+            { key: 'providers',  label: window.i18n('accounts.col_providers') },
+            { key: 'tier',       label: window.i18n('accounts.col_tier') },
+            { key: 'tags',       label: window.i18n('accounts.tags_col') },
+            { key: 'created_at', label: window.i18n('accounts.col_created_at') },
+            { key: 'ip',         label: window.i18n('accounts.col_created_ip') },
         ],
         initColumnWatcher() {
             this.$watch('visibleColumns', (cols) => {
@@ -1181,10 +1204,10 @@ function accountsData() {
         // 单行导出弹窗（点行末导出 icon 触发）
         rowExportAcc: null,
         tiers: [
-            { value: 'registered', label: '普号池' },
-            { value: 'plus', label: 'Plus 号池' },
-            { value: 'team', label: 'Team 号池' },
-            { value: 'abandoned', label: '已放弃' },
+            { value: 'registered', label: window.i18n('accounts.tier_registered') },
+            { value: 'plus', label: window.i18n('accounts.tier_plus') },
+            { value: 'team', label: window.i18n('accounts.tier_team') },
+            { value: 'abandoned', label: window.i18n('accounts.tier_abandoned') },
         ],
         // Tier badge 配色（与 Stitch 原型 bg-amber-100/text-amber-700 等映射对齐）
         tierBadgeClass(tier) {
@@ -1439,8 +1462,9 @@ function accountsData() {
             result: null,
         },
 
-        // 顶部当前选中的导出格式（默认全信息）
-        // 注：EXPORT_FORMATS / getExportMeta 是顶层常量，已在 scope 上方声明
+        // 顶部当前选中的导出格式（默认全信息，两平台通用）
+        // 注：EXPORT_FORMATS 是随 currentPlatform 切换的 getter（见 scope 上方）；
+        //     setPlatform() 切 tab 时会把本字段拉回新平台合法格式集。
         exportFmt: 'full_json',
         // 顶部格式下拉的开合状态（不用嵌套 x-data 因为会遮蔽外层 EXPORT_FORMATS）
         exportDropdownOpen: false,
@@ -1461,11 +1485,22 @@ function accountsData() {
 
         get emptyMessage() {
             return {
-                registered: '普号池为空。先去 /tasks/create 用 mode=register_only 注册一批号',
-                plus: '还没有 Plus 号',
-                team: '还没有 Team 号',
-                abandoned: '没有已放弃的号',
-            }[this.currentTier] || '空';
+                registered: window.i18n('accounts.empty_registered'),
+                plus: window.i18n('accounts.empty_plus'),
+                team: window.i18n('accounts.empty_team'),
+                abandoned: window.i18n('accounts.empty_abandoned'),
+            }[this.currentTier] || window.i18n('accounts.empty_default');
+        },
+
+        // 切换平台 tab：同步把 exportFmt 拉回新平台合法的格式集（如 grok 的 sso_text
+        // 在 GPT tab 不存在），避免下拉切换后主按钮仍持旧格式导致后端跑错平台格式。
+        setPlatform(value) {
+            this.currentPlatform = value;
+            const valid = exportFormatsForPlatform(value).map(f => f.key);
+            if (!valid.includes(this.exportFmt)) {
+                this.exportFmt = valid[0];  // 兜底回该平台第一项（全信息）
+            }
+            this.fetchAccounts();
         },
 
         async fetchAccounts() {
@@ -1527,16 +1562,16 @@ function accountsData() {
             this.exporting = true;
             try {
                 const { skipped, savedPath } = await downloadFile(url, { fallbackName: 'codex-export.json' });
-                const where = savedPath ? `已保存到 ${savedPath}` : '导出完成';
+                const where = savedPath ? i18n('accounts.saved_to', { path: savedPath }) : i18n('accounts.export_done');
                 if (skipped > 0) {
-                    showToast(`${where}，但有 ${skipped} 条因 token 解析失败被跳过（详见后端日志）`, 'warning');
+                    showToast(i18n('accounts.export_skipped_warn', { where: where, skipped: skipped }), 'warning');
                 } else {
                     showToast(where, 'success');
                 }
             } catch (error) {
                 // 桌面端用户主动取消保存对话框：不算失败，静默忽略。
                 if (error && error.cancelled) return;
-                showToast(`导出失败：${error.message || '未知错误'}`, 'error');
+                showToast(i18n('accounts.export_failed', { error: error.message || i18n('accounts.unknown_error') }), 'error');
             } finally {
                 this.exporting = false;
             }
@@ -1552,6 +1587,13 @@ function accountsData() {
                 params.set('run_ids', Array.from(this.selected).join(','));
             }
             return `/api/accounts/export?${params.toString()}`;
+        },
+
+        // ── 单行导出格式列表（按该行账号的平台决定，而非顶部 tab）──
+        // 「全部」tab 下一行可能是 openai 或 grok：Grok 行给 [全信息, SSO]，
+        // OpenAI 行给 [全信息, CPA]，避免给 Grok 行展示导出必空的 Codex CPA。
+        rowExportFormats(acc) {
+            return exportFormatsForPlatform(acc && acc.platform);
         },
 
         // ── 单行导出 URL 构造（行内 dropdown 用）──
@@ -1612,11 +1654,11 @@ function accountsData() {
             if (!t) return '';
             const parts = [t.name];
             if (t.promo_percent_off) parts.push(`${t.promo_percent_off}% off`);
-            if (t.promo_duration_months) parts.push(`${t.promo_duration_months}个月`);
-            if (t.promo_max_redemptions) parts.push(`额度 ${t.promo_max_redemptions}`);
+            if (t.promo_duration_months) parts.push(i18n('accounts.opt_months').replace('{n}', t.promo_duration_months));
+            if (t.promo_max_redemptions) parts.push(i18n('accounts.opt_quota').replace('{n}', t.promo_max_redemptions));
             if (t.promo_expires_at) {
                 const d = String(t.promo_expires_at).slice(0, 10);
-                if (d) parts.push(`至 ${d}`);
+                if (d) parts.push(i18n('accounts.opt_until').replace('{date}', d));
             }
             parts.push(`(${t.plan})`);
             return parts.join(' · ');
@@ -1641,7 +1683,7 @@ function accountsData() {
             this.linkDialog.template_schema_version = t.schema_version || '';
             this.linkDialog.template_url_locale = t.url_locale || '';
             this.linkDialog.template_extra_payload = t.extra_payload_json || null;
-            showToast(`已应用模板：${t.name}`, 'info');
+            showToast(i18n('accounts.template_applied', { name: t.name }), 'info');
         },
 
         // 快捷预设：从 DB 拉到的 LinkTemplate（is_preset=true）应用到表单
@@ -1663,31 +1705,31 @@ function accountsData() {
             this.linkDialog.template_url_locale = preset.url_locale || '';
             this.linkDialog.template_extra_payload = preset.extra_payload_json || null;
             this.linkDialog.selectedTemplateId = '';
-            showToast(`已应用预设：${preset.name}`, 'info');
+            showToast(i18n('accounts.preset_applied', { name: preset.name }), 'info');
         },
 
         async saveCurrentAsTemplate() {
-            const name = await promptDialog({ title: '保存模板', label: '模板名（用来下次识别）', placeholder: '例如 UK promo datroaiuk' });
+            const name = await promptDialog({ title: i18n('accounts.dlg_save_template_title'), label: i18n('accounts.dlg_template_name_label'), placeholder: i18n('accounts.dlg_template_name_ph') });
             if (!name) return;
             // P3 模板化：交互式询问扩展字段（保留 native prompt 避免引入 modal）
-            const isPreset = await confirmDialog({ title: '保存模板', message: '设为预设？\n确定 = 显示为快捷按钮\n取消 = 仅保存到模板下拉' });
+            const isPreset = await confirmDialog({ title: i18n('accounts.dlg_save_template_title'), message: i18n('accounts.dlg_set_preset_msg') });
             let sortOrder = 0;
             if (isPreset) {
-                const sortStr = await promptDialog({ title: '预设排序', label: '预设按钮排序（小→大；默认 100）', default: '100', optional: true });
+                const sortStr = await promptDialog({ title: i18n('accounts.dlg_preset_sort_title'), label: i18n('accounts.dlg_preset_sort_label'), default: '100', optional: true });
                 sortOrder = parseInt(sortStr || '100', 10) || 100;
             }
-            const locale = (await promptDialog({ title: 'URL locale', label: 'URL locale（如 en/ja/zh-CN；留空不注入）', optional: true })) || '';
-            const extraJsonStr = (await promptDialog({ title: '额外 payload JSON', label: '额外 payload JSON（合并到 OpenAI payload；留空跳过）', optional: true, multiline: true })) || '';
+            const locale = (await promptDialog({ title: i18n('accounts.dlg_url_locale_title'), label: i18n('accounts.dlg_url_locale_label'), optional: true })) || '';
+            const extraJsonStr = (await promptDialog({ title: i18n('accounts.dlg_extra_payload_title'), label: i18n('accounts.dlg_extra_payload_label'), optional: true, multiline: true })) || '';
             let extraJson = null;
             if (extraJsonStr.trim()) {
                 try {
                     extraJson = JSON.parse(extraJsonStr);
                     if (typeof extraJson !== 'object' || Array.isArray(extraJson)) {
-                        showToast('额外 payload 必须是 JSON 对象', 'error');
+                        showToast(i18n('accounts.extra_payload_must_object'), 'error');
                         return;
                     }
                 } catch (e) {
-                    showToast('额外 payload JSON 格式错误：' + e.message, 'error');
+                    showToast(i18n('accounts.extra_payload_bad_json', { error: e.message }), 'error');
                     return;
                 }
             }
@@ -1722,7 +1764,7 @@ function accountsData() {
                     this.presets.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
                 }
                 this.linkDialog.selectedTemplateId = result.id;
-                showToast(`模板已保存：${result.name}${result.is_preset ? '（已设为预设）' : ''}`, 'success');
+                showToast(i18n('accounts.template_saved', { name: result.name, preset: result.is_preset ? i18n('accounts.template_saved_preset_suffix') : '' }), 'success');
             } catch (exc) {
                 showToast(String(exc.message || exc), 'error');
             }
@@ -1765,7 +1807,7 @@ function accountsData() {
                 } else {
                     this.linkDialog.shortLink = result.link;
                 }
-                showToast(`${returnMode === 'long' ? '长链' : '短链'}已生成`, 'success');
+                showToast(i18n('accounts.link_generated', { kind: returnMode === 'long' ? i18n('accounts.link_long') : i18n('accounts.link_short') }), 'success');
             } catch (exc) {
                 showToast(String(exc.message || exc), 'error');
             } finally {
@@ -1776,8 +1818,8 @@ function accountsData() {
         copyText(text) {
             if (!text) return;
             copyToClipboard(text).then(
-                () => showToast('已复制', 'success'),
-                () => showToast('复制失败，请手动选中', 'error'),
+                () => showToast(i18n('accounts.copied'), 'success'),
+                () => showToast(i18n('accounts.copy_failed_manual'), 'error'),
             );
         },
 
@@ -1789,13 +1831,13 @@ function accountsData() {
                 const data = await fetchJson(`/api/accounts/${acc.run_id}/access-token`);
                 const token = (data && data.access_token) || '';
                 if (!token) {
-                    showToast('该号 access_token 不可用，请先刷新 token', 'error');
+                    showToast(i18n('accounts.token_unavailable'), 'error');
                     return;
                 }
                 await copyToClipboard(token);
-                showToast(`已复制 ${acc.email} 的 access_token`, 'success');
+                showToast(i18n('accounts.token_copied', { email: acc.email }), 'success');
             } catch (error) {
-                showToast(error.message || '复制失败', 'error');
+                showToast(error.message || i18n('accounts.copy_failed'), 'error');
             } finally {
                 this.copyingTokenRunId = '';
             }
@@ -1817,7 +1859,7 @@ function accountsData() {
 
         async submitAssignCard() {
             if (!this.assignCardDialog.card_key) {
-                showToast('请先选卡', 'error');
+                showToast(i18n('accounts.select_card_first'), 'error');
                 return;
             }
             this.assignCardDialog.submitting = true;
@@ -1833,7 +1875,7 @@ function accountsData() {
                         }),
                     }
                 );
-                showToast('已登记绑卡 → 浏览器完成绑卡后回来点"晋级"', 'success');
+                showToast(i18n('accounts.bind_card_done'), 'success');
                 this.closeAssignCardDialog();
             } catch (exc) {
                 showToast(String(exc.message || exc), 'error');
@@ -1861,7 +1903,7 @@ function accountsData() {
         async submitPixPlus() {
             const sdk = this.pixPlusDialog.sdk_code.trim();
             if (!sdk) {
-                showToast('请输入卡密', 'error');
+                showToast(i18n('accounts.enter_card_key'), 'error');
                 return;
             }
             this.pixPlusDialog.submitting = true;
@@ -1877,7 +1919,7 @@ function accountsData() {
                 );
                 this.pixPlusDialog.result = r;
                 showToast(
-                    r.success ? 'Plus 开通已提交（等 OpenAI 同步）' : ('开通失败：' + (r.message || '')),
+                    r.success ? i18n('accounts.pix_submitted') : i18n('accounts.pix_failed', { message: r.message || '' }),
                     r.success ? 'success' : 'error',
                 );
             } catch (exc) {
@@ -1890,20 +1932,20 @@ function accountsData() {
         // ── 🔍 核验 Plus（起浏览器读 chatgpt.com 实时订阅状态） ──
         async verifyPlus(acc) {
             if (this.verifyingRunId) {
-                showToast('已有核验在进行中，请稍候', 'error');
+                showToast(i18n('accounts.verify_in_progress'), 'error');
                 return;
             }
             this.verifyingRunId = acc.run_id;
-            showToast('正在起浏览器核验（未登录会自动登录，约 10-120 秒）...', 'info');
+            showToast(i18n('accounts.verifying_browser'), 'info');
             try {
                 const r = await fetchJson(
                     `/api/accounts/${encodeURIComponent(acc.run_id)}/verify-plus`,
                     { method: 'POST', headers: { 'Content-Type': 'application/json' } }
                 );
                 if (r.account_deactivated) {
-                    showToast(r.message || '该号已被 OpenAI 停用，已自动归档', 'error');
+                    showToast(r.message || i18n('accounts.account_deactivated_archived'), 'error');
                 } else {
-                    showToast(r.message || '核验完成', r.is_plus ? 'success' : (r.logged_in ? 'info' : 'error'));
+                    showToast(r.message || i18n('accounts.verify_done'), r.is_plus ? 'success' : (r.logged_in ? 'info' : 'error'));
                 }
                 await this.fetchAccounts();  // 刷新列表，状态列更新
             } catch (exc) {
@@ -1916,11 +1958,11 @@ function accountsData() {
         // ── 🔄 刷新 token（token 过期时重新登录更新） ──
         async refreshToken(acc) {
             if (this.refreshingRunId) {
-                showToast('已有刷新在进行中，请稍候', 'error');
+                showToast(i18n('accounts.refresh_in_progress'), 'error');
                 return;
             }
             this.refreshingRunId = acc.run_id;
-            showToast('正在起浏览器刷新 token（未登录会自动重新登录，约 30-120 秒）...', 'info');
+            showToast(i18n('accounts.refreshing_token'), 'info');
             try {
                 const r = await fetchJson(
                     `/api/accounts/${encodeURIComponent(acc.run_id)}/refresh-token`,
@@ -1928,9 +1970,9 @@ function accountsData() {
                 );
                 // 停用号（account_deactivated）：已被自动归档到 abandoned 池，醒目提示
                 if (r.account_deactivated) {
-                    showToast(r.message || '该号已被 OpenAI 停用，已自动归档', 'error');
+                    showToast(r.message || i18n('accounts.account_deactivated_archived'), 'error');
                 } else {
-                    showToast(r.message || '完成', r.token_refreshed ? 'success' : 'error');
+                    showToast(r.message || i18n('accounts.done'), r.token_refreshed ? 'success' : 'error');
                 }
                 await this.fetchAccounts();
             } catch (exc) {
@@ -1942,13 +1984,13 @@ function accountsData() {
 
         // ── Plus 状态列渲染辅助（读 acc.pix_status） ──
         pixStatusLabel(st) {
-            if (!st) return '未开通';
+            if (!st) return window.i18n('accounts.pix_status_not_started');
             switch (st.kind) {
-                case 'verified_plus': return '✅ 已是 Plus';
-                case 'verified_free': return '○ 仍是 free';
-                case 'submitted': return '⏳ 已提交';
-                case 'failed': return '✗ 开通失败';
-                default: return '未开通';
+                case 'verified_plus': return '✅ ' + window.i18n('accounts.pix_status_is_plus');
+                case 'verified_free': return '○ ' + window.i18n('accounts.pix_status_still_free');
+                case 'submitted': return '⏳ ' + window.i18n('accounts.pix_status_submitted');
+                case 'failed': return '✗ ' + window.i18n('accounts.pix_status_failed');
+                default: return window.i18n('accounts.pix_status_not_started');
             }
         },
         pixStatusClass(st) {
@@ -1962,7 +2004,7 @@ function accountsData() {
             }
         },
         pixStatusTitle(st) {
-            if (!st) return '未发起开通';
+            if (!st) return window.i18n('accounts.pix_title_not_initiated');
             const at = st.at ? new Date(st.at).toLocaleString(window._locale) : '';
             const plan = st.plan ? ` plan=${st.plan}` : '';
             return `${this.pixStatusLabel(st)}${plan}\n${at}`;
@@ -2006,7 +2048,7 @@ function accountsData() {
             if (!raw) return;
             if (this.tagDraft.includes(raw)) return;  // 去重
             if (this.tagDraft.length >= 20) {
-                showToast('单个号最多 20 个标签', 'error');
+                showToast(i18n('accounts.max_tags'), 'error');
                 return;
             }
             this.tagDraft = [...this.tagDraft, raw];
@@ -2036,23 +2078,23 @@ function accountsData() {
                 this.allTags = [...merged].sort();
                 // 若被筛掉的标签已不存在了，清掉失效筛选
                 if (this.tagFilter && !this.allTags.includes(this.tagFilter)) this.tagFilter = '';
-                showToast('标签已保存', 'success');
+                showToast(i18n('accounts.tags_saved'), 'success');
                 this.closeTagEditor();
             } catch (exc) {
-                showToast(`保存标签失败：${exc.message || exc}`, 'error');
+                showToast(i18n('accounts.save_tags_failed', { error: exc.message || exc }), 'error');
             } finally {
                 this.tagSaving = false;
             }
         },
 
         async markPromote(acc, tier) {
-            if (!(await confirmDialog({ title: '账号晋级', message: `确认把 ${acc.email} 晋级为 ${tier.toUpperCase()}？\n这会把账号从普号池移到 ${tier.toUpperCase()} 号池` }))) return;
+            if (!(await confirmDialog({ title: i18n('accounts.dlg_promote_title'), message: i18n('accounts.dlg_promote_msg').replaceAll('{email}', acc.email).replaceAll('{tier}', tier.toUpperCase()) }))) return;
             await fetchJson(`/api/accounts/${encodeURIComponent(acc.run_id)}/promote`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ tier }),
             });
-            showToast(`已晋级 ${tier.toUpperCase()}`, 'success');
+            showToast(i18n('accounts.promoted', { tier: tier.toUpperCase() }), 'success');
             await this.fetchAccounts();
         },
 
@@ -2070,7 +2112,7 @@ function accountsData() {
         async submitImport() {
             const fileInput = this.$refs.importFile;
             if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-                showToast('请选择文件', 'error');
+                showToast(i18n('accounts.select_file'), 'error');
                 return;
             }
             this.importDialog.submitting = true;
@@ -2089,10 +2131,10 @@ function accountsData() {
                 });
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok) {
-                    throw new Error(data.detail || `导入失败 (${resp.status})`);
+                    throw new Error(data.detail || i18n('accounts.import_failed_status', { status: resp.status }));
                 }
                 this.importDialog.result = data;
-                showToast(`导入完成：新增 ${data.imported}，跳过 ${data.skipped}`, 'success');
+                showToast(i18n('accounts.import_done', { imported: data.imported, skipped: data.skipped }), 'success');
                 await this.fetchAccounts();
             } catch (exc) {
                 showToast(String(exc.message || exc), 'error');
@@ -2102,14 +2144,14 @@ function accountsData() {
         },
 
         async markAbandon(acc) {
-            const reason = await promptDialog({ title: '放弃账号', label: `放弃账号 ${acc.email} 的原因`, default: 'manual', optional: true });
+            const reason = await promptDialog({ title: i18n('accounts.dlg_abandon_title'), label: i18n('accounts.dlg_abandon_label', { email: acc.email }), default: 'manual', optional: true });
             if (reason === null) return;
             await fetchJson(`/api/accounts/${encodeURIComponent(acc.run_id)}/abandon`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ reason: reason || 'manual' }),
             });
-            showToast('已标记放弃', 'success');
+            showToast(i18n('accounts.abandoned'), 'success');
             await this.fetchAccounts();
         },
     };
