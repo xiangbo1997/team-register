@@ -18,7 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.api.security import require_csrf, require_role
 from src.db.models import User
@@ -33,6 +33,7 @@ from src.services.account_pool_service import (
     generate_link as svc_generate_link,
     generate_link_standalone as svc_generate_link_standalone,
     get_access_token as svc_get_access_token,
+    execute_paypal_subscription as svc_paypal_subscribe,
     get_account_detail,
     import_pool as svc_import_pool,
     list_all_tags as svc_list_all_tags,
@@ -70,6 +71,8 @@ class GenerateLinkRequest(BaseModel):
     extra_payload: Optional[dict] = Field(default=None, description="浅合并到 OpenAI payload")
     # P6 暴露 checkout_ui_mode（hosted=pay.openai.com 长链 / custom=chatgpt.com 站内 checkout）
     checkout_ui_mode: str = Field(default="hosted", description="hosted / custom；仅 Plus 真生效")
+    # 「提取 PP 链」：跳过 Stripe checkout 页直接抠 PayPal 授权直链（匿名可跳）
+    extract_paypal: bool = Field(default=False, description="True 时返回 PayPal 授权直链而非 checkout 链接")
 
 
 class CheckoutLinkStandaloneRequest(BaseModel):
@@ -92,6 +95,7 @@ class CheckoutLinkStandaloneRequest(BaseModel):
     url_locale: Optional[str] = Field(default=None, max_length=10)
     extra_payload: Optional[dict] = Field(default=None)
     checkout_ui_mode: str = Field(default="hosted", description="hosted / custom")
+    extract_paypal: bool = Field(default=False, description="True 时返回 PayPal 授权直链")
 
 
 class AssignCardRequest(BaseModel):
@@ -105,6 +109,33 @@ class PromoteRequest(BaseModel):
 
 class AbandonRequest(BaseModel):
     reason: str = "manual"
+
+
+# PayPal 订阅可用的 promo 白名单：仅这两个真实存在的 Plus promo（其余全网零命中，
+# 详见内存 reference_paypal_serverside_link_impossible）。$0 券 PayPal 跳不出，
+# 50% 券 $10 真金额才能走 PayPal——故白名单限定，杜绝任意 promo 注入。
+_ALLOWED_PAYPAL_PROMOS = ("plus-1-month-free", "plus-1-month-50-pct-off")
+
+
+class PaypalSubscribeRequest(BaseModel):
+    """PayPal 订阅账单国家/货币（PayPal 在售依赖 US/EUR；SG/SGD 只有 card）。"""
+
+    billing_country: str = Field(default="US", max_length=8, description="账单国家码，默认 US")
+    billing_currency: str = Field(default="USD", max_length=8, description="账单货币，默认 USD")
+    promo_campaign_id: str = Field(
+        default="plus-1-month-free",
+        max_length=40,
+        description="优惠类型：plus-1-month-free($0,PayPal跳不出) / plus-1-month-50-pct-off($10真金额,PayPal可跳)",
+    )
+
+    @field_validator("promo_campaign_id")
+    @classmethod
+    def _validate_promo(cls, v: str) -> str:
+        """promo 白名单校验：非法值直接拒（杜绝任意 promo 注入 OpenAI）。"""
+        v = (v or "plus-1-month-free").strip()
+        if v not in _ALLOWED_PAYPAL_PROMOS:
+            raise ValueError(f"不支持的 promo_campaign_id: {v}（仅允许 {_ALLOWED_PAYPAL_PROMOS}）")
+        return v
 
 
 class PixPlusRequest(BaseModel):
@@ -253,6 +284,7 @@ def generate_checkout_link_standalone(
             url_locale=body.url_locale,
             extra_payload=body.extra_payload,
             checkout_ui_mode=body.checkout_ui_mode,
+            extract_paypal=body.extract_paypal,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -332,6 +364,8 @@ def generate_checkout_link_endpoint(
             extra_payload=body.extra_payload,
             # P6 checkout_ui_mode
             checkout_ui_mode=body.checkout_ui_mode,
+            # 「提取 PP 链」
+            extract_paypal=body.extract_paypal,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -447,6 +481,35 @@ def refresh_token_endpoint(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.exception("刷新 token 失败 run=%s", run_id[:12])
+        raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
+
+
+@router.post("/{run_id}/paypal-subscribe")
+def paypal_subscribe_endpoint(
+    run_id: str,
+    body: Optional[PaypalSubscribeRequest] = None,
+    user: User = Depends(require_role("admin")),
+    _csrf: None = Depends(require_csrf),
+):
+    """在该号已登录的 AdsPower 浏览器里自动走完 PayPal Plus 订阅。
+
+    「服务端抠可分享 PayPal 链」在 OpenAI 商户上物理不可行（pk tokenize 关闭 +
+    $0 订阅无 PaymentIntent）。唯一能让 PayPal 真正跳出去授权的路 = 登录态浏览器内
+    走完支付（return_url 上下文完整不卡转圈）。产物不是可分享链，是替本号走完订阅。
+    走到 PayPal 授权页即流程通；当前默认走到授权页停下，需在该浏览器内完成 PayPal 登录授权。
+    """
+    country = (body.billing_country if body else "US") or "US"
+    currency = (body.billing_currency if body else "USD") or "USD"
+    promo = (body.promo_campaign_id if body else "plus-1-month-free") or "plus-1-month-free"
+    try:
+        return svc_paypal_subscribe(
+            run_id, billing_country=country, billing_currency=currency,
+            promo_campaign_id=promo,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("PayPal 订阅失败 run=%s", run_id[:12])
         raise HTTPException(status_code=500, detail=f"内部错误: {exc}")
 
 

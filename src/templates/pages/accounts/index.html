@@ -428,6 +428,36 @@
                                               x-text="refreshingRunId === acc.run_id ? 'progress_activity' : 'sync'"></span>
                                     </button>
                                 </template>
+                                {# 💳 自动 PP 订阅 — 在该号登录态浏览器内自动走完 PayPal Plus 订阅。
+                                   「服务端抠可分享 PayPal 链」物理不可行（pk tokenize 关闭 + $0 订阅无
+                                   PaymentIntent），唯一能让 PayPal 真跳出去授权 = 登录态浏览器内走完支付。
+                                   注：$0 券 + PayPal 物理跳不出（无 intent），此按钮默认走 $0 仅演示/排障；
+                                   旁边「半价 $10」按钮走真金额 promo，PayPal 才能真跳出授权（真付 $10）。 #}
+                                <template x-if="acc.platform === 'openai'">
+                                    <button @click="paypalSubscribe(acc)"
+                                            :disabled="paypalSubscribingRunId === acc.run_id"
+                                            title="{{ _('accounts.paypal_subscribe_hint') }}"
+                                            class="p-1.5 text-[#0070BA] hover:bg-blue-50 rounded transition disabled:opacity-40">
+                                        <span class="material-symbols-outlined text-[18px]"
+                                              :class="paypalSubscribingRunId === acc.run_id ? 'animate-spin' : ''"
+                                              x-text="paypalSubscribingRunId === acc.run_id ? 'progress_activity' : 'account_balance_wallet'"></span>
+                                    </button>
+                                </template>
+                                {# 💰 半价 PayPal 订阅（$10 真付费）— 走 plus-1-month-50-pct-off promo。
+                                   $10 是真金额 → 有 PaymentIntent → PayPal 能 confirm 出 pm-redirects 真跳出
+                                   授权（区别于左侧 $0 券 PayPal 跳不出）。琥珀色 + ½ 角标警示真付费，点击二次确认。 #}
+                                <template x-if="acc.platform === 'openai'">
+                                    <button @click="paypalSubscribe(acc, 'plus-1-month-50-pct-off')"
+                                            :disabled="paypalSubscribingRunId === acc.run_id"
+                                            title="{{ _('accounts.paypal_half_hint') }}"
+                                            class="relative p-1.5 text-amber-600 hover:bg-amber-50 rounded transition disabled:opacity-40">
+                                        <span class="material-symbols-outlined text-[18px]"
+                                              :class="paypalSubscribingRunId === acc.run_id ? 'animate-spin' : ''"
+                                              x-text="paypalSubscribingRunId === acc.run_id ? 'progress_activity' : 'account_balance_wallet'"></span>
+                                        <span x-show="paypalSubscribingRunId !== acc.run_id"
+                                              class="absolute -top-0.5 -right-0.5 text-[9px] font-bold leading-none bg-amber-500 text-white rounded-full px-1 py-0.5">½</span>
+                                    </button>
+                                </template>
                                 {# 📋 复制 access_token — 取明文 token 到剪贴板，喂 codex / 调试用。
                                    常显（与「刷新 token」同条件 openai）：列表接口不返回 has_access_token，
                                    旧的 x-if="acc.has_access_token" 在列表里恒 false 导致按钮永不出现；
@@ -871,27 +901,66 @@
                                    class="block bg-surface border border-border p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-primary transition-colors leading-tight"
                                    x-text="linkDialog.shortLink"></a>
                             </div>
+                            {# PayPal 授权直链（提取 PP 链）#}
+                            <div x-show="linkDialog.ppLink" class="space-y-1.5">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[10px] font-bold text-fuchsia-600 uppercase tracking-widest font-label">{{ _('accounts.pp_link_label') }}</span>
+                                    <button @click="copyText(linkDialog.ppLink)"
+                                            class="flex items-center gap-1 text-[10px] font-bold text-fuchsia-600 hover:text-fuchsia-700">
+                                        <span class="material-symbols-outlined text-xs">content_copy</span>
+                                        {{ _('common.copy') }}
+                                    </button>
+                                </div>
+                                <a :href="linkDialog.ppLink" target="_blank"
+                                   class="block bg-fuchsia-50 border border-fuchsia-200 p-2.5 rounded-lg font-mono text-[12px] break-all text-body hover:text-fuchsia-700 transition-colors leading-tight"
+                                   x-text="linkDialog.ppLink"></a>
+                            </div>
                         </div>
 
                         {# 空态提示 #}
-                        <div x-show="!linkDialog.longLink && !linkDialog.shortLink"
+                        <div x-show="!linkDialog.longLink && !linkDialog.shortLink && !linkDialog.ppLink"
                              class="text-center py-6 text-muted text-xs">
                             <span class="material-symbols-outlined text-4xl text-border block mb-1">link_off</span>
                             <p>{{ _('accounts.gen_link_empty_hint') }}</p>
                         </div>
 
+                        {# 「跳过 Stripe 支付页」复选框：勾选后生成长链时直接抠 PayPal 授权直链（匿名可跳，对标截图交互）#}
+                        <label class="flex items-center gap-2 mb-2 cursor-pointer select-none">
+                            <input type="checkbox" x-model="linkDialog.skip_stripe"
+                                   class="w-4 h-4 rounded border-border text-fuchsia-600 focus:ring-fuchsia-500/30 focus:ring-2">
+                            <span class="text-sm font-semibold text-fuchsia-700">{{ _('accounts.skip_stripe_label') }}</span>
+                        </label>
+
+                        {# PayPal/Apple Pay 引导：未勾选「跳过 Stripe」时，长链点 PayPal 会卡转圈 #}
+                        <div x-show="!linkDialog.skip_stripe"
+                             class="flex items-start gap-2 p-2.5 mb-3 bg-warning-50 border border-warning-200 rounded-lg">
+                            <span class="material-symbols-outlined text-sm text-warning-600 mt-px">info</span>
+                            <span class="text-[11px] leading-snug text-warning-700">
+                                <strong>{{ _('accounts.paypal_hint_title') }}</strong>
+                                {{ _('accounts.paypal_hint_body') }}
+                            </span>
+                        </div>
+                        {# 勾选「跳过 Stripe」时的说明：长链按钮将直接提取 PayPal 直链 #}
+                        <div x-show="linkDialog.skip_stripe"
+                             class="flex items-start gap-2 p-2.5 mb-3 bg-fuchsia-50 border border-fuchsia-200 rounded-lg">
+                            <span class="material-symbols-outlined text-sm text-fuchsia-600 mt-px">account_balance_wallet</span>
+                            <span class="text-[11px] leading-snug text-fuchsia-700">{{ _('accounts.skip_stripe_hint') }}</span>
+                        </div>
+
                         {# 按钮 —— 纵排满宽，长链主、短链次 #}
                         <div class="flex flex-col gap-3">
-                            <button @click="submitGenerateLink('long')"
-                                    :disabled="linkDialog.submitting.long || linkDialog.submitting.short"
-                                    class="w-full flex items-center justify-center gap-2 py-3 bg-primary text-white rounded-lg text-sm font-bold shadow-token-md hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
+                            {# 长链按钮：勾选「跳过 Stripe」时变身「提取 PayPal 直链」并走提链逻辑 #}
+                            <button @click="linkDialog.skip_stripe ? submitExtractPaypal() : submitGenerateLink('long')"
+                                    :disabled="linkDialog.submitting.long || linkDialog.submitting.short || linkDialog.submitting.paypal"
+                                    class="w-full flex items-center justify-center gap-2 py-3 text-white rounded-lg text-sm font-bold shadow-token-md disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
+                                    :class="linkDialog.skip_stripe ? 'bg-gradient-to-r from-indigo-500 to-fuchsia-500 hover:from-indigo-600 hover:to-fuchsia-600' : 'bg-primary hover:bg-primary-hover'">
                                 <span class="material-symbols-outlined text-xl"
-                                      x-text="linkDialog.submitting.long ? 'progress_activity' : 'play_circle'"
-                                      :class="linkDialog.submitting.long ? 'animate-spin' : ''"></span>
-                                <span x-text="linkDialog.submitting.long ? i18n('accounts.generating') : i18n('accounts.gen_long_link_btn')"></span>
+                                      x-text="(linkDialog.submitting.long || linkDialog.submitting.paypal) ? 'progress_activity' : (linkDialog.skip_stripe ? 'account_balance_wallet' : 'play_circle')"
+                                      :class="(linkDialog.submitting.long || linkDialog.submitting.paypal) ? 'animate-spin' : ''"></span>
+                                <span x-text="(linkDialog.submitting.long || linkDialog.submitting.paypal) ? i18n('accounts.generating') : (linkDialog.skip_stripe ? i18n('accounts.extract_pp_link_btn') : i18n('accounts.gen_long_link_btn'))"></span>
                             </button>
                             <button @click="submitGenerateLink('app')"
-                                    :disabled="linkDialog.submitting.long || linkDialog.submitting.short"
+                                    :disabled="linkDialog.submitting.long || linkDialog.submitting.short || linkDialog.submitting.paypal"
                                     class="w-full flex items-center justify-center gap-2 py-3 bg-surface border border-border rounded-lg text-sm font-bold text-success hover:bg-success/5 hover:border-success/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98]">
                                 <span class="material-symbols-outlined text-xl"
                                       x-text="linkDialog.submitting.short ? 'progress_activity' : 'bolt'"
@@ -1409,6 +1478,7 @@ function accountsData() {
             proxy_id: '',  // '' = 用 .env 默认；string id 由 Alpine select 提供
             return_mode: 'long',  // 'long' Stripe hosted_url / 'app' chatgpt.com 站内 checkout（feat: 模板化 2026-05-25）
             checkout_ui_mode: 'hosted',  // P6 暴露：hosted（默认 pay.openai.com 长链）/ custom（站内 checkout）
+            skip_stripe: false,  // 「跳过 Stripe 支付页」：勾选后长链按钮直接抠 PayPal 授权直链
             selectedTemplateId: '',
             // P4 模板化字段（应用模板/预设时设置，submitGenerateLink 透传到后端）
             template_schema_version: '',
@@ -1422,8 +1492,9 @@ function accountsData() {
             // 生成结果
             longLink: '',
             shortLink: '',
-            // 提交状态（long/short 分开避免互相 disable）
-            submitting: { long: false, short: false },
+            ppLink: '',  // PayPal 授权直链（提取 PP 链）
+            // 提交状态（long/short/paypal 分开避免互相 disable）
+            submitting: { long: false, short: false, paypal: false },
             // 国家→货币联动后展示「已自动按国家匹配」绿色 hint；用户手动改货币后清除
             currencyAutoFilled: false,
         },
@@ -1449,6 +1520,8 @@ function accountsData() {
         verifyingRunId: '',
         // 🔄 正在刷新 token 的 run_id（按钮 loading 态）
         refreshingRunId: '',
+        // 💳 正在执行 PayPal 订阅的 run_id（按钮 loading 态）
+        paypalSubscribingRunId: '',
         // 📋 正在复制 access_token 的 run_id（按钮 loading 态）
         copyingTokenRunId: '',
         // 链接模板缓存（弹窗打开时拉一次）
@@ -1622,9 +1695,11 @@ function accountsData() {
             this.linkDialog.workspace_name = '';
             this.linkDialog.proxy_id = '';
             this.linkDialog.checkout_ui_mode = 'hosted';  // P6 重置
+            this.linkDialog.skip_stripe = false;  // 重置跳过 Stripe 复选框
             this.linkDialog.selectedTemplateId = '';
             this.linkDialog.longLink = '';
             this.linkDialog.shortLink = '';
+            this.linkDialog.ppLink = '';  // 重置 PayPal 直链
             this.linkDialog.currencyAutoFilled = false;  // 重置联动标记
             // 并行拉模板、预设、代理列表（P3 模板化：预设独立端点）
             try {
@@ -1815,6 +1890,42 @@ function accountsData() {
             }
         },
 
+        // 「提取 PP 链」：跳过 Stripe checkout 页，直接抠 PayPal 授权直链（匿名可跳）
+        async submitExtractPaypal() {
+            this.linkDialog.submitting.paypal = true;
+            try {
+                const result = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(this.linkDialog.run_id)}/generate-link`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            plan: this.linkDialog.plan,
+                            return_mode: 'long',
+                            seat_quantity: this.linkDialog.seat_quantity || 1,
+                            promo_code: this.linkDialog.promo_code || '',
+                            promo_campaign_id: this.linkDialog.promo_campaign_id || '',
+                            aimizy_country: this.linkDialog.aimizy_country || '',
+                            aimizy_currency: this.linkDialog.aimizy_currency || '',
+                            workspace_name: this.linkDialog.workspace_name || '',
+                            proxy_id: this.linkDialog.proxy_id ? Number(this.linkDialog.proxy_id) : null,
+                            schema_version: this.linkDialog.template_schema_version || null,
+                            url_locale: this.linkDialog.template_url_locale || null,
+                            extra_payload: this.linkDialog.template_extra_payload || null,
+                            checkout_ui_mode: this.linkDialog.checkout_ui_mode || 'hosted',
+                            extract_paypal: true,
+                        }),
+                    }
+                );
+                this.linkDialog.ppLink = result.link;
+                showToast(i18n('accounts.paypal_link_extracted'), 'success');
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.linkDialog.submitting.paypal = false;
+            }
+        },
+
         copyText(text) {
             if (!text) return;
             copyToClipboard(text).then(
@@ -1979,6 +2090,46 @@ function accountsData() {
                 showToast(String(exc.message || exc), 'error');
             } finally {
                 this.refreshingRunId = '';
+            }
+        },
+
+        // ── 💳 自动 PP 订阅（登录态浏览器内走完 PayPal Plus 订阅） ──
+        // promo: 'plus-1-month-free'($0,PayPal跳不出无intent) 或
+        //        'plus-1-month-50-pct-off'($10真金额,PayPal可跳但真付费)
+        async paypalSubscribe(acc, promo = 'plus-1-month-free') {
+            if (this.paypalSubscribingRunId) {
+                showToast(i18n('accounts.paypal_subscribe_in_progress'), 'error');
+                return;
+            }
+            // 半价是真付费（$10），二次确认避免误点
+            if (promo === 'plus-1-month-50-pct-off') {
+                if (!confirm(i18n('accounts.paypal_half_confirm'))) return;
+            }
+            this.paypalSubscribingRunId = acc.run_id;
+            showToast(i18n('accounts.paypal_subscribing'), 'info');
+            try {
+                const r = await fetchJson(
+                    `/api/accounts/${encodeURIComponent(acc.run_id)}/paypal-subscribe`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            billing_country: 'US',
+                            billing_currency: 'USD',
+                            promo_campaign_id: promo,
+                        }),
+                    }
+                );
+                // ready_for_manual_submit=已备好checkout等真人点提交（半自动）；
+                // reached_paypal=已跳授权页；两者都算成功，其余按 stage 报错
+                const okStages = ['ready_for_manual_submit', 'reached_paypal'];
+                const ok = r.reached_paypal || okStages.includes(r.stage);
+                showToast(r.message || i18n('accounts.done'), ok ? 'success' : 'error');
+                await this.fetchAccounts();
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.paypalSubscribingRunId = '';
             }
         },
 

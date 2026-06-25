@@ -403,6 +403,8 @@ def generate_link(
     extra_payload: Optional[dict] = None,
     # P6 暴露 checkout_ui_mode（默认 hosted；custom 用于半价 promo 等场景）
     checkout_ui_mode: str = "hosted",
+    # 「提取 PP 链」：跳过 Stripe checkout 页直接抠 PayPal 授权直链（匿名可跳）
+    extract_paypal: bool = False,
 ) -> dict[str, Any]:
     """生成 hosted checkout 链接（不再依赖卡池——拆分自旧 generate_bind_link）。
 
@@ -478,6 +480,9 @@ def generate_link(
     # P6 checkout_ui_mode 透传（仅 plus 真生效；team/pro 接收但忽略）
     if checkout_ui_mode and checkout_ui_mode.lower() in ("hosted", "custom"):
         gen_kwargs["checkout_ui_mode"] = checkout_ui_mode.lower()
+    # 「提取 PP 链」透传（True 时 client 跳过 hosted/短链，直接抠 PayPal 直链）
+    if extract_paypal:
+        gen_kwargs["extract_paypal"] = True
 
     started_at = datetime.now(timezone.utc)
     success, link = PaymentLinkGenerator.generate_checkout_link(access_token, **gen_kwargs)
@@ -847,6 +852,88 @@ def refresh_token(run_id: str) -> dict[str, Any]:
     }
 
 
+def execute_paypal_subscription(
+    run_id: str,
+    *,
+    billing_country: str = "US",
+    billing_currency: str = "USD",
+    promo_campaign_id: str = "plus-1-month-free",
+) -> dict[str, Any]:
+    """在该号已登录的 AdsPower 浏览器里自动走完 PayPal Plus 订阅。
+
+    为什么走这条路：「服务端抠可分享 PayPal 链」在 OpenAI 商户上物理不可行
+    （pk tokenize 关闭 + $0 订阅无 PaymentIntent，详见 paypal_subscribe 模块文档）。
+    唯一能让 PayPal 真正跳出去授权的路 = 在登录态浏览器里走完支付，return_url
+    上下文完整不卡转圈。产物不是可分享链，是替本号在本机走完订阅。
+
+    与 refresh_token 同一套「按 run_id 起浏览器执行号特定操作」模式。
+    走到 PayPal 授权页即视为流程通（reached_paypal=True），但 Plus 真生效需完成
+    PayPal 授权（当前默认走到授权页停下），故此处**不自动 promote**，只留痕；
+    待后续接入自动授权 + 回读 plan 生效后再晋级。
+
+    Args:
+        run_id: Run 主键
+        billing_country / billing_currency: 账单国家/货币（PayPal 在售依赖 US/EUR，
+            SG/SGD 只有 card；默认 US/USD）
+        promo_campaign_id: 优惠类型（决定能否走 PayPal，详见 paypal_subscribe 模块文档）：
+            - "plus-1-month-free"（默认）: 100% 券 → $0 → PayPal 物理跳不出（无 intent）；
+            - "plus-1-month-50-pct-off": 50% 券 → $10 真金额 → PayPal 能跳出（真付 $10）。
+
+    Returns:
+        paypal_subscribe.execute_paypal_subscription 的结果字典（含 success/stage/
+        reached_paypal/screenshots/message 等）。
+
+    Raises:
+        ValueError: run 不存在 / profile 缺失
+    """
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is None:
+            raise ValueError(f"run_id 不存在: {run_id}")
+        profile_id = (run.profile_id or "").strip()
+        email = (run.email or "").strip()
+        password = run.password or ""
+    if not profile_id:
+        raise ValueError("该号缺少 AdsPower profile_id，无法起浏览器执行 PayPal 订阅")
+
+    from src.config import load_config
+    from src.orchestration.paypal_subscribe import execute_paypal_subscription as _exec
+    from playwright.sync_api import sync_playwright
+
+    config = load_config()
+    mail_api = _build_mail_api_for_run(run_id)
+
+    with sync_playwright() as p:
+        result = _exec(
+            config, profile_id, email,
+            password=password, mail_api=mail_api,
+            billing_country=billing_country, billing_currency=billing_currency,
+            promo_campaign_id=promo_campaign_id,
+            half_auto=True,  # 备好 checkout 留浏览器给真人点提交（绕 invisible-captcha）
+            playwright=p,
+        )
+
+    # 留痕（成功/失败都记，便于运维排障；只记关键字段不留全链）
+    with get_session() as session:
+        session.add(RunEvent(
+            run_id=run_id,
+            event_type="paypal_subscribe_attempt",
+            state="payment",
+            payload={
+                "success": bool(result.get("success")),
+                "stage": str(result.get("stage") or ""),
+                "reached_paypal": bool(result.get("reached_paypal")),
+                "checkout_session_id": str(result.get("checkout_session_id") or "")[:24],
+                "relogged_in": bool(result.get("relogged_in")),
+                "promo_campaign_id": str(promo_campaign_id or ""),
+                "detail": str(result.get("detail") or "")[:200],
+            },
+        ))
+        session.commit()
+
+    return result
+
+
 # pix_plus / plus_verified 事件类型常量（列表状态读取用）
 _PIX_PLUS_EVENT_TYPES = ("pix_plus_submitted", "pix_plus_failed", "plus_verified")
 
@@ -909,6 +996,7 @@ def generate_link_standalone(
     url_locale: Optional[str] = None,
     extra_payload: Optional[dict] = None,
     checkout_ui_mode: str = "hosted",
+    extract_paypal: bool = False,
 ) -> dict[str, Any]:
     """脱离 Run 表直接生成 checkout 链接 —— 用户在独立页面手动喂 access_token。
 
@@ -971,6 +1059,8 @@ def generate_link_standalone(
         gen_kwargs["extra_payload"] = extra_payload
     if checkout_ui_mode and checkout_ui_mode.lower() in ("hosted", "custom"):
         gen_kwargs["checkout_ui_mode"] = checkout_ui_mode.lower()
+    if extract_paypal:
+        gen_kwargs["extract_paypal"] = True
 
     success, link = PaymentLinkGenerator.generate_checkout_link(token, **gen_kwargs)
     if not success:
