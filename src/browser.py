@@ -22,8 +22,18 @@ _PROXY_URL = "https://white.1024proxy.com/white/api?region=Rand&num=1&time=10&fo
 # 请求超时（秒）
 _REQUEST_TIMEOUT = 20
 
-# 代理出口国家查询地址（免费，无需 API key）
-_IP_GEO_URL = "https://ipapi.co/json/"
+# 代理出口国家查询源（按顺序多源容错，免费无需 API key）。
+# ipinfo.io 首选：与 orchestration/preflight.fetch_exit_ip 同源、限流更宽松；
+# ipapi.co 末位 fallback —— 免费额度小（每分钟约 30 次），高频测试易 429。
+# 每项: (url, 从 JSON 提取 country 字段的函数)；字段值统一大写即 ISO alpha-2。
+_IP_GEO_SOURCES: list[tuple[str, Callable[[dict], Any]]] = [
+    ("https://ipinfo.io/json", lambda d: d.get("country")),
+    ("http://ip-api.com/json/", lambda d: d.get("countryCode")),
+    ("https://ipapi.co/json/", lambda d: d.get("country_code")),
+]
+
+# 兼容旧引用（部分测试可能直接 import 这个单源常量）
+_IP_GEO_URL = _IP_GEO_SOURCES[-1][0]
 
 
 def _lookup_proxy_country(
@@ -34,18 +44,18 @@ def _lookup_proxy_country(
     http_get: Optional[Callable[[str, dict], Any]] = None,
 ) -> str:
     """
-    通过给定代理主动发起 HTTPS 请求到 ip-api 类服务，验证真实出口国家。
+    通过给定代理主动发起请求到 geo IP 服务，验证真实出口国家（多源容错）。
 
     策略：
-      - 使用 https://ipapi.co/json/ 作为主源（无需 API key，免费额度）
-      - 返回 JSON 中的 `country_code` 字段（统一大写）
-      - 超时 / 非 200 / JSON 错误 / 无字段 → 返回 ""
-      - 不做重试：调用方（fetch_proxy）失败时仅记 warning，不影响代理本身可用性
+      - 依次尝试 _IP_GEO_SOURCES（ipinfo.io → ip-api.com → ipapi.co）
+      - 任一源 200 且含国家字段 → 立即返回（统一大写 ISO alpha-2）
+      - 某源 429/超时/解析失败 → 记 debug 并尝试下一源
+      - 全部失败 → 返回 ""（不影响代理可用性，调用方仅记 warning）
 
     Args:
         host: 代理主机
         port: 代理端口
-        timeout: 请求超时（秒），默认 5.0
+        timeout: 单源请求超时（秒），默认 5.0
         http_get: 可注入的 HTTP GET（签名 (url, proxies_dict) → response-like），用于测试
 
     Returns:
@@ -61,29 +71,27 @@ def _lookup_proxy_country(
 
     getter = http_get or _default_http_get
 
-    try:
-        resp = getter(_IP_GEO_URL, proxies)
-        status = getattr(resp, "status_code", 200)
-        if status != 200:
-            logger.warning("代理国家查询返回非 200 状态: %s", status)
-            return ""
+    for url, extract in _IP_GEO_SOURCES:
+        try:
+            resp = getter(url, proxies)
+            status = getattr(resp, "status_code", 200)
+            if status != 200:
+                logger.debug("geo 源 %s 返回非 200: %s，尝试下一源", url, status)
+                continue
+            data = resp.json()
+            country = extract(data)
+            if country and isinstance(country, str):
+                return country.strip().upper()
+            logger.debug("geo 源 %s 响应缺国家字段，尝试下一源", url)
+        except requests.RequestException as exc:
+            logger.debug("geo 源 %s 请求异常: %s，尝试下一源", url, exc)
+        except ValueError as exc:
+            logger.debug("geo 源 %s JSON 解析失败: %s，尝试下一源", url, exc)
+        except Exception as exc:  # noqa: BLE001 - 单源失败继续下一源
+            logger.debug("geo 源 %s 未知异常: %s，尝试下一源", url, exc)
 
-        data = resp.json()
-        country = data.get("country_code")
-        if not country or not isinstance(country, str):
-            logger.warning("代理国家查询响应缺少 country_code 字段: %s", data)
-            return ""
-        return country.strip().upper()
-    except requests.RequestException as exc:
-        logger.warning("代理国家查询请求异常: %s", exc)
-        return ""
-    except ValueError as exc:
-        # resp.json() 解析失败
-        logger.warning("代理国家查询 JSON 解析失败: %s", exc)
-        return ""
-    except Exception as exc:  # noqa: BLE001 - 保底返回 ""
-        logger.warning("代理国家查询未知异常: %s", exc)
-        return ""
+    logger.warning("所有 geo 源均未能确认代理出口国家 (host=%s)", host)
+    return ""
 
 
 def _build_requests_proxies(proxy_url: str = "") -> Optional[dict[str, str]]:

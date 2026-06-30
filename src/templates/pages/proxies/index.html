@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% from 'components/_country.html' import country_flag_card %}
+{% block title %}代理池 - Team Register{% endblock %}
+{% block nav_proxies %}sidebar-active{% endblock %}
+{% block page_title %}代理池{% endblock %}
+
+{% import 'components/_ui.html' as ui %}
+{% block content %}
+<div x-data="proxiesData()" x-init="initColumnWatcher(); fetchProxies()" class="flex flex-col h-[calc(100vh-108px)] gap-6 max-w-[1400px] mx-auto">
+
+    {# ─── Subtitle Row ─── #}
+    <div class="flex justify-between items-center flex-wrap gap-3">
+        <div class="flex items-center gap-3">
+            <div class="w-1 h-6 bg-secondary rounded-full"></div>
+            <p class="text-muted text-sm">
+                代理池只用于 <span class="text-body font-medium">"生成 checkout 链接"</span> 按号选 IP 出口（匹配 promo 国家限制）。注册 / token 提取继续走 <code class="bg-subtle text-body px-1 rounded font-mono">.env</code> 全局 PROXY
+            </p>
+        </div>
+        <div class="flex items-center gap-2 relative">
+            {# 操作须知 ℹ️ 浮层 #}
+            <div class="relative" @click.outside="showHints = false">
+                <button @click="showHints = !showHints"
+                        :class="showHints ? 'bg-secondary/10 text-secondary border-secondary/30' : 'bg-white text-muted border-border hover:text-body hover:bg-subtle'"
+                        class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium border rounded-lg shadow-token-sm transition-all active:scale-95"
+                        title="操作须知">
+                    <span class="material-symbols-outlined text-lg">info</span>
+                    <span class="hidden sm:inline">须知</span>
+                </button>
+                <div x-show="showHints" x-cloak x-transition.opacity
+                     class="absolute right-0 top-full mt-2 w-[420px] max-w-[calc(100vw-3rem)] bg-white border border-border rounded-xl shadow-lg p-4 z-30">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-semibold text-body flex items-center gap-2">
+                            <span class="material-symbols-outlined text-base text-secondary">tips_and_updates</span>
+                            代理池操作须知
+                        </h4>
+                        <button @click="showHints = false" class="text-muted hover:text-body">
+                            <span class="material-symbols-outlined text-base">close</span>
+                        </button>
+                    </div>
+                    <ul class="text-xs text-muted space-y-2">
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-secondary mt-px">security</span><span>代理 URL 加密落盘，UI 仅显示前缀（用户名前 18 字符 + <code class="bg-subtle px-1 rounded">***</code>）</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-warning mt-px">block</span><span>删除代理前会检查链接模板引用，被引用时拒绝删除</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-info-600 mt-px">toggle_on</span><span>切换状态：active → inactive 后，"生成链接"弹窗的代理下拉里该项变 disabled</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-muted mt-px">edit_off</span><span>改 URL 不支持就地编辑——请删除后重建</span></li>
+                    </ul>
+                </div>
+            </div>
+            <button @click="fetchProxies()"
+                    class="flex items-center gap-2 px-3 py-2 text-sm font-medium text-body bg-white border border-border rounded-lg shadow-token-sm hover:bg-subtle transition-all active:scale-95"
+                    title="刷新">
+                <span class="material-symbols-outlined text-lg">refresh</span>
+                <span class="hidden sm:inline">刷新</span>
+            </button>
+            <button @click="toggleForm()"
+                    :class="showForm ? 'bg-white text-body border-border hover:bg-subtle' : 'bg-secondary text-white border-secondary hover:bg-secondary/90'"
+                    class="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border rounded-lg shadow-token-sm transition-all active:scale-95">
+                <span class="material-symbols-outlined text-lg" x-text="showForm ? 'close' : 'add_circle'"></span>
+                <span x-text="showForm ? '取消' : '新增代理'"></span>
+            </button>
+        </div>
+    </div>
+
+    {# ─── New Proxy Entry Card (折叠面板) ─── #}
+    <section x-show="showForm" x-cloak x-transition.opacity
+             class="bg-sky-50 border border-sky-100 rounded-xl p-5 shadow-token-sm fade-in">
+        <div class="grid grid-cols-12 gap-3">
+            {# Label #}
+            <div class="col-span-12 md:col-span-3 relative">
+                <label class="absolute -top-2 left-3 px-1 bg-sky-50 text-[11px] font-label font-bold text-secondary uppercase tracking-wider z-10">标签</label>
+                <input type="text" x-model="newProxy.label"
+                       class="w-full h-11 bg-white border border-sky-200 rounded-lg px-4 text-sm focus:ring-4 focus:ring-secondary/20 focus:border-secondary transition-all placeholder:text-border"
+                       placeholder="例如: 1024Proxy US#1">
+            </div>
+            {# Country #}
+            <div class="col-span-6 md:col-span-2 relative">
+                <label class="absolute -top-2 left-3 px-1 bg-sky-50 text-[11px] font-label font-bold text-secondary uppercase tracking-wider z-10">国家</label>
+                <select x-model="newProxy.country"
+                        class="w-full h-11 bg-white border border-sky-200 rounded-lg px-4 text-sm focus:ring-4 focus:ring-secondary/20 focus:border-secondary appearance-none transition-all">
+                    <option value="">请选择...</option>
+                    <template x-for="c in commonCountries" :key="c">
+                        <option :value="c" x-text="c"></option>
+                    </template>
+                </select>
+            </div>
+            {# URL + helper #}
+            <div class="col-span-12 md:col-span-7 relative">
+                <label class="absolute -top-2 left-3 px-1 bg-sky-50 text-[11px] font-label font-bold text-secondary uppercase tracking-wider z-10">代理 URL</label>
+                <input type="text" x-model="newProxy.url"
+                       class="w-full h-11 bg-white border border-sky-200 rounded-lg px-4 font-mono text-sm focus:ring-4 focus:ring-secondary/20 focus:border-secondary transition-all placeholder:text-border"
+                       placeholder="socks5h://user:pass@host:port">
+                <p class="mt-1 text-[11px] text-secondary/70 flex items-center gap-1 flex-wrap leading-tight">
+                    <span>支持:</span>
+                    <code class="bg-sky-100 px-1 rounded mono-text">socks5h://user:pwd@host:port</code>
+                    <code class="bg-sky-100 px-1 rounded mono-text">http://...</code>
+                    <code class="bg-sky-100 px-1 rounded mono-text">host:port:user:pwd</code>
+                </p>
+            </div>
+            {# Notes #}
+            <div class="col-span-12 md:col-span-9 relative">
+                <label class="absolute -top-2 left-3 px-1 bg-sky-50 text-[11px] font-label font-bold text-secondary uppercase tracking-wider z-10">备注</label>
+                <input type="text" x-model="newProxy.notes"
+                       class="w-full h-11 bg-white border border-sky-200 rounded-lg px-4 text-sm focus:ring-4 focus:ring-secondary/20 focus:border-secondary transition-all placeholder:text-border"
+                       placeholder="如: datroai CA promo 用">
+            </div>
+            {# Actions #}
+            <div class="col-span-12 md:col-span-3 flex items-stretch gap-2">
+                <button @click="toggleForm()"
+                        class="h-11 px-4 text-sm font-semibold text-muted hover:text-body bg-white border border-sky-200 rounded-lg transition-all active:scale-95">
+                    取消
+                </button>
+                <button @click="addProxy()" :disabled="addingProxy"
+                        class="flex-1 h-11 bg-secondary hover:bg-secondary/90 text-white font-medium rounded-lg shadow-token-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-xl" x-show="!addingProxy">add</span>
+                    <span x-text="addingProxy ? '提交中...' : '添加'"></span>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    {# ─── Data Grid ─── #}
+    <section class="bg-white rounded-xl border border-border shadow-token-sm overflow-hidden flex-1 flex flex-col min-h-0">
+
+        {# Grid tools row #}
+        <div class="px-6 py-4 border-b border-border flex justify-between items-center bg-white flex-wrap gap-3">
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2 px-2 py-1 bg-success/10 text-success text-[11px] font-bold rounded-full border border-success/20">
+                    <span class="w-1.5 h-1.5 rounded-full bg-success pulse-dot"></span>
+                    ACTIVE: <span class="tabular-nums" x-text="activeCount"></span>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                {{ ui.grid_search(placeholder='筛选代理 标签/国家/URL...') }}
+                <button class="p-2 text-muted hover:text-body transition-colors" title="筛选">
+                    <span class="material-symbols-outlined text-xl">tune</span>
+                </button>
+                {{ ui.grid_columns_settings() }}
+            </div>
+        </div>
+
+        {# Table #}
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-subtle">
+                    <tr class="border-b border-border">
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">
+                            <div class="flex items-center gap-2">
+                                <input type="checkbox" class="rounded border-border text-primary focus:ring-primary/20">
+                                <span>标签</span>
+                                <span class="material-symbols-outlined text-xs">arrow_drop_down</span>
+                            </div>
+                        </th>
+                        <th x-show="visibleColumns.includes('country')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">国家</th>
+                        <th x-show="visibleColumns.includes('url')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">URL（脱敏）</th>
+                        <th x-show="visibleColumns.includes('notes')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">备注</th>
+                        <th x-show="visibleColumns.includes('refs')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">引用</th>
+                        <th x-show="visibleColumns.includes('status')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">状态</th>
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                    <template x-for="(p, idx) in filteredProxies" :key="p.id">
+                        <tr :class="[idx % 2 === 1 ? 'bg-neutral-100/30' : '', !p.is_active ? 'opacity-60' : '']"
+                            class="hover:bg-primary/5 transition-colors group">
+                            <td class="px-6 py-4">
+                                <div class="flex items-center gap-3">
+                                    <input type="checkbox" class="rounded border-border text-primary focus:ring-primary/20">
+                                    <span class="text-sm font-medium text-body cursor-pointer hover:text-primary hover:underline underline-offset-4 decoration-primary/30 transition-all" x-text="p.label"></span>
+                                </div>
+                            </td>
+                            <td x-show="visibleColumns.includes('country')" class="px-6 py-4">
+                                {{ country_flag_card('p.country') }}
+                            </td>
+                            <td x-show="visibleColumns.includes('url')" class="px-6 py-4">
+                                <code class="mono-text text-xs text-muted bg-subtle px-2 py-1 rounded" x-text="p.url_masked"></code>
+                            </td>
+                            <td x-show="visibleColumns.includes('notes')" class="px-6 py-4">
+                                <span class="text-sm text-muted" x-text="p.notes || '—'"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('refs')" class="px-6 py-4">
+                                <span x-show="p.template_ref_count > 0"
+                                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-secondary/10 text-secondary border border-secondary/20 font-medium">
+                                    <span class="material-symbols-outlined text-[12px]">link</span>
+                                    <span x-text="p.template_ref_count + ' 模板'"></span>
+                                </span>
+                                <span x-show="!p.template_ref_count" class="text-sm text-muted">—</span>
+                            </td>
+                            <td x-show="visibleColumns.includes('status')" class="px-6 py-4">
+                                <button @click="toggleActive(p)"
+                                        :class="p.is_active
+                                            ? 'bg-success/10 text-success border-success/20'
+                                            : 'bg-subtle text-muted border-border'"
+                                        class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border transition-colors">
+                                    <span x-show="p.is_active" class="material-symbols-outlined text-[12px]">check</span>
+                                    <span x-show="!p.is_active" class="material-symbols-outlined text-[12px]">circle</span>
+                                    <span x-text="p.is_active ? 'ACTIVE' : 'INACTIVE'"></span>
+                                </button>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <button @click="deleteProxy(p)"
+                                        class="text-danger hover:text-danger/80 text-sm font-medium transition-colors flex items-center gap-1 ml-auto">
+                                    <span class="material-symbols-outlined text-base">delete</span>
+                                    删除
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="proxies.length === 0">
+                        <td colspan="7" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-3 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">router</span>
+                                <span class="text-sm">代理池为空</span>
+                                <button @click="showForm = true"
+                                        class="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-secondary text-white rounded-lg shadow-token-sm hover:bg-secondary/90 transition-all active:scale-95">
+                                    <span class="material-symbols-outlined text-lg">add_circle</span>
+                                    新增第一个代理
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+</div>
+
+<script>
+function proxiesData() {
+    const _DEFAULT_COLS = ['country', 'url', 'notes', 'refs', 'status'];
+    return {
+        proxies: [],
+        addingProxy: false,
+        showForm: false,
+        showHints: false,
+        searchTerm: '',
+        searchExpanded: false,
+        visibleColumns: (() => {
+            try { const raw = localStorage.getItem('proxies.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT_COLS; }
+            catch (_) { return _DEFAULT_COLS; }
+        })(),
+        columnOptions: [
+            { key: 'country', label: '国家' },
+            { key: 'url',     label: 'URL（脱敏）' },
+            { key: 'notes',   label: '备注' },
+            { key: 'refs',    label: '引用' },
+            { key: 'status',  label: '状态' },
+        ],
+        initColumnWatcher() {
+            this.$watch('visibleColumns', (cols) => {
+                try { localStorage.setItem('proxies.visibleColumns', JSON.stringify(cols)); } catch (_) {}
+            });
+        },
+        newProxy: { label: '', country: '', url: '', notes: '' },
+        // 常用国家代码下拉（运维加代理时方便选）
+        commonCountries: ['US', 'CA', 'GB', 'DE', 'FR', 'SG', 'JP', 'KR', 'AU', 'NZ', 'ES', 'IT', 'NL', 'BR', 'MX', 'IN', 'TW', 'HK'],
+
+        toggleForm() {
+            this.showForm = !this.showForm;
+            if (!this.showForm) {
+                this.newProxy = { label: '', country: '', url: '', notes: '' };
+            }
+        },
+
+        get filteredProxies() {
+            if (!this.searchTerm) return this.proxies;
+            const t = this.searchTerm.toLowerCase();
+            return this.proxies.filter(p =>
+                (p.label || '').toLowerCase().includes(t)
+                || (p.country || '').toLowerCase().includes(t)
+                || (p.url_masked || '').toLowerCase().includes(t)
+                || (p.notes || '').toLowerCase().includes(t)
+            );
+        },
+
+        get activeCount() {
+            return this.proxies.filter(p => p.is_active).length;
+        },
+
+        async fetchProxies() {
+            try {
+                this.proxies = await fetchJson('/api/proxies');
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            }
+        },
+
+        async addProxy() {
+            if (!this.newProxy.label.trim()) {
+                showToast('请填写标签', 'error');
+                return;
+            }
+            if (!this.newProxy.url.trim()) {
+                showToast('请填写代理 URL', 'error');
+                return;
+            }
+            this.addingProxy = true;
+            try {
+                await fetchJson('/api/proxies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        label: this.newProxy.label.trim(),
+                        url: this.newProxy.url.trim(),
+                        country: this.newProxy.country,
+                        notes: this.newProxy.notes,
+                        is_active: true,
+                    }),
+                });
+                showToast('代理已添加', 'success');
+                // reset 表单并收起折叠面板
+                this.newProxy = { label: '', country: '', url: '', notes: '' };
+                this.showForm = false;
+                await this.fetchProxies();
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            } finally {
+                this.addingProxy = false;
+            }
+        },
+
+        async toggleActive(p) {
+            try {
+                await fetchJson(`/api/proxies/${p.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: !p.is_active }),
+                });
+                await this.fetchProxies();
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            }
+        },
+
+        async deleteProxy(p) {
+            if (!(await confirmDialog({ title: '删除代理', message: `确认删除代理「${p.label}」？此操作不可恢复。`, danger: true }))) return;
+            try {
+                await fetchJson(`/api/proxies/${p.id}`, { method: 'DELETE' });
+                showToast('已删除', 'success');
+                await this.fetchProxies();
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

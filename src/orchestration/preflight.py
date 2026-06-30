@@ -31,6 +31,147 @@ from src.fintech.coherence import CoherenceReport, validate_identity_coherence
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# IP 抓取（账号池创建时记录出口 IP）
+# ---------------------------------------------------------------------------
+
+
+def _parse_ipinfo_payload(data: dict) -> tuple[str, str]:
+    """从 ipinfo.io 返回的 dict 抽取 (ip, country_upper)。
+
+    共享给 ``fetch_exit_ip``（httpx 路径）和 ``fetch_exit_ip_from_page``（Playwright 路径）。
+    """
+    ip = str((data or {}).get("ip", "") or "").strip()
+    country = str((data or {}).get("country", "") or "").strip().upper()
+    return (ip, country)
+
+
+def fetch_exit_ip(
+    *,
+    proxy: Optional[str] = None,
+    timeout: float = 5.0,
+    _client_factory: Optional[Any] = None,
+) -> tuple[str, str]:
+    """
+    查询当前出口的公网 IP 和国家代码（**Python 进程网络栈** 版本）。
+
+    ⚠️ 适用场景受限：本函数走 Python 进程的 httpx 客户端，与 AdsPower
+    浏览器注入的住宅代理是两条独立网络栈。**注册主流程请用
+    ``fetch_exit_ip_from_page``**（浏览器内查询，拿到的是浏览器真实出口）。
+    本函数仅保留用于无浏览器的快速失败场景或独立诊断脚本。
+
+    通过 ``https://ipinfo.io/json``（无需 token 也能拿到 ip+country）。
+    任何异常都降级为 ``("", "")``，**不能让 IP 抓取失败影响主流程**。
+
+    Args:
+        proxy: 出口代理 URL（如 ``http://user:pass@host:port``）；为空则走本地直连
+        timeout: 单次请求超时（秒）
+        _client_factory: 测试注入用，返回带 ``get`` 方法的 client 对象（默认用 httpx.Client）
+
+    Returns:
+        ``(ip_address, country_code)``，country 是 ISO 3166-1 alpha-2（已 upper），任何字段抓不到都是空串。
+    """
+    try:
+        if _client_factory is not None:
+            client_cm = _client_factory(proxy=proxy, timeout=timeout)
+        else:
+            import httpx
+
+            # httpx 0.27+ 用 proxy=（单数）；老版本兼容 proxies=
+            try:
+                client_cm = httpx.Client(proxy=proxy, timeout=timeout) if proxy else httpx.Client(timeout=timeout)
+            except TypeError:
+                client_cm = httpx.Client(proxies=proxy, timeout=timeout) if proxy else httpx.Client(timeout=timeout)
+
+        with client_cm as client:
+            resp = client.get("https://ipinfo.io/json")
+            if resp.status_code != 200:
+                return ("", "")
+            data = resp.json() if hasattr(resp, "json") else {}
+        return _parse_ipinfo_payload(data)
+    except Exception as exc:
+        logger.warning("出口 IP 抓取失败（降级为空）: %s", exc)
+        return ("", "")
+
+
+def fetch_exit_ip_from_page(page: Any, *, timeout_ms: int = 8000) -> tuple[str, str]:
+    """从已启动的 Playwright 浏览器内查询出口 IP（**唯一可靠路径**）。
+
+    AdsPower 启动的 Chromium 由 AdsPower 把住宅代理（1024Proxy 等）注入到
+    浏览器层，Python 进程外面看不到。注册主流程要记录"OpenAI 实际看到的
+    出口 IP"，只能在浏览器内访问 ipinfo.io 拿。
+
+    实现细节：用 ``page.context.new_page()`` 开一个临时 tab，避免污染主页面
+    的 SPA 路由（ChatGPT 入口）。无论成败，临时 tab 都会被关闭。
+
+    Args:
+        page: 已连接 AdsPower 的 Playwright Page（用来取 context）
+        timeout_ms: 单次 goto 超时（毫秒），默认 8000
+
+    Returns:
+        ``(ip_address, country_code)``；任何异常降级为 ``("", "")``，永不抛出。
+    """
+    tmp = None
+    try:
+        tmp = page.context.new_page()
+        tmp.goto(
+            "https://ipinfo.io/json",
+            timeout=timeout_ms,
+            wait_until="domcontentloaded",
+        )
+        raw = tmp.evaluate("() => document.body.innerText") or "{}"
+        import json
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {}
+        return _parse_ipinfo_payload(data)
+    except Exception as exc:
+        logger.warning("浏览器内出口 IP 抓取失败（降级为空）: %s", exc)
+        return ("", "")
+    finally:
+        if tmp is not None:
+            try:
+                tmp.close()
+            except Exception:
+                pass
+
+
+def write_run_exit_ip(run_id: Optional[str], ip_address: str, country: str) -> None:
+    """把 ``(ip, country)`` 写到 ``Run.ip_address`` / ``Run.ip_country``。
+
+    复用 orchestrator 历史的 45/8 字节截断 + 大写规则。
+    - ``run_id`` 为 None/空：静默跳过（CLI 直跑路径无 DB run）
+    - DB 不存在的 ``run_id``：静默跳过（与历史 ``_capture_and_persist_exit_ip`` 行为一致）
+    - ``ip/country`` 都为空：静默跳过
+
+    任何 DB 异常仅记 warning，不抛出（IP 不是关键字段，不能拖垮主流程）。
+    """
+    if not run_id:
+        return
+    if not ip_address and not country:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from src.db.engine import get_session
+        from src.db.models import Run
+
+        with get_session() as s:
+            run = s.get(Run, run_id)
+            if run is None:
+                return
+            if ip_address:
+                run.ip_address = ip_address[:45]
+            if country:
+                run.ip_country = country.upper()[:8]
+            run.updated_at = datetime.now(timezone.utc)
+            s.add(run)
+            s.commit()
+    except Exception as exc:
+        logger.warning("write_run_exit_ip 失败 run=%s: %s", run_id, exc)
+
+
 _VALID_MODES = ("off", "warn", "block")
 
 

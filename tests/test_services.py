@@ -102,6 +102,51 @@ class TestConfigService(unittest.TestCase):
         self.assertTrue(deleted)
         self.assertFalse(self.svc.delete_provider_config("browser", "test-ads"))
 
+    def test_save_provider_config_preserves_real_value_when_redacted_submitted(self):
+        """UI 回显 [REDACTED] 占位符不能覆盖 DB 真值（修复 2026-05-27 远程 email-provider 500 链路 bug）。
+
+        场景：admin 编辑 provider，UI 把 proxy/api_key 显示为 [REDACTED]，
+        用户只想改其他字段然后点保存。旧逻辑会把 [REDACTED] 字面量原样写回，
+        下游（worker → email-provider）拿这个字面量当真 URL 调用，崩 InvalidURL → 500。
+        """
+        # 初始真值
+        self.svc.save_provider_config(
+            "browser", "redacted-test",
+            {"proxy": "socks5h://user:pass@host:3000", "ads_api": "http://local.adspower.net:50325"},
+        )
+        original = self.svc.get_provider_config("browser", "redacted-test")
+        self.assertEqual(original.config["proxy"], "socks5h://user:pass@host:3000")
+
+        # 模拟 UI 回显被原样回写：proxy 是 [REDACTED]，ads_api 是用户改的新值
+        self.svc.save_provider_config(
+            "browser", "redacted-test",
+            {"proxy": "[REDACTED]", "ads_api": "http://new.adspower:50325"},
+        )
+        merged = self.svc.get_provider_config("browser", "redacted-test")
+        # proxy 真值必须保留
+        self.assertEqual(merged.config["proxy"], "socks5h://user:pass@host:3000")
+        # ads_api 走正常更新
+        self.assertEqual(merged.config["ads_api"], "http://new.adspower:50325")
+
+        # 同样覆盖：嵌套或其它脱敏 tag 也要识别
+        self.svc.save_provider_config(
+            "browser", "redacted-test",
+            {"proxy": "[REDACTED_USER]:[REDACTED_PASS]@host:3000", "ads_api": "http://x"},
+        )
+        merged2 = self.svc.get_provider_config("browser", "redacted-test")
+        # 只要含 [REDACTED 子串就视为脱敏，保留 DB 真值
+        self.assertEqual(merged2.config["proxy"], "socks5h://user:pass@host:3000")
+
+    def test_save_provider_config_strips_redacted_on_create(self):
+        """新建 provider 时若用户硬塞 [REDACTED]，应直接剔除而不是写入。"""
+        self.svc.save_provider_config(
+            "browser", "fresh-create",
+            {"proxy": "[REDACTED]", "ads_api": "http://real:50325"},
+        )
+        created = self.svc.get_provider_config("browser", "fresh-create")
+        self.assertNotIn("proxy", created.config)
+        self.assertEqual(created.config["ads_api"], "http://real:50325")
+
     def test_provider_revisions_and_restore_existing_snapshot(self):
         self.svc.save_provider_config("browser", "revision-demo", {"url": "http://v1"}, is_active=True)
         self.svc.save_provider_config("browser", "revision-demo", {"url": "http://v2"}, is_active=False)
@@ -158,6 +203,55 @@ class TestConfigService(unittest.TestCase):
         deleted = self.svc.delete_mail_account(account.id)
         self.assertTrue(deleted)
         self.assertIsNone(self.svc.get_mail_account(account.id))
+
+    # ── resolve_runtime_provider_config: provider-first → default → fallback 链 ──
+
+    def test_resolve_runtime_picks_profile_binding_first(self):
+        """profile_bindings 显式指定的 provider_name 优先于 default_name。"""
+        self.svc.save_provider_config("sms", "sms-activate", {"api_key": "ABCDEFG", "country": "0"})
+        self.svc.save_provider_config("sms", "sms-default", {"api_key": "XYZ", "country": "7"})
+        result = self.svc.resolve_runtime_provider_config(
+            "sms",
+            profile_bindings={"sms": "sms-activate"},
+            default_name="sms-default",
+        )
+        self.assertEqual(result["api_key"], "ABCDEFG")
+        self.assertEqual(result["country"], "0")
+
+    def test_resolve_runtime_falls_back_to_default(self):
+        """profile_bindings 未指定槽位时使用 default_name。"""
+        self.svc.save_provider_config("llm", "llm-default", {
+            "base_url": "https://api.openai.com",
+            "api_key": "sk-test",
+            "model": "gpt-4",
+        })
+        result = self.svc.resolve_runtime_provider_config(
+            "llm",
+            profile_bindings={},
+            default_name="llm-default",
+        )
+        self.assertEqual(result["api_key"], "sk-test")
+        self.assertEqual(result["model"], "gpt-4")
+
+    def test_resolve_runtime_returns_empty_when_nothing_found(self):
+        """provider 都查不到时返回空 dict（消费侧应 fallback 到 .env）。"""
+        result = self.svc.resolve_runtime_provider_config(
+            "captcha",
+            profile_bindings=None,
+            default_name="captcha-missing",
+        )
+        self.assertEqual(result, {})
+
+    def test_resolve_runtime_skips_inactive_provider(self):
+        """is_active=False 的 provider 不算命中，应继续 fallback。"""
+        self.svc.save_provider_config("sms", "sms-default", {"api_key": "STALE"}, is_active=False)
+        result = self.svc.resolve_runtime_provider_config(
+            "sms",
+            profile_bindings={"sms": "sms-default"},
+            default_name="sms-default",
+        )
+        # 唯一候选已停用 → 空 dict，消费侧用 .env
+        self.assertEqual(result, {})
 
 
 class TestAuthService(unittest.TestCase):

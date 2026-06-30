@@ -25,6 +25,10 @@
 | `OpenAICompatibleLLMClient` | `llm.py` | OpenAI 兼容接口的 HTTP 客户端 |
 | `ArtifactRecorder` | `artifacts.py` | 每步操作的证据包落盘（JSON + 截图） |
 | `ExperienceStore` | `experience.py` | 持久化"页面特征 -> 成功动作"映射 |
+| `SentinelProvider` / `NoOpSentinelProvider` / `PurePythonSentinelProvider` | `sentinel.py` | 旁路 API 反爬 PoW 框架（FNV-1a brute-force，默认 noop）。详见 `docs/research/anti-bot-borrowing-vs-pow.md` |
+| `BrowserBorrower` / `BorrowSnapshot` | `browser_borrow.py` | 从 AdsPower 浏览器借 header + cookie 给旁路 curl_cffi 调用（实测主路径） |
+| `SolverProvider` / `NoOpSolver` / `ManualFallbackSolver` / `NoCaptchaSolver` | `captcha_solver.py` | Turnstile 自愈框架（默认 noop，可接 nocaptcha.io / 人工接管） |
+| `Triage*` | `triage.py` | 决策前置的页面分类（HOME / VERIFY / BLOCKED 等） |
 
 ### 核心函数
 
@@ -68,16 +72,33 @@
 
 ```
 src/automation/
-  __init__.py      # 统一导出
-  models.py        # 数据模型与枚举
-  runtime.py       # 状态机、规则引擎、证据采集
-  llm.py           # LLM 决策客户端
-  artifacts.py     # 证据录制与脱敏
-  experience.py    # 经验存储
+  __init__.py        # 统一导出
+  models.py          # 数据模型与枚举
+  runtime.py         # 状态机、规则引擎、证据采集
+  llm.py             # LLM 决策客户端
+  artifacts.py       # 证据录制与脱敏
+  experience.py      # 经验存储
+  triage.py          # 决策前置的页面分类
+  sentinel.py        # PoW 反爬框架（446 行，默认 noop；feat/sentinel-pow 2026-05-20 引入）
+  browser_borrow.py  # 借浏览器 header/cookie（261 行；feat/sentinel-pow 2026-05-20 引入）
+  captcha_solver.py  # Turnstile 自愈框架（NoOp/ManualFallback/NoCaptcha）
 ```
+
+## 反爬子系统索引
+
+新增于 2026-05 月度的反爬框架（旁路 API 加固），三者关系详见 `docs/research/anti-bot-borrowing-vs-pow.md`：
+
+| 模块 | 角色 | 当前状态 |
+|---|---|---|
+| `sentinel.py` | PoW 法（推测路线，fallback） | API 备好，noop 默认；实测算法在 2026-05 主流场景已失效 |
+| `browser_borrow.py` | 借用法（实测主路径） | API 备好，业务层**未接入**（等 Phase B 验证数据） |
+| `captcha_solver.py` | Turnstile 自愈 | 框架备好，未接真实第三方 solver |
+
+最新风控变化跟踪：`docs/research/openai-risk-control-timeline-2026-05.md`
 
 ## 变更记录 (Changelog)
 
 | 日期 | 变更内容 | 执行者 |
 |------|---------|--------|
 | 2026-04-11 | 初始创建模块文档 | Claude Code |
+| 2026-05-22 | 补全反爬子系统索引：sentinel/browser_borrow/captcha_solver/triage 加入"核心类"和"文件清单"；新增"反爬子系统索引"小节联动 anti-bot-borrowing-vs-pow.md + openai-risk-control-timeline-2026-05.md | Claude Code |

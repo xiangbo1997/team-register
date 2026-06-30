@@ -1,79 +1,179 @@
 {% extends "base.html" %}
 {% block title %}{{ _('tasks.create.title') }} - Team Register{% endblock %}
-{% block nav_tasks %}bg-gray-800 text-white{% endblock %}
+{% block nav_tasks %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('tasks.create.title') }}{% endblock %}
 
 {% block content %}
-<div x-data="createTaskData()" x-init="init()">
-    <div class="max-w-xl mx-auto">
-        <div class="bg-white rounded-lg shadow-sm border p-6">
-            <h3 class="text-sm font-semibold text-gray-700 mb-4" x-text="i18n('tasks.create.create_registration_task')"></h3>
+<style>
+/* Floating-label group — 复刻 Stitch 原型 new-task.html:55-83 的两态布局。
+   空值/未聚焦：label 居中（与 input 文字基线对齐），扮演 placeholder 角色；
+   聚焦/非空：label 上浮到 input 顶边缘，缩小 + 染主色，原 placeholder 位置让给真实输入。
+   注意：input 必须设 placeholder=" "（单空格），让 :not(:placeholder-shown) 选择器能识别"有值"。 */
+.floating-label-group {
+    position: relative;
+}
+.floating-label-group > label {
+    position: absolute;
+    left: 1rem;
+    /* h-12 input = 3rem，label 居中线 = 1.5rem；相对 input 顶部固定偏移，
+       避免被父级 grid/flex 的 align-items:stretch 拉到容器中线（含 hint <p> 区）。 */
+    top: 1.5rem;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: var(--text-muted, #64748B);
+    transition: all 0.15s ease-out;
+    background-color: white;
+    padding: 0 0.25rem;
+    font-size: 0.875rem;  /* 与 input 文字大小一致，扮演 placeholder */
+    line-height: 1.25rem;
+}
+.floating-label-group > input:focus ~ label,
+.floating-label-group > input:not(:placeholder-shown) ~ label,
+.floating-label-group > select:focus ~ label,
+.floating-label-group.has-value > label {
+    top: 0;
+    transform: translateY(-50%) scale(0.85);
+    color: var(--primary, #4F46E5);
+    font-weight: 500;
+}
+/* input 的 padding：默认上下均衡让文字垂直居中；聚焦/有值后增加上 padding 给浮动 label 留位 */
+.floating-label-group > input,
+.floating-label-group > select {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+.floating-label-group > input:focus,
+.floating-label-group > input:not(:placeholder-shown),
+.floating-label-group > select:focus,
+.floating-label-group.has-value > input,
+.floating-label-group.has-value > select {
+    padding-top: 0.875rem;
+    padding-bottom: 0;
+}
+</style>
+
+<div x-data="createTaskData()" x-init="init()" class="max-w-[920px] mx-auto space-y-6">
+
+    {# ─── Top Tab Switcher（严格对齐 Stitch 原型 new-task.html:204-213）─── #}
+    <section class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden">
+        <nav class="flex border-b border-neutral-100">
+            <button type="button" @click="activeMode='email'; resetProfileForKind('email')"
+                    :class="activeMode==='email' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="tab-btn flex-1 py-4 text-sm font-semibold transition-all border-b-2"
+                    x-text="i18n('tasks.create.mode_tabs.email')"></button>
+            <button type="button" @click="activeMode='phone'; resetProfileForKind('phone')"
+                    :class="activeMode==='phone' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="tab-btn flex-1 py-4 text-sm font-semibold transition-all border-b-2"
+                    x-text="i18n('tasks.create.mode_tabs.phone')"></button>
+            <button type="button" @click="activeMode='batch'; resetProfileForKind('email')"
+                    :class="activeMode==='batch' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="tab-btn flex-1 py-4 text-sm font-semibold transition-all border-b-2"
+                    x-text="i18n('tasks.create.mode_tabs.batch')"></button>
+        </nav>
+
+        {# ─── 模式 A：邮箱注册（单个）─── #}
+        <div class="p-8" x-show="activeMode==='email'" x-cloak>
+            <div class="mb-8">
+                <h3 class="text-[20px] font-semibold text-neutral-900" x-text="i18n('tasks.create.email_card_title')"></h3>
+                <p class="text-sm text-muted mt-1" x-text="i18n('tasks.create.email_card_subtitle')"></p>
+            </div>
             <form @submit.prevent="submit()">
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('tasks.create.email') + ' *'"></label>
-                        <input type="email" x-model="form.email" required
-                               class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                               :placeholder="i18n('tasks.create.placeholders.email')">
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="floating-label-group">
+                            <input type="email" x-model="form.email"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   placeholder=" "
+                                   :required="!emailBlankAllowed()">
+                            <label class="text-sm" x-text="i18n('tasks.create.email') + (emailBlankAllowed() ? '' : ' *')"></label>
+                            <p class="mt-1.5 text-xs text-muted" x-text="emailAutoHint()"></p>
+                        </div>
+                        <div class="floating-label-group">
+                            <input type="text" x-model="form.password"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   placeholder=" ">
+                            <label class="text-sm" x-text="i18n('tasks.create.password')"></label>
+                            <p class="text-xs text-neutral-400 mt-1" x-text="i18n('tasks.create.password_auto_hint')"></p>
+                        </div>
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('tasks.create.password') + ' *'"></label>
-                        <input type="text" x-model="form.password" required
-                               class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                               :placeholder="i18n('tasks.create.placeholders.password')">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('tasks.create.profile_id') + ' *'"></label>
+                    <div class="floating-label-group">
                         <input type="text" x-model="form.profile_id" required
-                               class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                               :placeholder="i18n('tasks.create.placeholders.profile_id')">
+                               class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all font-mono text-sm"
+                               placeholder=" ">
+                        <label class="text-sm" x-text="i18n('tasks.create.profile_id') + ' *'"></label>
                     </div>
+
+                    {# 任务模式 #}
                     <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1" x-text="i18n('tasks.create.card_key')"></label>
-                        <input type="text" x-model="form.card_key"
-                               class="w-full text-sm border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                               :placeholder="i18n('tasks.create.placeholders.card_key')">
-                        <p class="text-xs text-gray-400 mt-1" x-text="i18n('tasks.create.card_key_hint')"></p>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">浏览器 Provider *</label>
-                        <select x-model="form.browser_provider" class="w-full text-sm border rounded-md px-3 py-2">
-                            <template x-for="option in browserProviders" :key="option.provider_name">
-                                <option :value="option.provider_name" x-text="option.provider_name"></option>
-                            </template>
+                        <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
+                               x-text="i18n('tasks.create.task_mode_label')"></label>
+                        <select x-model="form.mode"
+                                class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                            <option value="full">完整流程（注册 + 提取 token + 绑卡支付）</option>
+                            <option value="register_only">仅注册（注册成功后进普号池，绑卡稍后手动）</option>
                         </select>
+                        <p class="text-xs text-slate-400 mt-1">
+                            <span x-show="form.mode === 'register_only'">注册成功后号自动进 <a href="/accounts" class="text-primary underline">/accounts</a> 普号池，无需 card_key</span>
+                            <span x-show="form.mode === 'full'">完整流程必须提供 card_key（手填或从卡池选）</span>
+                        </p>
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">卡 Provider *</label>
-                        <select x-model="form.card_provider" class="w-full text-sm border rounded-md px-3 py-2">
-                            <template x-for="option in cardProviders" :key="option.provider_name">
-                                <option :value="option.provider_name" x-text="option.provider_name"></option>
-                            </template>
-                        </select>
+
+                    {# 卡密来源（segmented toggle，参照 Stitch 原型 new-task.html:250-253）#}
+                    <div x-show="form.mode === 'full'">
+                        <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
+                               x-text="i18n('tasks.create.card_source_label')"></label>
+                        <div class="flex p-1 bg-neutral-100 rounded-xl w-fit mb-3">
+                            <button type="button" @click="cardSource='pool'; form.card_key=''"
+                                    :class="cardSource === 'pool' ? 'bg-white text-primary shadow-sm' : 'text-neutral-500 hover:text-neutral-700'"
+                                    class="px-6 py-2 text-sm font-semibold rounded-lg transition-colors"
+                                    x-text="i18n('tasks.create.card_source_pool')"></button>
+                            <button type="button" @click="cardSource='manual'; form.card_key=''"
+                                    :class="cardSource === 'manual' ? 'bg-white text-primary shadow-sm' : 'text-neutral-500 hover:text-neutral-700'"
+                                    class="px-6 py-2 text-sm font-medium rounded-lg transition-colors"
+                                    x-text="i18n('tasks.create.card_source_manual')"></button>
+                        </div>
+
+                        <div x-show="cardSource === 'pool'">
+                            <select x-model="form.card_key"
+                                    class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                                <option value="">-- 请选择成熟卡 --</option>
+                                <template x-for="c in readyCards" :key="c.card_key">
+                                    <option :value="c.card_key"
+                                            x-text="`****${c.last4} ${c.bin_country || ''} ${c.card_provider} (${c.warmup_count}/${c.target_warmup_count})`"></option>
+                                </template>
+                            </select>
+                            <p x-show="readyCards.length === 0" class="text-xs text-danger mt-1">
+                                没有成熟卡，先到 <a href="/cards" class="underline">/cards</a> 入池 + 热卡
+                            </p>
+                        </div>
+                        <div x-show="cardSource === 'manual'">
+                            <input type="text" x-model="form.card_key"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   :placeholder="i18n('tasks.create.placeholders.card_key')">
+                            <p class="text-xs text-muted mt-1" x-text="i18n('tasks.create.card_key_hint')"></p>
+                        </div>
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">邮件 Provider *</label>
-                        <select x-model="form.mail_provider" @change="handleMailProviderChange()" class="w-full text-sm border rounded-md px-3 py-2">
-                            <template x-for="option in mailProviders" :key="option.provider_name">
-                                <option :value="option.provider_name" x-text="option.provider_name"></option>
-                            </template>
-                        </select>
-                    </div>
+
+                    {# credentialed 邮件账号选择（cfworker/outlook 等 managed provider 隐藏）#}
                     <div x-show="selectedMailProviderNeedsAccount()" x-cloak>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">邮件账号 *</label>
-                        <select x-model="form.mail_account_id" class="w-full text-sm border rounded-md px-3 py-2">
+                        <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2">邮件账号 *</label>
+                        <select x-model="form.mail_account_id"
+                                class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
                             <option value="">未选择（走全局 fallback）</option>
                             <template x-for="account in filteredMailAccounts()" :key="account.id">
                                 <option :value="account.id" x-text="`${account.label} (${account.email})`"></option>
                             </template>
                         </select>
-                        <p class="text-xs text-gray-400 mt-1">优先使用所选账号；不选时回退到全局默认账号或 legacy 环境变量。</p>
+                        <p class="text-xs text-muted mt-1">优先使用所选账号；不选时回退到全局默认账号或 legacy 环境变量。</p>
                     </div>
                 </div>
-                <div class="flex items-center justify-between mt-6 pt-4 border-t">
-                    <a href="/tasks" class="text-sm text-gray-500 hover:text-gray-700" x-text="i18n('common.cancel')"></a>
+
+                <div class="mt-10 flex items-center justify-between pt-6 border-t border-neutral-100">
+                    <a href="/tasks" class="px-6 py-2.5 text-sm font-medium text-neutral-500 hover:bg-neutral-50 rounded-lg transition-colors"
+                       x-text="i18n('common.cancel')"></a>
                     <button type="submit" :disabled="submitting"
-                            class="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50">
+                            class="flex items-center gap-1.5 px-8 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-semibold shadow-token-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" x-show="!submitting">rocket_launch</span>
                         <span x-show="!submitting" x-text="i18n('tasks.create.create_btn')"></span>
                         <span x-show="submitting" x-text="i18n('tasks.create.creating')"></span>
                     </button>
@@ -81,64 +181,610 @@
             </form>
         </div>
 
-        <!-- Batch Mode -->
-        <div class="bg-white rounded-lg shadow-sm border p-6 mt-6">
-            <h3 class="text-sm font-semibold text-gray-700 mb-2" x-text="i18n('tasks.create.batch_title')"></h3>
-            <p class="text-xs text-gray-400 mb-3" x-text="i18n('tasks.create.batch_hint')"></p>
-            <textarea x-model="batchText" rows="5"
-                      class="w-full text-xs font-mono border rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500"
-                      :placeholder="i18n('tasks.create.placeholders.batch')"></textarea>
-            <div class="flex justify-end mt-3">
-                <button @click="batchSubmit()" :disabled="!batchText.trim() || submitting"
-                        class="px-4 py-2 bg-gray-800 text-white text-sm rounded-md hover:bg-gray-900 disabled:opacity-50"
-                        x-text="i18n('tasks.create.batch_btn')"></button>
+        {# ─── 模式 B：手机号注册（单个）─── #}
+        <div class="p-8" x-show="activeMode==='phone'" x-cloak>
+            <div class="mb-8">
+                <h3 class="text-[20px] font-semibold text-neutral-900" x-text="i18n('tasks.create.phone_card_title')"></h3>
+                <p class="text-sm text-muted mt-1" x-text="i18n('tasks.create.phone_card_subtitle')"></p>
+            </div>
+            <form @submit.prevent="submitPhone()">
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="floating-label-group">
+                            <input type="text" x-model="phoneForm.phone"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all font-mono text-sm"
+                                   placeholder=" ">
+                            <label class="text-sm" x-text="i18n('tasks.create.phone')"></label>
+                            <p class="mt-1.5 text-xs text-muted" x-text="i18n('tasks.create.phone_auto_hint')"></p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
+                                   x-text="i18n('tasks.create.sms_country')"></label>
+                            <select x-model="phoneForm.sms_country"
+                                    class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                                <option value="">✓ 推荐：沿用 SMS provider 配置（当前=美国187）</option>
+                                <option value="4">菲律宾 Philippines (4)</option>
+                                <option value="6">印尼 Indonesia (6)</option>
+                                <option value="8">肯尼亚 Kenya (8)</option>
+                                <option value="10">越南 Vietnam (10)</option>
+                                <option value="15">波兰 Poland (15)</option>
+                                <option value="16">英国 UK (16)</option>
+                                <option value="32">罗马尼亚 Romania (32)</option>
+                                <option value="33">哥伦比亚 Colombia (33)</option>
+                                <option value="43">德国 Germany (43)</option>
+                                <option value="52">泰国 Thailand (52)</option>
+                                <option value="73">巴西 Brazil (73)</option>
+                                <option value="78">法国 France (78)</option>
+                                <option value="151">智利 Chile (151)</option>
+                                <option value="182">日本 Japan (182)</option>
+                                <option value="187">美国 USA (187)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="floating-label-group">
+                            <input type="text" x-model="phoneForm.password"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   placeholder=" ">
+                            <label class="text-sm" x-text="i18n('tasks.create.password')"></label>
+                            <p class="text-xs text-neutral-400 mt-1" x-text="i18n('tasks.create.password_auto_hint')"></p>
+                        </div>
+                        <div class="floating-label-group">
+                            <input type="text" x-model="phoneForm.profile_id" required
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all font-mono text-sm"
+                                   placeholder=" ">
+                            <label class="text-sm" x-text="i18n('tasks.create.profile_id') + ' *'"></label>
+                        </div>
+                    </div>
+                    <div class="floating-label-group">
+                        <input type="text" disabled
+                               class="w-full h-12 px-4 border border-neutral-100 bg-neutral-50 rounded-lg outline-none cursor-not-allowed text-muted"
+                               :placeholder="i18n('tasks.create.otp_waiting')">
+                        <label class="text-sm" x-text="i18n('tasks.create.otp_code')"></label>
+                    </div>
+
+                    {# 任务模式（与 Mode A 一致；phone 模式不暴露 card key 在 UI，full 模式会用默认 card pool）#}
+                    <div>
+                        <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
+                               x-text="i18n('tasks.create.task_mode_label')"></label>
+                        <select x-model="phoneForm.mode"
+                                class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all">
+                            <option value="register_only">仅注册（推荐，进普号池待手动绑卡）</option>
+                            <option value="full">完整流程</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="mt-10 flex items-center justify-between pt-6 border-t border-neutral-100">
+                    <a href="/tasks" class="px-6 py-2.5 text-sm font-medium text-neutral-500 hover:bg-neutral-50 rounded-lg transition-colors"
+                       x-text="i18n('common.cancel')"></a>
+                    <button type="submit" :disabled="submitting"
+                            class="flex items-center gap-1.5 px-8 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-semibold shadow-token-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" x-show="!submitting">sms</span>
+                        <span x-show="!submitting" x-text="i18n('tasks.create.submit_phone')"></span>
+                        <span x-show="submitting" x-text="i18n('tasks.create.creating')"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        {# ─── 模式 C：全自动批量注册（原 autoBatch 整段挪入，行为零变化）─── #}
+        <div class="p-8" x-show="activeMode==='batch'" x-cloak>
+            <section class="bg-gradient-to-br from-indigo-50/50 to-sky-50/50 border border-indigo-100 rounded-card p-8 overflow-hidden relative">
+                {# 装饰 blob #}
+                <div class="absolute -right-16 -top-16 w-64 h-64 bg-indigo-200/10 rounded-full blur-3xl pointer-events-none"></div>
+
+                {# 子开关：邮箱批量 / 手机号批量（手机号批量本期 disabled）#}
+                <div class="mb-6 relative">
+                    <label class="block text-[11px] font-medium uppercase text-indigo-600/60 tracking-widest mb-3">注册类型</label>
+                    <div class="flex p-1 bg-white/40 border border-indigo-100 rounded-xl w-fit">
+                        <button type="button" class="px-6 py-2 text-sm font-semibold bg-white text-primary rounded-lg shadow-sm"
+                                x-text="i18n('tasks.create.batch_kind_email')"></button>
+                        <button type="button" disabled
+                                :title="i18n('tasks.create.batch_kind_phone_coming_soon')"
+                                class="px-6 py-2 text-sm font-medium text-indigo-700/40 rounded-lg cursor-not-allowed"
+                                x-text="i18n('tasks.create.batch_kind_phone')"></button>
+                    </div>
+                </div>
+
+                <div class="mb-6 relative">
+                    <h3 class="text-[18px] font-bold text-indigo-900 flex items-center gap-2">
+                        🚀 全自动批量注册（多 Profile 并发 + 反风控）
+                    </h3>
+                    <p class="text-sm text-indigo-700/70 mt-1">系统将自动分配代理并执行多线程并发注册流程。</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 relative">
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">数量 (1-100) *</label>
+                        <input type="number" x-model.number="autoBatch.count" min="1" max="100"
+                               class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">性别（防止全男/全女聚类）</label>
+                        <select x-model="autoBatch.gender"
+                                class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                            <option value="">混合（推荐）</option>
+                            <option value="m">仅男性</option>
+                            <option value="f">仅女性</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">间隔下限（秒）*</label>
+                        <input type="number" x-model.number="autoBatch.interval_min_sec" min="0" step="5"
+                               class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">间隔上限（秒）*</label>
+                        <input type="number" x-model.number="autoBatch.interval_max_sec" min="0" step="5"
+                               class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-[11px] font-medium uppercase text-indigo-600/60 tracking-widest mb-1.5">
+                            AdsPower Profile IDs *
+                            <span class="font-normal normal-case tracking-normal text-indigo-700/50">（每行一个；并发数 = 行数）</span>
+                        </label>
+                        <textarea x-model="autoBatch.profile_ids_text" rows="4"
+                                  class="w-full p-3 font-mono text-xs border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none bg-white/60"
+                                  placeholder="每行一个 AdsPower Profile ID，例如：&#10;k1b9945d&#10;k1b9946e&#10;k1b9947f"></textarea>
+                        <p class="text-xs mt-1">
+                            <span x-show="profileIdsParsed.length === 0" class="text-danger">⚠️ 请至少填一个 profile</span>
+                            <span x-show="profileIdsParsed.length > 0" class="flex items-center gap-1.5 text-success font-medium">
+                                <span class="material-symbols-outlined text-[16px]">check_circle</span>
+                                ✓ 并发数 <span class="font-mono font-semibold" x-text="profileIdsParsed.length"></span>
+                                · 每 profile 分到约 <span class="font-mono" x-text="Math.ceil(autoBatch.count / Math.max(profileIdsParsed.length, 1))"></span> 个号
+                                <span x-show="profileIdsParsed.length > autoBatch.count" class="text-warning">
+                                    · ⚠ profile 比号多 <span class="font-mono" x-text="profileIdsParsed.length - autoBatch.count"></span> 个会闲置
+                                </span>
+                            </span>
+                        </p>
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">共用密码</label>
+                        <input type="text" x-model="autoBatch.password"
+                               class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60"
+                               placeholder="留空则每号自动生成强密码">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">任务模式</label>
+                        <select x-model="autoBatch.mode"
+                                class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                            <option value="register_only">仅注册（推荐：进普号池待手动绑卡）</option>
+                            <option value="full">完整流程（注册 + 绑卡）</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">邮箱供应商</label>
+                        <select x-model="autoBatch.mail_provider"
+                                class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all bg-white/60">
+                            <option value="">默认（沿用 .env / 单任务表单设置）</option>
+                            <template x-for="mp in mailProviders" :key="mp.id || mp.provider_name">
+                                <option :value="mp.provider_name" x-text="mp.provider_name + (mp.session_mode ? ` · ${mp.session_mode}` : '')"></option>
+                            </template>
+                        </select>
+                        <p class="text-[10px] text-indigo-700/50 mt-1">managed 模式自动从邮箱池随机分配；如要切自建域名 / Outlook 池在此选择</p>
+                    </div>
+                </div>
+
+                <div class="mt-8 flex items-center justify-between pt-6 border-t border-indigo-200/50 relative">
+                    <div class="flex items-center gap-2 text-indigo-700/60 text-sm font-medium">
+                        <span class="material-symbols-outlined text-sm">timer</span>
+                        预估总耗时：<span x-text="estimatedDuration"></span>
+                    </div>
+                    <button @click="autoBatchSubmit()" :disabled="autoBatch.submitting"
+                            class="px-8 py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-bold shadow-md shadow-primary/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span x-text="autoBatch.submitting ? '启动中...' : '🚀 启动批量任务'"></span>
+                        <span class="material-symbols-outlined text-lg">arrow_forward</span>
+                    </button>
+                </div>
+
+                {# 实时进度（保留原结构）#}
+                <div x-show="autoBatch.activeBatchId" x-cloak class="mt-4 p-5 bg-white shadow-sm rounded-xl border border-indigo-100">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="text-xs font-semibold text-indigo-900">
+                            执行进度 · Batch <span class="font-mono text-primary" x-text="autoBatch.activeBatchId"></span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-mono font-bold text-primary"
+                                  x-text="`${autoBatch.batchStatus.progress_pct || 0}%`"></span>
+                            <button @click="cancelAutoBatch()" x-show="autoBatch.batchStatus.status === 'running'"
+                                    class="text-xs px-2 py-1 text-danger border border-danger/30 rounded hover:bg-danger/5">取消</button>
+                        </div>
+                    </div>
+                    <div class="w-full h-2 bg-indigo-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-primary rounded-full transition-all duration-1000"
+                             :style="`width: ${autoBatch.batchStatus.progress_pct || 0}%`"></div>
+                    </div>
+                    <div class="grid grid-cols-4 gap-y-3 mt-4 text-xs">
+                        <div>
+                            <p class="text-[10px] text-muted uppercase">已提交</p>
+                            <p class="text-sm font-bold text-neutral-900">
+                                <span class="mono-text tabular-nums" x-text="autoBatch.batchStatus.submitted"></span> / <span class="tabular-nums" x-text="autoBatch.batchStatus.total"></span>
+                            </p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-muted uppercase">失败</p>
+                            <p class="text-sm font-bold text-danger mono-text tabular-nums" x-text="autoBatch.batchStatus.failed"></p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-muted uppercase">并发</p>
+                            <p class="text-sm font-bold text-primary mono-text tabular-nums" x-text="autoBatch.batchStatus.concurrency || 1"></p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-muted uppercase">状态</p>
+                            <p class="text-sm font-bold mono-text" x-text="autoBatch.batchStatus.status"></p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </section>
+
+    {# ─── PROVIDER 配置（注册组合 + 6 类 slot Picker/RawJSON 双视图）─── #}
+    {# 改动 2026-05-27：合并原"注册组合"+"全局 PROVIDER 配置"两块；含全部 6 类（browser/card/mail/sms/captcha/llm）；
+       picker↔raw JSON 切换模式抄自 registration_profiles/index.html:57-105。
+       form.{browser,card,mail}_provider 仍保留兼容老 phoneForm/autoBatch 引用；submit() 改用 overrides dict。 #}
+    <section class="bg-white rounded-card shadow-token-sm p-8 border border-neutral-100">
+        <div class="mb-4">
+            <h4 class="text-sm font-bold text-neutral-900 uppercase tracking-wider"
+                x-text="i18n('tasks.create.global_provider_config')"></h4>
+            <p class="text-xs text-muted mt-1">
+                <span x-text="i18n('tasks.create.provider_config_subtitle')"></span>
+                <a href="/registration-profiles" class="text-primary underline ml-1"
+                   x-text="i18n('tasks.create.provider_config_manage_link')"></a>
+            </p>
+        </div>
+
+        {# 注册组合 selector + 视图切换 tabs #}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5 items-end">
+            <div>
+                <label class="block text-[11px] font-medium uppercase text-muted tracking-widest mb-1.5"
+                       x-text="i18n('tasks.create.provider_config_use_combo')"></label>
+                <select x-model="selectedProfileName" @change="applyProfile()"
+                        class="w-full h-11 px-3 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary text-sm outline-none">
+                    <option value="" x-text="i18n('tasks.create.provider_config_combo_placeholder')"></option>
+                    <template x-for="p in filteredProfiles()" :key="p.name">
+                        <option :value="p.name"
+                                x-text="`${p.name}${p.is_default ? '  ⭐' : ''}`"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="flex items-center justify-end gap-2 pb-1">
+                <div class="inline-flex rounded-lg bg-neutral-100 p-0.5 text-[11px] font-semibold">
+                    <button type="button" @click="switchProviderView('picker')"
+                            :class="providerViewMode === 'picker' ? 'bg-white shadow-token-sm text-body' : 'text-muted hover:text-body'"
+                            class="px-3 py-1 rounded-md transition-all"
+                            x-text="i18n('tasks.create.provider_view_picker')"></button>
+                    <button type="button" @click="switchProviderView('raw')"
+                            :class="providerViewMode === 'raw' ? 'bg-white shadow-token-sm text-body' : 'text-muted hover:text-body'"
+                            class="px-3 py-1 rounded-md transition-all"
+                            x-text="i18n('tasks.create.provider_view_raw')"></button>
+                </div>
+                <span x-show="providerViewMode === 'raw' && providerJsonValid"
+                      class="text-[10px] text-primary font-mono bg-primary/10 px-2 py-0.5 rounded"
+                      x-text="i18n('tasks.create.provider_view_valid_json')"></span>
+                <span x-show="providerViewMode === 'raw' && !providerJsonValid"
+                      class="text-[10px] text-danger font-mono bg-danger/10 px-2 py-0.5 rounded"
+                      x-text="i18n('tasks.create.provider_view_invalid_json')"></span>
             </div>
         </div>
-    </div>
+
+        {# Picker 视图：6 类下拉 #}
+        <div x-show="providerViewMode === 'picker'" class="bg-neutral-50/50 border border-border rounded-lg p-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <template x-for="slot in PROVIDER_SLOTS" :key="slot">
+                    <div>
+                        <label class="block text-[11px] font-medium uppercase text-muted tracking-widest mb-1.5"
+                               x-text="i18n('tasks.create.' + slot + '_provider_label')"></label>
+                        <select :value="overrides[slot] || ''"
+                                @change="setProviderSlot(slot, $event.target.value)"
+                                class="w-full h-11 px-3 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary text-sm font-mono outline-none bg-white">
+                            <option value="" x-text="(providersByType[slot] || []).length === 0 ? i18n('tasks.create.provider_slot_no_options') : i18n('tasks.create.provider_slot_unspecified')"
+                                    :disabled="(providersByType[slot] || []).length === 0"></option>
+                            <template x-for="option in (providersByType[slot] || [])" :key="option.provider_name">
+                                <option :value="option.provider_name"
+                                        :class="!option.is_active ? 'text-muted' : ''"
+                                        x-text="option.provider_name + (option.is_active ? '' : ' (停用)')"></option>
+                            </template>
+                        </select>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        {# Raw JSON 视图 #}
+        <div x-show="providerViewMode === 'raw'">
+            <textarea x-model="overridesJson" @input="validateProviderJson()"
+                      class="w-full h-44 bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
+                      placeholder='{"browser": "browser-default", "card": "card-default", "mail": "mail-cfworker-default", "sms": "sms-activate-default"}'></textarea>
+            <p x-show="!providerJsonValid && providerJsonError"
+               class="mt-1.5 text-xs text-danger font-mono" x-text="providerJsonError"></p>
+            <p class="mt-2 text-xs text-muted" x-text="i18n('tasks.create.provider_raw_hint')"></p>
+        </div>
+    </section>
 </div>
 
 <script>
+// PROVIDER 配置统一槽位列表（与 registration_profiles/index.html:198 保持一致）
+const PROVIDER_SLOTS = ['browser', 'card', 'mail', 'sms', 'captcha', 'llm'];
+
 function createTaskData() {
     return {
+        // tab 切换：'email' / 'phone' / 'batch'
+        activeMode: 'email',
+
+        // PROVIDER 配置（6 槽 + Picker/RawJSON 双视图，2026-05-27 合并）
+        PROVIDER_SLOTS: PROVIDER_SLOTS,
+        providersByType: {},          // {browser: [...], card: [...], mail: [...], sms: [...], captcha: [...], llm: [...]}
+        overrides: {},                // {browser: '', card: '', ...} —— 实际提交的任务级 provider 覆盖
+        providerViewMode: 'picker',   // 'picker' | 'raw'
+        overridesJson: '{}',
+        providerJsonValid: true,
+        providerJsonError: '',
+
         form: {
             email: '',
             password: '',
             profile_id: '',
             card_key: '',
+            // 保留扁平字段：仅供 form.email 校验、handleMailProviderChange、selectedMailProviderConfig 等
+            // 引用 form.*_provider 的辅助函数继续工作；submit 时以 overrides 为权威
             browser_provider: '',
             card_provider: '',
             mail_provider: '',
             mail_account_id: '',
+            mode: 'full',
         },
-        batchText: '',
+        // Mode B 独立 state（与 form 完全隔离，避免 form.email 校验影响 phone 提交）
+        phoneForm: {
+            phone: '',
+            sms_country: '',
+            password: '',
+            profile_id: '',
+            mode: 'register_only',
+        },
         submitting: false,
         browserProviders: [],
         cardProviders: [],
         mailProviders: [],
+        // 注册组合（RegistrationProfile）—— feat/registration-profile 2026-05-27
+        profiles: [],            // 全部组合（按 registration_kind 过滤显示）
+        selectedProfileName: '', // 用户当前选的组合名，留空 = 按 activeMode 取默认
         mailAccounts: [],
+        readyCards: [],
+        cardSource: 'pool',  // 'pool' | 'manual'
         defaults: {},
+
+        // 全自动批量注册
+        autoBatch: {
+            count: 5,
+            gender: '',
+            interval_min_sec: 30,
+            interval_max_sec: 90,
+            profile_ids_text: '',  // textarea 原始文本（每行一个 profile_id）
+            password: '',
+            mode: 'register_only',
+            mail_provider: '',  // 批量任务独立的邮箱供应商；空 = 沿用单任务表单或 .env 默认
+            submitting: false,
+            activeBatchId: '',
+            batchStatus: { progress_pct: 0, submitted: 0, failed: 0, total: 0, status: '' },
+            _pollTimer: null,
+        },
+
+        // textarea 解析：按行/逗号切分，去空 + 去重（保序）
+        get profileIdsParsed() {
+            const raw = this.autoBatch.profile_ids_text || '';
+            const items = raw.split(/[\n,]+/).map(s => s.trim()).filter(s => s.length > 0);
+            const seen = new Set();
+            const unique = [];
+            for (const item of items) {
+                if (!seen.has(item)) { seen.add(item); unique.push(item); }
+            }
+            return unique;
+        },
+
+        get estimatedDuration() {
+            const c = Math.max(1, this.autoBatch.count);
+            const concurrency = Math.max(1, this.profileIdsParsed.length);
+            const avg = (this.autoBatch.interval_min_sec + this.autoBatch.interval_max_sec) / 2;
+            const perProfile = Math.ceil(c / concurrency);
+            const totalSec = Math.max(0, perProfile - 1) * avg;
+            const m = Math.floor(totalSec / 60);
+            const s = Math.floor(totalSec % 60);
+            const base = m > 0 ? `约 ${m}m ${s}s` : `约 ${s}s`;
+            return concurrency > 1
+                ? `${base}（${concurrency} profile 并发；仅 submit 间隔）`
+                : `${base}（仅 submit 间隔）`;
+        },
 
         async init() {
             await this.fetchSelections();
         },
 
         async fetchSelections() {
-            const [config, browserProviders, cardProviders, mailProviders, mailAccounts] = await Promise.all([
+            // 一次性拉全部 6 类 provider；mailAccounts/readyCards/profiles 维持原有调用
+            const [config, allProviders, mailAccounts, readyCards, profiles] = await Promise.all([
                 fetchJson('/api/config'),
-                fetchJson('/api/providers?provider_type=browser&active_only=true'),
-                fetchJson('/api/providers?provider_type=card&active_only=true'),
-                fetchJson('/api/providers?provider_type=mail&active_only=true'),
+                fetchJson('/api/providers?active_only=true'),
                 fetchJson('/api/mail-accounts?active_only=true'),
+                fetchJson('/api/cards/ready').catch(() => []),
+                fetchJson('/api/registration-profiles?active_only=true').catch(() => []),
             ]);
             this.defaults = config || {};
-            this.browserProviders = browserProviders || [];
-            this.cardProviders = cardProviders || [];
-            this.mailProviders = mailProviders || [];
+            // 按 provider_type 分桶（与 registration_profiles/index.html:226-247 同模式）
+            const grouped = {};
+            PROVIDER_SLOTS.forEach(s => { grouped[s] = []; });
+            for (const p of (allProviders || [])) {
+                const t = String(p.provider_type || '').toLowerCase();
+                if (grouped[t]) grouped[t].push(p);
+            }
+            for (const t of PROVIDER_SLOTS) {
+                grouped[t].sort((a, b) => {
+                    if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+                    return a.provider_name.localeCompare(b.provider_name);
+                });
+            }
+            this.providersByType = grouped;
+            // 兼容老逻辑：form.email 校验、handleMailProviderChange 等仍用扁平 *Providers 数组
+            this.browserProviders = grouped.browser || [];
+            this.cardProviders = grouped.card || [];
+            this.mailProviders = grouped.mail || [];
             this.mailAccounts = mailAccounts || [];
-            this.form.browser_provider = this.defaults.default_browser_provider || this.browserProviders[0]?.provider_name || '';
-            this.form.card_provider = this.defaults.default_card_provider || this.cardProviders[0]?.provider_name || '';
-            this.form.mail_provider = this.defaults.default_mail_provider || this.mailProviders[0]?.provider_name || '';
+            this.readyCards = readyCards || [];
+            this.profiles = profiles || [];
+
+            // 初始化 6 槽 overrides：先用 AppConfig 默认值兜底
+            this.overrides = this._defaultOverridesFromAppConfig();
+
+            // 按 activeMode 选默认组合，覆盖到 overrides 之上
+            const kind = this.activeMode === 'phone' ? 'phone' : 'email';
+            const defaultProfile = this.profiles.find(p => p.registration_kind === kind && p.is_default);
+            if (defaultProfile) {
+                this.selectedProfileName = defaultProfile.name;
+                this.applyProfile();
+            } else {
+                this._syncOverridesToForm();
+                this._syncJsonFromOverrides();
+            }
             this.form.mail_account_id = this.defaults.default_mail_account_id || '';
+            if (this.readyCards.length === 0) this.cardSource = 'manual';
+        },
+
+        // 用 AppConfig.default_*_provider 构造 6 槽初始 overrides；缺失值留空字符串
+        _defaultOverridesFromAppConfig() {
+            const out = {};
+            for (const slot of PROVIDER_SLOTS) {
+                const key = `default_${slot}_provider`;
+                out[slot] = this.defaults[key] || '';
+            }
+            return out;
+        },
+
+        // overrides → form.{browser,card,mail}_provider（保持扁平字段兼容老调用方）
+        _syncOverridesToForm() {
+            this.form.browser_provider = this.overrides.browser || '';
+            this.form.card_provider = this.overrides.card || '';
+            this.form.mail_provider = this.overrides.mail || '';
+        },
+
+        // overrides → overridesJson（只写非空 slot，按 PROVIDER_SLOTS 顺序）
+        _syncJsonFromOverrides() {
+            const out = {};
+            for (const slot of PROVIDER_SLOTS) {
+                if (this.overrides[slot]) out[slot] = this.overrides[slot];
+            }
+            this.overridesJson = JSON.stringify(out, null, 2);
+            this.providerJsonValid = true;
+            this.providerJsonError = '';
+        },
+
+        // overridesJson → overrides（解析失败保留原 overrides）
+        _syncOverridesFromJson() {
+            try {
+                const parsed = JSON.parse(this.overridesJson);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const next = this._defaultOverridesFromAppConfig();
+                    // 用 parsed 覆盖（仅识别约定槽位，避免脏字段）
+                    for (const slot of PROVIDER_SLOTS) {
+                        if (parsed[slot] !== undefined) {
+                            next[slot] = String(parsed[slot] || '');
+                        } else {
+                            next[slot] = '';  // raw JSON 删掉的 slot 视为留空
+                        }
+                    }
+                    this.overrides = next;
+                    this._syncOverridesToForm();
+                    return true;
+                }
+            } catch (_) { /* 保留原 overrides */ }
+            return false;
+        },
+
+        // 视图切换：Picker ↔ RawJSON
+        switchProviderView(mode) {
+            if (mode === this.providerViewMode) return;
+            if (mode === 'raw') {
+                this._syncJsonFromOverrides();
+            } else {
+                // JSON 无效时阻止切回 picker，避免漂移
+                if (!this.providerJsonValid) {
+                    showToast('JSON 格式错误，请先修正再切换', 'error');
+                    return;
+                }
+                this._syncOverridesFromJson();
+            }
+            this.providerViewMode = mode;
+        },
+
+        // Picker 下拉变更
+        setProviderSlot(slot, value) {
+            const next = { ...this.overrides };
+            next[slot] = value || '';
+            this.overrides = next;
+            this._syncOverridesToForm();
+            // mail 切换时清空 mail_account_id（保留原 handleMailProviderChange 语义）
+            if (slot === 'mail') this.form.mail_account_id = '';
+        },
+
+        validateProviderJson() {
+            try {
+                const parsed = JSON.parse(this.overridesJson);
+                const isObj = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+                this.providerJsonValid = isObj;
+                this.providerJsonError = isObj ? '' : '必须是 JSON 对象';
+                if (isObj) this._syncOverridesFromJson();
+            } catch (exc) {
+                this.providerJsonValid = false;
+                this.providerJsonError = String(exc.message || exc);
+            }
+        },
+
+        // 按 activeMode（email/phone）过滤可见的组合
+        filteredProfiles() {
+            const kind = this.activeMode === 'phone' ? 'phone' : 'email';
+            return this.profiles.filter(p => p.registration_kind === kind);
+        },
+
+        selectedProfile() {
+            return this.profiles.find(p => p.name === this.selectedProfileName) || null;
+        },
+
+        selectedProfileBindings() {
+            const p = this.selectedProfile();
+            return p ? p.provider_bindings : null;
+        },
+
+        // 选了新组合：用组合的 6 槽 bindings + AppConfig 默认补全，覆盖 overrides；
+        // 同步 form 扁平字段、JSON 文本和 mail_account_id。
+        applyProfile() {
+            const p = this.selectedProfile();
+            const bindings = p ? (p.provider_bindings || {}) : {};
+            const next = this._defaultOverridesFromAppConfig();
+            for (const slot of PROVIDER_SLOTS) {
+                if (bindings[slot]) next[slot] = String(bindings[slot]);
+            }
+            this.overrides = next;
+            this._syncOverridesToForm();
+            this._syncJsonFromOverrides();
+            // 与原 handleMailProviderChange 同效：切换组合后清空 mail_account_id
+            this.form.mail_account_id = '';
+        },
+
+        // tab 切换（email/phone/batch）时联动重选默认组合
+        resetProfileForKind(kind) {
+            const targetKind = kind === 'phone' ? 'phone' : 'email';
+            const defaultProfile = this.profiles.find(
+                p => p.registration_kind === targetKind && p.is_default
+            );
+            this.selectedProfileName = defaultProfile ? defaultProfile.name : '';
+            if (defaultProfile) {
+                this.applyProfile();
+            } else {
+                // 无默认组合时回退到 AppConfig 默认值
+                this.overrides = this._defaultOverridesFromAppConfig();
+                this._syncOverridesToForm();
+                this._syncJsonFromOverrides();
+            }
         },
 
         selectedMailProviderConfig() {
@@ -149,6 +795,21 @@ function createTaskData() {
             const provider = this.selectedMailProviderConfig();
             const sessionMode = String(provider?.config?.session_mode || 'managed').toLowerCase();
             return sessionMode === 'credentialed';
+        },
+
+        // Mode A：判断当前 mail provider 是否允许邮箱字段留空（cfworker / outlook_email_plus）
+        emailBlankAllowed() {
+            const provider = this.selectedMailProviderConfig();
+            const upstream = String(provider?.config?.provider_name || '').toLowerCase();
+            return upstream === 'cfworker' || upstream === 'outlook_email_plus';
+        },
+
+        emailAutoHint() {
+            const provider = this.selectedMailProviderConfig();
+            const upstream = String(provider?.config?.provider_name || '').toLowerCase();
+            if (upstream === 'cfworker') return i18n('tasks.create.email_auto_hint_cfworker');
+            if (upstream === 'outlook_email_plus') return i18n('tasks.create.email_auto_hint_outlook');
+            return i18n('tasks.create.email_auto_hint_default');
         },
 
         filteredMailAccounts() {
@@ -162,12 +823,37 @@ function createTaskData() {
             this.form.mail_account_id = '';
         },
 
+        // 组装 6 槽 provider_overrides dict：raw 视图时优先解析 JSON 文本，否则用 overrides
+        // 只保留非空 slot，与后端 tasks.py:236-245 过滤逻辑对齐
+        _buildProviderOverrides() {
+            // raw 模式下若 JSON 无效，由调用方在 submit 前阻止
+            if (this.providerViewMode === 'raw' && this.providerJsonValid) {
+                this._syncOverridesFromJson();
+            }
+            const out = {};
+            for (const slot of PROVIDER_SLOTS) {
+                const v = String(this.overrides[slot] || '').trim();
+                if (v) out[slot] = v;
+            }
+            return out;
+        },
+
         async submit() {
+            if (this.providerViewMode === 'raw' && !this.providerJsonValid) {
+                showToast('PROVIDER 配置 JSON 格式错误，请先修正', 'error');
+                return;
+            }
             this.submitting = true;
             try {
+                const payload = {
+                    ...this.form,
+                    registration_kind: 'email',
+                    registration_profile_name: this.selectedProfileName || '',
+                    provider_overrides: this._buildProviderOverrides(),
+                };
                 const data = await fetchJson('/api/tasks', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.form)
+                    body: JSON.stringify(payload)
                 });
                 window.location.href = '/tasks/' + data.id;
             } catch (error) {
@@ -175,36 +861,108 @@ function createTaskData() {
             } finally { this.submitting = false; }
         },
 
-        async batchSubmit() {
-            const lines = this.batchText.trim().split('\n').filter(l => l.trim());
-            if (!lines.length) return;
-            this.submitting = true;
-            let ok = 0, fail = 0;
-            for (const line of lines) {
-                const [email, password, profile_id, card_key, browser_provider, card_provider, mail_provider, mail_account_id] = line.split(',').map(s => s.trim());
-                if (!email || !password || !profile_id) { fail++; continue; }
-                try {
-                    const payload = {
-                        email,
-                        password,
-                        profile_id,
-                        card_key: card_key || '',
-                        browser_provider: browser_provider || this.form.browser_provider || '',
-                        card_provider: card_provider || this.form.card_provider || '',
-                        mail_provider: mail_provider || this.form.mail_provider || '',
-                        mail_account_id: mail_account_id || this.form.mail_account_id || '',
-                    };
-                    await fetchJson('/api/tasks', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    ok++;
-                } catch { fail++; }
+        async submitPhone() {
+            if (this.providerViewMode === 'raw' && !this.providerJsonValid) {
+                showToast('PROVIDER 配置 JSON 格式错误，请先修正', 'error');
+                return;
             }
-            this.submitting = false;
-            showToast(i18n('tasks.create.batch_result', { ok, fail }), ok > 0 ? 'success' : 'error');
-            if (ok > 0) setTimeout(() => window.location.href = '/tasks', 1000);
-        }
+            this.submitting = true;
+            try {
+                const payload = {
+                    registration_kind: 'phone',
+                    email: '',
+                    password: this.phoneForm.password,
+                    profile_id: this.phoneForm.profile_id,
+                    card_key: '',
+                    browser_provider: this.form.browser_provider || '',
+                    card_provider: this.form.card_provider || '',
+                    mail_provider: '',
+                    mail_account_id: '',
+                    mode: this.phoneForm.mode,
+                    phone_number: (this.phoneForm.phone || '').trim(),
+                    sms_country: (this.phoneForm.sms_country || '').trim(),
+                    registration_profile_name: this.selectedProfileName || '',
+                    provider_overrides: this._buildProviderOverrides(),
+                };
+                const data = await fetchJson('/api/tasks', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                window.location.href = '/tasks/' + data.id;
+            } catch (error) {
+                showToast(error.message || i18n('tasks.create.create_failed'), 'error');
+            } finally { this.submitting = false; }
+        },
+
+        async autoBatchSubmit() {
+            const profileIds = this.profileIdsParsed;
+            if (profileIds.length === 0) {
+                showToast('请至少填一个 profile_id（密码留空将自动生成）', 'error');
+                return;
+            }
+            if (this.autoBatch.interval_max_sec < this.autoBatch.interval_min_sec) {
+                showToast('间隔上限必须 >= 下限', 'error');
+                return;
+            }
+            this.autoBatch.submitting = true;
+            try {
+                const result = await fetchJson('/api/tasks/batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        count: this.autoBatch.count,
+                        profile_ids: profileIds,
+                        password: this.autoBatch.password,
+                        interval_min_sec: this.autoBatch.interval_min_sec,
+                        interval_max_sec: this.autoBatch.interval_max_sec,
+                        mode: this.autoBatch.mode,
+                        gender: this.autoBatch.gender || null,
+                        browser_provider: this.form.browser_provider || '',
+                        card_provider: this.form.card_provider || '',
+                        mail_provider: this.autoBatch.mail_provider || this.form.mail_provider || '',
+                        mail_account_id: '',
+                    }),
+                });
+                this.autoBatch.activeBatchId = result.batch_id;
+                const concurrency = result.concurrency || profileIds.length;
+                showToast(`批量任务已启动：${result.total} 个号 × ${concurrency} profile 并发`, 'success');
+                this.startBatchPolling();
+            } catch (exc) {
+                // toast 由 fetchJson 已经 fire
+            } finally {
+                this.autoBatch.submitting = false;
+            }
+        },
+
+        startBatchPolling() {
+            if (this.autoBatch._pollTimer) clearInterval(this.autoBatch._pollTimer);
+            const poll = async () => {
+                if (!this.autoBatch.activeBatchId) return;
+                try {
+                    const st = await fetchJson(`/api/tasks/batch/${encodeURIComponent(this.autoBatch.activeBatchId)}`);
+                    this.autoBatch.batchStatus = st;
+                    if (st.status !== 'running') {
+                        clearInterval(this.autoBatch._pollTimer);
+                        this.autoBatch._pollTimer = null;
+                        showToast(`批量任务${st.status === 'completed' ? '已完成' : '已结束'}：成功 ${st.submitted} / 失败 ${st.failed}`,
+                                  st.status === 'completed' ? 'success' : 'info');
+                    }
+                } catch (_) {}
+            };
+            poll();
+            this.autoBatch._pollTimer = setInterval(poll, 3000);
+        },
+
+        async cancelAutoBatch() {
+            if (!(await confirmDialog({ title: '取消批量任务', message: '取消批量任务？已 submit 的不会撤回，仅停止后续 submit', danger: true }))) return;
+            await fetchJson(`/api/tasks/batch/${encodeURIComponent(this.autoBatch.activeBatchId)}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            showToast('已请求取消', 'info');
+        },
+
     }
 }
 </script>

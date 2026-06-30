@@ -189,23 +189,32 @@ class TestCreateSessionRetry(unittest.TestCase):
 
     @mock.patch("time.sleep", new=lambda *_: None)
     @mock.patch("src.providers.mail.requests.post")
-    def test_managed_session_400_not_retried_classified_as_runtime_incompat(self, mock_post):
-        """managed 路径 + 400（非 401/404/422/424 的兜底 4xx） → 不重试，归 MailRuntimeIncompatibleError。
+    def test_managed_session_400_not_retried_classified_as_provider_upstream(self, mock_post):
+        """managed 路径 + 400 → 不重试，归 ProviderUpstreamError（**可恢复**）。
 
-        架构变更：400 不是定义清楚的 contract 错误，按"无法确认运行态"兜底；
-        客户端拿到这个异常后立即 fail，不 retry。
+        架构变更（2026-04-28）：400 = 上游 provider（CFWorker / Stripe / Apple backend）
+        客户端语义错误，应让 triage 走"换邮箱/换 provider"可恢复路径，而不是
+        MailRuntimeIncompatibleError 那种 fatal。详见 src/providers/mail.py:_raise_runtime_request_error
+        和 docs/research/chatgpt2api-vs-team-register.md 的相关讨论。
+
+        4xx 仍然 not retried —— 这条契约不变。
         """
-        from src.providers.mail import MailRuntimeIncompatibleError
+        from src.providers.mail import ProviderUpstreamError
 
         bad_resp = mock.MagicMock(spec=requests.Response)
         bad_resp.status_code = 400
+        bad_resp.text = "Failed to create address: Address already exists"
+        bad_resp.json.side_effect = ValueError("not json")
         bad_resp.raise_for_status.side_effect = _http_error(400)
         mock_post.return_value = bad_resp
 
-        with self.assertRaises(MailRuntimeIncompatibleError):
+        with self.assertRaises(ProviderUpstreamError) as ctx:
             self.provider.create_session("applemail", session_mode="managed")
 
+        # 4xx 不重试
         self.assertEqual(mock_post.call_count, 1)
+        # upstream_status 透传
+        self.assertEqual(ctx.exception.upstream_status, 400)
 
 
 class TestPollCodeRetry(unittest.TestCase):

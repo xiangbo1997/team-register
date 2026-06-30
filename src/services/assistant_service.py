@@ -69,6 +69,72 @@ class AssistantService:
         "name",
         "named",
     }
+    # ── Provider 新建指导模板 ─────────────────────────────────────
+    # 用户问"怎么新建 mail provider"这类问题时附带的可一键 preview 模板。
+    # 模板里的 config 字段对齐 src/api/routes/config.py:_validate_mail_provider_config
+    # 和 src/mail.py:_resolve_session_mode 的运行时要求。
+    _PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
+        "applemail": {
+            "provider_type": "mail",
+            "provider_name": "applemail",
+            "config": {
+                # provider_name 透传给远程 email-provider 服务认协议
+                "provider_name": "applemail",
+                # applemail 走 OAuth 凭据模式（每邮箱一组 client_id/refresh_token）
+                "session_mode": "credentialed",
+                "mailbox": "INBOX",
+            },
+            "is_active": True,
+            "hint": (
+                "applemail 需要在 /mail-accounts 里录 OAuth 凭据（client_id + refresh_token），"
+                "Provider 本身不存凭据，只声明协议。"
+            ),
+        },
+        "cfworker": {
+            "provider_type": "mail",
+            "provider_name": "cfworker",
+            "config": {
+                "provider_name": "cfworker",
+                "session_mode": "managed",
+                "mailbox": "INBOX",
+                "config_name": "REPLACE_WITH_SERVER_SIDE_CONFIG_KEY",
+            },
+            "is_active": True,
+            "hint": (
+                "cfworker 是 managed 模式，服务端管邮箱池；config_name 是远程 email-provider "
+                "服务里的具体 mailbox 配置 key，必须替换为真实值（向运维要）。"
+            ),
+        },
+        "skymail": {
+            "provider_type": "mail",
+            "provider_name": "skymail",
+            "config": {
+                "provider_name": "skymail",
+                "session_mode": "managed",
+                "mailbox": "INBOX",
+                "config_name": "REPLACE_WITH_SERVER_SIDE_CONFIG_KEY",
+            },
+            "is_active": True,
+            "hint": "skymail 同 cfworker 的 managed 模式，只是协议层走 skymail server-side。",
+        },
+    }
+    _HOWTO_KEYWORDS = (
+        "怎么",
+        "如何",
+        "怎样",
+        "怎么样",
+        "教我",
+        "帮我",
+        "指导",
+        "教程",
+        "步骤",
+        "how to",
+        "how do",
+        "how can",
+        "guide",
+        "tutorial",
+        "steps",
+    )
 
     def __init__(
         self,
@@ -137,13 +203,20 @@ class AssistantService:
         hits = self._knowledge_service.search(text, limit=3)
         manual_citations = [self._serialize_hit(item) for item in hits["manual"]]
         repo_citations = [self._serialize_hit(item) for item in hits["repo"]]
-        answer = self._compose_answer(
-            message=text,
-            manual_hits=hits["manual"],
-            repo_hits=hits["repo"],
-            page_context=page_context or {},
-            intent_mode=intent_mode,
-        )
+        # howto 指导：如果用户在问"怎么新建 provider"，附带分步指引 + 一键 preview 模板
+        howto = self._detect_provider_howto(text)
+        if howto:
+            answer = howto["guide"]
+            suggested_actions = howto["suggested_actions"]
+        else:
+            answer = self._compose_answer(
+                message=text,
+                manual_hits=hits["manual"],
+                repo_hits=hits["repo"],
+                page_context=page_context or {},
+                intent_mode=intent_mode,
+            )
+            suggested_actions = []
         log = AssistantActionLog(
             user_id=user.id,
             mode="doc_qa",
@@ -155,12 +228,14 @@ class AssistantService:
                 "answer": answer,
                 "manual_citations": manual_citations,
                 "repo_citations": repo_citations,
+                "suggested_actions": suggested_actions,
             },
         )
         self._save_action_log(log)
         return {
             "mode": "answer",
             "answer": answer,
+            "suggested_actions": suggested_actions,
             "manual_citations": manual_citations,
             "repo_citations": repo_citations,
             "required_fields": [],
@@ -560,6 +635,93 @@ class AssistantService:
             }
 
         raise ValueError(f"不支持的动作类型: {action_type}")
+
+    def _detect_provider_howto(self, message: str) -> Optional[dict[str, Any]]:
+        """识别"怎么新建 provider"类指导性问题，返回分步指引 + 一键模板。
+
+        触发条件（同时满足）：
+          1. 含 howto 词（怎么/如何/教我/how to ...）
+          2. 含 provider/供应商 上下文（含 mail/邮件/邮箱 也算，因为 mail provider 是高频）
+
+        返回结构：
+          {
+            "guide": str,                       # 用 Markdown 写的分步指引（前端会渲染）
+            "suggested_actions": list[dict],    # 前端可展示为"应用模板"按钮，点击后填入 draftAction
+          }
+        """
+        text = (message or "").strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        has_howto = any(kw in lowered or kw in text for kw in self._HOWTO_KEYWORDS)
+        has_provider_ctx = (
+            "provider" in lowered
+            or "供应商" in text
+            or "mail" in lowered
+            or "邮件" in text
+            or "邮箱" in text
+            # 文本里直接点名某个模板（如"帮我建一个 cfworker"）也算 provider 上下文
+            or any(k in lowered for k in self._PROVIDER_TEMPLATES.keys())
+        )
+        if not (has_howto and has_provider_ctx):
+            return None
+
+        # 决定推哪些模板：如果文本里明确点名 applemail/cfworker/skymail，只推那个；否则推全部
+        templates_to_offer: list[tuple[str, dict[str, Any]]] = []
+        for template_key in ("applemail", "cfworker", "skymail"):
+            if template_key in lowered:
+                templates_to_offer.append((template_key, self._PROVIDER_TEMPLATES[template_key]))
+        if not templates_to_offer:
+            templates_to_offer = [(k, v) for k, v in self._PROVIDER_TEMPLATES.items()]
+
+        # 拼分步指引（Markdown，前端用 marked.js 渲染）
+        guide_lines = [
+            "## 新建邮件 Provider 的三步",
+            "",
+            '**1. 进 `/providers` 页**，右上点 **「+ 新增 Provider」**（不要点已有行的"编辑"——那是改不是建）',
+            "",
+            "**2. 填表**：",
+            "  - **Type**：`mail`",
+            "  - **Name**：URL 唯一标识，比如 `applemail`（建好后任务下拉里就能选到这个名字）",
+            "  - **Active**：是",
+            "  - **Config JSON**：见下面模板，按邮件协议种类选一个",
+            "",
+            "**3. 如果是 credentialed 模式**（如 applemail），还要去 `/mail-accounts` 录一个或多个邮箱账号，"
+            "Provider 字段填同样的名字（如 `applemail`），把 OAuth 凭据 client_id + refresh_token 录进去。",
+            "",
+            "---",
+            "",
+            '**配置 JSON 模板（点下面"应用模板"按钮自动填入 preview）**：',
+            "",
+        ]
+        suggested_actions: list[dict[str, Any]] = []
+        for key, tpl in templates_to_offer:
+            guide_lines.append(f"- **{key}**：{tpl['hint']}")
+            suggested_actions.append({
+                "label": f"应用 {key} 模板",
+                "action_type": "upsert_provider",
+                "payload": {
+                    "provider_type": tpl["provider_type"],
+                    "provider_name": tpl["provider_name"],
+                    "config": dict(tpl["config"]),
+                    "is_active": tpl["is_active"],
+                },
+                "title": f"新建 mail provider: {tpl['provider_name']}",
+                "warning": (
+                    "模板里的 config_name 是占位符，必须替换为真实值后再 commit"
+                    if "REPLACE_WITH" in str(tpl["config"]) else ""
+                ),
+            })
+        guide_lines.append("")
+        guide_lines.append(
+            '_点击「应用模板」会把字段填入下方的 draft_action 输入框，你可以再调整后点 Preview → Commit。'
+            'Preview 阶段还会过审计（高风险词/缺字段/服务端校验），失败不会真写库。_'
+        )
+
+        return {
+            "guide": "\n".join(guide_lines),
+            "suggested_actions": suggested_actions,
+        }
 
     def _compose_answer(
         self,

@@ -1,0 +1,196 @@
+{# ============================================================
+   Team-Register Enterprise UI macros
+   设计 token 见 base.html 内的 tailwind.config（primary/success/danger/warning/info + Inter + JetBrains Mono）
+   纯视觉壳，业务逻辑（i18n / Alpine 状态）由调用方提供。
+   ============================================================ #}
+
+
+{# ─────────────────────────────────────────────────────────
+   page_card —— 标准内容卡片：白底 + 12px radius + token shadow + slate border
+   用法：
+     {% call ui.page_card(extra_class='overflow-hidden') %}
+        ...内容...
+     {% endcall %}
+   ───────────────────────────────────────────────────────── #}
+{% macro page_card(extra_class='') %}
+<div class="bg-white rounded-xl border border-slate-200 shadow-token-sm {{ extra_class }}">
+    {{ caller() }}
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   toolbar_row —— 顶部 Toolbar：左侧 filter / 右侧主操作
+   ───────────────────────────────────────────────────────── #}
+{% macro toolbar_row() %}
+<div class="flex items-center justify-between gap-3 flex-wrap">
+    {{ caller() }}
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   primary_button —— 标准 primary 按钮
+   ───────────────────────────────────────────────────────── #}
+{% macro primary_button(href=None, type='button', extra_class='') %}
+{% if href %}
+<a href="{{ href }}" class="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 transition-colors shadow-token-sm {{ extra_class }}">
+    {{ caller() }}
+</a>
+{% else %}
+<button type="{{ type }}" class="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 transition-colors shadow-token-sm disabled:opacity-50 disabled:cursor-not-allowed {{ extra_class }}">
+    {{ caller() }}
+</button>
+{% endif %}
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   secondary_button —— outline 风格
+   ───────────────────────────────────────────────────────── #}
+{% macro secondary_button(href=None, type='button', extra_class='') %}
+{% if href %}
+<a href="{{ href }}" class="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-700 text-sm rounded-md bg-white hover:bg-slate-50 hover:border-slate-300 transition-colors {{ extra_class }}">
+    {{ caller() }}
+</a>
+{% else %}
+<button type="{{ type }}" class="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-700 text-sm rounded-md bg-white hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed {{ extra_class }}">
+    {{ caller() }}
+</button>
+{% endif %}
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   icons —— SVG icon 库（避免外部依赖）
+   ───────────────────────────────────────────────────────── #}
+{% macro icon_plus() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>{% endmacro %}
+{% macro icon_refresh() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>{% endmacro %}
+{% macro icon_chevron_down() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>{% endmacro %}
+{% macro icon_chevron_left() %}<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>{% endmacro %}
+{% macro icon_chevron_right() %}<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>{% endmacro %}
+{% macro icon_back() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>{% endmacro %}
+{% macro icon_eye() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>{% endmacro %}
+{% macro icon_warning() %}<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>{% endmacro %}
+{% macro icon_info() %}<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>{% endmacro %}
+{% macro icon_trash() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>{% endmacro %}
+{% macro icon_edit() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>{% endmacro %}
+{% macro icon_link() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>{% endmacro %}
+{% macro icon_card() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M5 6h14a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2z"/></svg>{% endmacro %}
+{% macro icon_upgrade() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>{% endmacro %}
+{% macro icon_copy() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>{% endmacro %}
+{% macro icon_export() %}<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>{% endmacro %}
+{% macro icon_check() %}<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   override_warning_banner —— 配置页 provider profile 覆盖警告条
+   amber-50 底色 + amber-600 左边 4px 条 + warning icon
+   ───────────────────────────────────────────────────────── #}
+{% macro override_warning_banner(text) %}
+<div class="mt-1.5 flex items-start gap-2 rounded-md border border-warning-100 border-l-4 border-l-warning-500 bg-warning-50 px-3 py-2 text-xs text-warning-800">
+    {{ icon_warning() }}
+    <span>{{ text }}</span>
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   grid_search —— 行内"展开式搜索"按钮（无外层 <div>，由调用方放在 toolbar 右侧）
+   参数：
+     search_state : alpine 字段（默认 'searchTerm'）
+     expand_state : alpine 字段（默认 'searchExpanded'）
+     placeholder  : 输入框占位符
+     input_ref    : input 的 x-ref 名（用于聚焦），多个工具栏避免冲突
+   ───────────────────────────────────────────────────────── #}
+{% macro grid_search(search_state='searchTerm', expand_state='searchExpanded', placeholder='搜索...', input_ref='gridSearchInput') %}
+<div class="flex items-center transition-all duration-200"
+     :class="({{ expand_state }} || !!{{ search_state }}) ? 'bg-subtle rounded-lg px-3 py-1.5 gap-2' : ''">
+    <button type="button"
+            @click="{{ expand_state }} = !{{ expand_state }}; if({{ expand_state }}) $nextTick(() => $refs.{{ input_ref }} && $refs.{{ input_ref }}.focus())"
+            class="p-1.5 text-muted hover:text-body hover:bg-subtle rounded-lg transition-colors"
+            :class="({{ expand_state }} || !!{{ search_state }}) ? '!p-0 !bg-transparent hover:!bg-transparent' : ''"
+            title="搜索">
+        <span class="material-symbols-outlined text-xl">search</span>
+    </button>
+    <input x-ref="{{ input_ref }}"
+           x-show="{{ expand_state }} || !!{{ search_state }}"
+           x-transition:enter="transition ease-out duration-150"
+           x-transition:enter-start="opacity-0 -translate-x-2 w-0"
+           x-transition:enter-end="opacity-100 translate-x-0 w-60"
+           x-model.debounce.200ms="{{ search_state }}"
+           @keydown.escape="{{ search_state }} = ''; {{ expand_state }} = false"
+           @blur="if(!{{ search_state }}) {{ expand_state }} = false"
+           type="text"
+           placeholder="{{ placeholder }}"
+           class="w-60 bg-transparent border-none p-0 text-sm focus:ring-0 outline-none placeholder:text-muted">
+    <button type="button"
+            x-show="({{ expand_state }} || !!{{ search_state }}) && {{ search_state }}"
+            @click="{{ search_state }} = ''"
+            class="p-0.5 text-muted hover:text-body rounded transition-colors"
+            title="清空">
+        <span class="material-symbols-outlined text-base">close</span>
+    </button>
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   grid_columns_settings —— 行内"齿轮列设置" popover（无外层 <div>，由调用方放在 toolbar 右侧）
+   参数：
+     columns_state   : alpine 字段（默认 'visibleColumns'）
+     columns_options : alpine 字段（默认 'columnOptions'，每项 {key, label}）
+   ───────────────────────────────────────────────────────── #}
+{% macro grid_columns_settings(columns_state='visibleColumns', columns_options='columnOptions') %}
+<div class="relative" x-data="{ open: false }" @click.outside="open = false">
+    <button type="button" @click="open = !open"
+            class="p-1.5 text-muted hover:text-body hover:bg-subtle rounded-lg transition-colors"
+            :class="open ? 'bg-subtle text-body' : ''"
+            title="列设置">
+        <span class="material-symbols-outlined text-xl">settings</span>
+    </button>
+    <div x-show="open" x-cloak x-transition
+         class="absolute right-0 top-full mt-2 w-56 bg-white border border-border rounded-lg shadow-token-lg z-20 p-3">
+        <div class="text-[11px] font-medium text-muted uppercase tracking-wider mb-2">显示列</div>
+        <template x-for="col in {{ columns_options }}" :key="col.key">
+            <label class="flex items-center space-x-2 py-1.5 cursor-pointer hover:bg-subtle rounded px-2">
+                <input type="checkbox"
+                       :value="col.key"
+                       :checked="{{ columns_state }}.includes(col.key)"
+                       @change="if ({{ columns_state }}.includes(col.key)) { {{ columns_state }} = {{ columns_state }}.filter(k => k !== col.key) } else { {{ columns_state }} = [...{{ columns_state }}, col.key] }"
+                       class="rounded border-border text-primary focus:ring-primary/20">
+                <span class="text-sm text-body" x-text="col.label"></span>
+            </label>
+        </template>
+    </div>
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   grid_toolbar —— 兼容旧用法（独占一行）。新代码请用 grid_search + grid_columns_settings 直接内嵌。
+   ───────────────────────────────────────────────────────── #}
+{% macro grid_toolbar(search_state='searchTerm', expand_state='searchExpanded', columns_state='visibleColumns', columns_options='columnOptions', placeholder='搜索...') %}
+<div class="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+    {{ grid_search(search_state, expand_state, placeholder) }}
+    {{ grid_columns_settings(columns_state, columns_options) }}
+</div>
+{% endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────
+   empty_state —— Data Grid 空状态
+   用法：{{ ui.empty_state(colspan=7, text='没有数据') }}
+   ───────────────────────────────────────────────────────── #}
+{% macro empty_state(colspan=1, text='No data') %}
+<tr>
+    <td colspan="{{ colspan }}" class="px-5 py-16 text-center">
+        <div class="inline-flex flex-col items-center gap-2 text-slate-400">
+            <svg class="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-6 4h6M5 21h14a2 2 0 002-2V7l-5-5H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+            </svg>
+            <span class="text-sm">{{ text }}</span>
+        </div>
+    </td>
+</tr>
+{% endmacro %}

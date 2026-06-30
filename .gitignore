@@ -17,11 +17,25 @@ error_debug.png
 *.pyc
 config.json
 log.txt
+# 桌面应用打包产物（PyInstaller / dmg，体积大且含运行态文件，绝不入库）
+dist/
+build/
+build_app.log
+# 应用图标资源例外：图标 PNG 需要随 spec 入库（覆盖上面的 *.png 全局忽略）
+!assets/*.png
+# 个人 IDE / 编辑器配置
+.vscode/
+*.code-workspace
 # 运行时数据（含加密敏感字段）
 team_register.db
 team_register.db-journal
 team_register.db-shm
 team_register.db-wal
+# data/ 子目录里的 SQLite 文件同样排除（含 team-register.db 连字符变体）
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 # 一次性生成的 HTML / 调试文件
 *.html
 !docs/**/*.html

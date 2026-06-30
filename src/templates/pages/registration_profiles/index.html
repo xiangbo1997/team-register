@@ -1,0 +1,452 @@
+{% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
+{% block title %}注册组合 - Team Register{% endblock %}
+{% block nav_registration_profiles %}sidebar-active{% endblock %}
+{% block page_title %}注册组合（Registration Profiles）{% endblock %}
+
+{% block content %}
+<div x-data="profileData()" x-init="init()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
+
+    {# ─── 顶部工具栏 ─── #}
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+        <p class="text-sm text-muted">
+            把"邮箱注册 / 手机号注册"按一组供应商打包预设；任务创建时自动带出这套默认组合。
+        </p>
+        <div class="flex items-center gap-2">
+            {{ ui.grid_search(placeholder='搜索 名称 / 注册方式...') }}
+            {{ ui.grid_columns_settings() }}
+            <button @click="openCreate()"
+                    class="flex items-center space-x-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg shadow-token-sm transition-transform active:scale-95">
+                <span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">add_circle</span>
+                <span class="text-sm font-semibold">新增组合</span>
+            </button>
+        </div>
+    </div>
+
+    {# ─── 新增 / 编辑面板 ─── #}
+    <div x-show="showForm" x-cloak class="overflow-hidden fade-in">
+        <div class="bg-slate-50 border border-border rounded-xl p-6 shadow-token-sm ring-1 ring-white/50">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                <div class="space-y-1.5">
+                    <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">名称</label>
+                    <input type="text" x-model="form.name" :disabled="editing"
+                           class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all disabled:bg-neutral-100"
+                           placeholder="email-default / phone-default ...">
+                </div>
+                <div class="space-y-1.5">
+                    <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider">注册方式</label>
+                    <select x-model="form.registration_kind"
+                            class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                        <option value="email">邮箱注册（email）</option>
+                        <option value="phone">手机号注册（phone）</option>
+                    </select>
+                </div>
+                <div class="flex flex-col justify-end pb-1.5 gap-2">
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" x-model="form.is_active" class="sr-only peer">
+                        <div class="w-11 h-6 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-success"></div>
+                        <span class="ml-3 text-sm font-medium text-body">启用</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="mb-6">
+                <label class="block text-[11px] font-label font-bold text-muted uppercase tracking-wider mb-2">描述</label>
+                <input type="text" x-model="form.description" maxlength="200"
+                       class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                       placeholder="可选；给运维识别用">
+            </div>
+
+            <div class="mb-6">
+                <div class="flex items-center justify-between mb-2 gap-3 flex-wrap">
+                    <label class="text-[11px] font-label font-bold text-muted uppercase tracking-wider">供应商组合</label>
+                    <div class="flex items-center gap-2">
+                        {# 视图切换 tabs #}
+                        <div class="inline-flex rounded-lg bg-neutral-100 p-0.5 text-[11px] font-semibold">
+                            <button type="button" @click="switchView('picker')"
+                                    :class="viewMode === 'picker' ? 'bg-white shadow-token-sm text-body' : 'text-muted hover:text-body'"
+                                    class="px-3 py-1 rounded-md transition-all">下拉选择</button>
+                            <button type="button" @click="switchView('raw')"
+                                    :class="viewMode === 'raw' ? 'bg-white shadow-token-sm text-body' : 'text-muted hover:text-body'"
+                                    class="px-3 py-1 rounded-md transition-all">Raw JSON</button>
+                        </div>
+                        <span x-show="viewMode === 'raw' && jsonValid" class="text-[10px] text-primary font-mono bg-primary/10 px-2 py-0.5 rounded">VALID JSON</span>
+                        <span x-show="viewMode === 'raw' && !jsonValid" class="text-[10px] text-danger font-mono bg-danger/10 px-2 py-0.5 rounded">INVALID JSON</span>
+                    </div>
+                </div>
+
+                {# 下拉选择模式 #}
+                <div x-show="viewMode === 'picker'" class="bg-white border border-border rounded-lg p-4 shadow-inner">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <template x-for="slot in SLOTS" :key="slot">
+                            <div class="space-y-1.5">
+                                <label class="block text-[10px] font-label font-bold text-muted uppercase tracking-wider" x-text="slot"></label>
+                                <select :value="slotValues[slot] || ''"
+                                        @change="setSlot(slot, $event.target.value)"
+                                        class="w-full bg-white border border-border rounded-lg py-2 px-3 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none appearance-none transition-all">
+                                    <option value="">— 不指定 —</option>
+                                    <template x-for="p in (providersByType[slot] || [])" :key="p.provider_name">
+                                        <option :value="p.provider_name"
+                                                :class="!p.is_active ? 'text-muted' : ''"
+                                                x-text="p.provider_name + (p.is_active ? '' : ' （停用）')"></option>
+                                    </template>
+                                </select>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                {# Raw JSON 模式 #}
+                <textarea x-show="viewMode === 'raw'" x-model="form.bindings_json" @input="validateJson"
+                          class="w-full h-40 bg-white border border-border rounded-lg p-4 font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none shadow-inner"
+                          placeholder='{"browser": "browser-adspower", "card": "card-default", "mail": "mail-cfworker-default"}'></textarea>
+
+                <p class="mt-2 text-xs text-muted">
+                    槽位约定：browser / card / mail / sms / captcha / llm；值必须是
+                    <a href="/providers" class="text-primary underline">/providers</a>
+                    页里已存在的 provider name。空槽位会被忽略。
+                </p>
+            </div>
+
+            <div class="flex justify-end items-center gap-3 border-t border-border pt-6">
+                <button @click="closeForm()" class="px-4 py-2 text-sm font-semibold text-muted hover:text-body transition-colors">取消</button>
+                <button @click="saveProfile()" :disabled="!jsonValid"
+                        class="flex items-center gap-1.5 px-6 py-2 text-sm font-bold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-token-md transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;">save</span>
+                    <span>保存</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ─── 数据表 ─── #}
+    <div class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full border-collapse">
+                <thead class="sticky top-0 z-10 bg-neutral-50">
+                    <tr class="border-b border-border">
+                        <th class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">名称</th>
+                        <th x-show="visibleColumns.includes('kind')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">注册方式</th>
+                        <th x-show="visibleColumns.includes('default')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">默认</th>
+                        <th x-show="visibleColumns.includes('active')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">启用</th>
+                        <th x-show="visibleColumns.includes('bindings')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">供应商绑定</th>
+                        <th x-show="visibleColumns.includes('updated_at')" class="px-4 py-3 text-left text-[11px] font-label font-bold text-muted uppercase tracking-widest">更新时间</th>
+                        <th class="px-4 py-3 text-right text-[11px] font-label font-bold text-muted uppercase tracking-widest">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-neutral-100">
+                    <template x-for="(p, idx) in filteredProfiles" :key="p.name">
+                        <tr :class="idx % 2 === 1 ? 'bg-neutral-100/30' : ''"
+                            class="hover:bg-primary/[0.04] transition-colors">
+                            <td class="px-4 py-3 font-mono text-xs font-medium" x-text="p.name"></td>
+                            <td x-show="visibleColumns.includes('kind')" class="px-4 py-3">
+                                <span :class="p.registration_kind === 'email' ? 'bg-secondary/10 text-secondary' : 'bg-purple-100 text-purple-700'"
+                                      class="px-2.5 py-1 text-[10px] font-label font-bold rounded-full uppercase tracking-wider"
+                                      x-text="p.registration_kind"></span>
+                            </td>
+                            <td x-show="visibleColumns.includes('default')" class="px-4 py-3">
+                                <span x-show="p.is_default" class="inline-flex items-center gap-1 text-xs text-success font-medium">
+                                    <span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">verified</span>
+                                    默认
+                                </span>
+                                <button x-show="!p.is_default" @click="setDefault(p)"
+                                        class="text-xs text-muted hover:text-primary transition-colors">
+                                    设为默认
+                                </button>
+                            </td>
+                            <td x-show="visibleColumns.includes('active')" class="px-4 py-3">
+                                <div class="flex items-center gap-1.5 text-xs font-medium"
+                                     :class="p.is_active ? 'text-success' : 'text-muted'">
+                                    <span class="w-1.5 h-1.5 rounded-full"
+                                          :class="p.is_active ? 'bg-success' : 'bg-border'"></span>
+                                    <span x-text="p.is_active ? '启用' : '停用'"></span>
+                                </div>
+                            </td>
+                            <td x-show="visibleColumns.includes('bindings')" class="px-4 py-3">
+                                <code class="text-[11px] font-mono text-muted truncate max-w-[280px] block"
+                                      :title="JSON.stringify(p.provider_bindings)"
+                                      x-text="JSON.stringify(p.provider_bindings)"></code>
+                            </td>
+                            <td x-show="visibleColumns.includes('updated_at')" class="px-4 py-3 text-xs text-muted font-mono tabular-nums"
+                                x-text="p.updated_at ? new Date(p.updated_at).toLocaleString(window._locale, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'"></td>
+                            <td class="px-4 py-3 text-right">
+                                <div class="flex justify-end gap-2">
+                                    <button @click="editProfile(p)" class="p-1.5 text-secondary hover:bg-secondary/10 rounded transition-colors" title="编辑">
+                                        <span class="material-symbols-outlined text-sm">edit</span>
+                                    </button>
+                                    <button @click="deleteProfile(p)" :disabled="p.is_default"
+                                            class="p-1.5 text-danger hover:bg-danger/10 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                            :title="p.is_default ? '默认组合不能删除' : '删除'">
+                                        <span class="material-symbols-outlined text-sm">delete</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="profiles.length === 0">
+                        <td colspan="7" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">layers_clear</span>
+                                <span class="text-sm">还没有注册组合，点右上「新增组合」开始</span>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const PROFILE_SLOTS = ['browser', 'card', 'mail', 'sms', 'captcha', 'llm'];
+
+function profileData() {
+    const _DEFAULT_COLS = ['kind', 'default', 'active', 'bindings', 'updated_at'];
+    return {
+        SLOTS: PROFILE_SLOTS,
+        profiles: [],
+        providersByType: {},   // {browser: [{provider_name, is_active}, ...], ...}
+
+        // 搜索 + 列设置
+        searchTerm: '',
+        searchExpanded: false,
+        visibleColumns: (() => {
+            try { const raw = localStorage.getItem('registration_profiles.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT_COLS; }
+            catch (_) { return _DEFAULT_COLS; }
+        })(),
+        columnOptions: [
+            { key: 'kind',       label: '注册方式' },
+            { key: 'default',    label: '默认' },
+            { key: 'active',     label: '启用' },
+            { key: 'bindings',   label: '供应商绑定' },
+            { key: 'updated_at', label: '更新时间' },
+        ],
+        get filteredProfiles() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            if (!q) return this.profiles;
+            return this.profiles.filter(p => `${p.name || ''} ${p.registration_kind || ''}`.toLowerCase().includes(q));
+        },
+        initColumnWatcher() {
+            this.$watch('visibleColumns', (cols) => {
+                try { localStorage.setItem('registration_profiles.visibleColumns', JSON.stringify(cols)); } catch (_) {}
+            });
+        },
+        showForm: false,
+        editing: false,
+        jsonValid: true,
+        viewMode: 'picker',    // 'picker' | 'raw'
+        slotValues: {},        // {browser: 'browser-default', ...}
+        form: {
+            name: '',
+            registration_kind: 'email',
+            is_active: true,
+            description: '',
+            bindings_json: '{}',
+        },
+
+        async init() {
+            this.initColumnWatcher();
+            await Promise.all([this.fetchProfiles(), this.fetchProviders()]);
+        },
+
+        async fetchProfiles() {
+            this.profiles = await fetchJson('/api/registration-profiles');
+        },
+
+        async fetchProviders() {
+            try {
+                const list = await fetchJson('/api/providers');
+                const grouped = {};
+                PROFILE_SLOTS.forEach(s => { grouped[s] = []; });
+                for (const p of (list || [])) {
+                    const t = (p.provider_type || '').toLowerCase();
+                    if (grouped[t]) grouped[t].push(p);
+                }
+                // 启用的排前面，名字字典序
+                for (const t of PROFILE_SLOTS) {
+                    grouped[t].sort((a, b) => {
+                        if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+                        return a.provider_name.localeCompare(b.provider_name);
+                    });
+                }
+                this.providersByType = grouped;
+            } catch (e) {
+                console.warn('[registration-profiles] 加载 providers 失败：', e);
+                this.providersByType = Object.fromEntries(PROFILE_SLOTS.map(s => [s, []]));
+            }
+        },
+
+        openCreate() {
+            this.editing = false;
+            const defaults = {
+                browser: 'browser-adspower',
+                card: 'card-default',
+                mail: 'mail-cfworker-default',
+            };
+            this.form = {
+                name: '',
+                registration_kind: 'email',
+                is_active: true,
+                description: '',
+                bindings_json: JSON.stringify(defaults, null, 2),
+            };
+            this.slotValues = { ...defaults };
+            this.jsonValid = true;
+            this.viewMode = 'picker';
+            this.showForm = true;
+        },
+
+        editProfile(p) {
+            this.editing = true;
+            const bindings = p.provider_bindings || {};
+            this.form = {
+                name: p.name,
+                registration_kind: p.registration_kind,
+                is_active: p.is_active,
+                description: p.description || '',
+                bindings_json: JSON.stringify(bindings, null, 2),
+            };
+            this.slotValues = {};
+            for (const s of PROFILE_SLOTS) {
+                if (bindings[s]) this.slotValues[s] = bindings[s];
+            }
+            this.viewMode = 'picker';
+            this.validateJson();
+            this.showForm = true;
+        },
+
+        closeForm() {
+            this.showForm = false;
+            this.editing = false;
+        },
+
+        // ── 视图切换：保证两端数据同步 ──
+        switchView(mode) {
+            if (mode === this.viewMode) return;
+            if (mode === 'raw') {
+                // picker → raw：用当前 slotValues 重建 JSON
+                this.syncSlotsToJson();
+            } else {
+                // raw → picker：解析 JSON 回填 slotValues（失败则保留）
+                this.syncJsonToSlots();
+            }
+            this.viewMode = mode;
+        },
+
+        setSlot(slot, value) {
+            const next = { ...this.slotValues };
+            if (value) {
+                next[slot] = value;
+            } else {
+                delete next[slot];
+            }
+            this.slotValues = next;
+            this.syncSlotsToJson();
+        },
+
+        syncSlotsToJson() {
+            // 只输出有值的槽位，按 SLOTS 顺序
+            const out = {};
+            for (const s of PROFILE_SLOTS) {
+                if (this.slotValues[s]) out[s] = this.slotValues[s];
+            }
+            this.form.bindings_json = JSON.stringify(out, null, 2);
+            this.jsonValid = true;
+        },
+
+        syncJsonToSlots() {
+            try {
+                const parsed = JSON.parse(this.form.bindings_json);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const next = {};
+                    for (const s of PROFILE_SLOTS) {
+                        if (parsed[s]) next[s] = String(parsed[s]);
+                    }
+                    this.slotValues = next;
+                }
+            } catch {
+                // 保留原 slotValues，让用户在 picker 上接着编辑
+            }
+        },
+
+        validateJson() {
+            try {
+                const parsed = JSON.parse(this.form.bindings_json);
+                this.jsonValid = parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+            } catch {
+                this.jsonValid = false;
+            }
+        },
+
+        async saveProfile() {
+            // picker 模式以 slotValues 为权威，避免漂移
+            if (this.viewMode === 'picker') this.syncSlotsToJson();
+            let bindings;
+            try {
+                bindings = JSON.parse(this.form.bindings_json);
+            } catch {
+                showToast('JSON 格式错误', 'error');
+                return;
+            }
+            try {
+                if (this.editing) {
+                    await fetchJson(`/api/registration-profiles/${encodeURIComponent(this.form.name)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            registration_kind: this.form.registration_kind,
+                            provider_bindings: bindings,
+                            description: this.form.description,
+                            is_active: this.form.is_active,
+                        }),
+                    });
+                } else {
+                    await fetchJson('/api/registration-profiles', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: this.form.name,
+                            registration_kind: this.form.registration_kind,
+                            provider_bindings: bindings,
+                            description: this.form.description,
+                            is_active: this.form.is_active,
+                        }),
+                    });
+                }
+                showToast('保存成功', 'success');
+                this.closeForm();
+                await this.fetchProfiles();
+            } catch (e) {
+                showToast(e.message || '保存失败', 'error');
+            }
+        },
+
+        async setDefault(p) {
+            try {
+                await fetchJson(`/api/registration-profiles/${encodeURIComponent(p.name)}/set-default`, {
+                    method: 'POST',
+                });
+                showToast(`已把 ${p.name} 设为 ${p.registration_kind} 的默认组合`, 'success');
+                await this.fetchProfiles();
+            } catch (e) {
+                showToast(e.message || '设置失败', 'error');
+            }
+        },
+
+        async deleteProfile(p) {
+            if (p.is_default) return;
+            if (!(await confirmDialog({ title: '删除组合', message: `确认删除组合 ${p.name}？`, danger: true }))) return;
+            try {
+                await fetchJson(`/api/registration-profiles/${encodeURIComponent(p.name)}`, {
+                    method: 'DELETE',
+                });
+                showToast('已删除', 'success');
+                await this.fetchProfiles();
+            } catch (e) {
+                showToast(e.message || '删除失败', 'error');
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

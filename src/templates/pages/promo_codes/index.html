@@ -1,0 +1,1063 @@
+{% extends "base.html" %}
+{% from 'components/_country.html' import country_flag_card %}
+{% import 'components/_ui.html' as ui %}
+{% block title %}促销码 - Team Register{% endblock %}
+{% block nav_promo_codes %}sidebar-active{% endblock %}
+{% block page_title %}促销码（Promo Codes）{% endblock %}
+
+{% block content %}
+<div x-data="promoCodesData()" x-init="init()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
+
+    {# ─── Page Header ─── #}
+    <div class="flex justify-between items-end flex-wrap gap-3">
+        <div>
+            <p class="text-[11px] font-label text-muted mb-1 uppercase tracking-wider">PROMOTION MANAGEMENT</p>
+            <h3 class="text-2xl font-bold text-body">促销码列表</h3>
+            <p class="text-sm text-muted mt-1">链接模板里 <code class="bg-subtle px-1 rounded font-mono text-primary text-xs">promo_code</code> 非空的子集，可借<strong class="text-body">最近 completed 账号</strong>的 access_token 调 ChatGPT API 验证</p>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+            <!-- 须知 ℹ️ 浮层（取代底部常驻说明）-->
+            <div class="relative" @click.outside="showHints = false">
+                <button @click="showHints = !showHints"
+                        type="button"
+                        :class="showHints ? 'bg-primary/10 text-primary border-primary/30' : 'text-muted hover:bg-subtle border-transparent'"
+                        class="flex items-center justify-center w-10 h-10 border rounded-lg transition-all"
+                        title="促销码说明">
+                    <span class="material-symbols-outlined text-base">info</span>
+                </button>
+                <div x-show="showHints" x-cloak x-transition.opacity
+                     class="absolute right-0 top-full mt-2 w-[480px] max-w-[calc(100vw-3rem)] bg-white border border-border rounded-xl shadow-lg p-4 z-30">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-sm font-semibold text-body flex items-center gap-2">
+                            <span class="material-symbols-outlined text-base text-primary">tips_and_updates</span>
+                            促销码说明
+                        </h4>
+                        <button @click="showHints = false" class="text-muted hover:text-body">
+                            <span class="material-symbols-outlined text-base">close</span>
+                        </button>
+                    </div>
+                    <ul class="text-xs text-muted space-y-2.5">
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-secondary mt-px">verified</span><span><strong class="text-body">验证逻辑</strong>：取最近 status=completed 账号的 access_token → 按 country 选 active 代理（或用模板 proxy_id）→ 调 ChatGPT eligibility API → 回写 last_eligibility_*</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-info-600 mt-px">info</span><span><strong class="text-body">状态含义</strong>：<span class="text-success">eligible</span> = 可直接付款；<span class="text-warning">exists</span> = 码存在但地区不匹配；<span class="text-danger">not_found</span> = 码不存在<strong>或 token 过期</strong>；<span class="text-danger">redeemed</span> = 码已被兑换过；<span class="text-muted">error</span> = 网络/Cloudflare/代理问题</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-warning mt-px">rule</span><span><strong class="text-body">批量验证</strong>按 0.5s 间隔逐条调用，遇 401 立即停止避免误判 not_found</span></li>
+                        <li class="flex items-start gap-2"><span class="material-symbols-outlined text-sm text-success mt-px">file_download</span><span><strong class="text-body">从扫描器导入</strong>读取 <code class="bg-subtle px-1 rounded font-mono">/Volumes/workSpace/study/aiProject/gpt-promo-scanner/known_codes.json</code>，按 <code class="bg-subtle px-1 rounded font-mono">promo-{country}-{code}</code> 命名约定幂等导入</span></li>
+                    </ul>
+                </div>
+            </div>
+            <button @click="refresh()"
+                    class="flex items-center gap-1.5 px-4 py-2 text-muted hover:bg-subtle rounded-lg transition-all text-sm font-medium">
+                <span class="material-symbols-outlined text-base">refresh</span>
+                刷新
+            </button>
+            <button @click="bulkVerify()" :disabled="bulkVerifying || rows.length === 0"
+                    class="flex items-center gap-1.5 px-4 py-2 text-warning border border-warning hover:bg-warning/5 rounded-lg transition-all text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                <span class="material-symbols-outlined text-base">rule</span>
+                <span x-show="!bulkVerifying">批量验证全部</span>
+                <span x-show="bulkVerifying">验证中 <span x-text="bulkProgress"></span>...</span>
+            </button>
+            <button @click="downloadImportTemplate()"
+                    class="flex items-center gap-1.5 px-4 py-2 text-muted border border-border hover:bg-subtle rounded-lg transition-all text-sm font-medium">
+                <span class="material-symbols-outlined text-base">download</span>
+                下载模板
+            </button>
+            <input type="file" accept=".json,application/json" class="hidden"
+                   x-ref="importFileInput"
+                   @change="uploadImportFile($event)">
+            <button @click="$refs.importFileInput.click()" :disabled="importing"
+                    class="flex items-center gap-1.5 px-4 py-2 text-success border border-success hover:bg-success/5 rounded-lg transition-all text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                <span class="material-symbols-outlined text-base">upload_file</span>
+                <span x-show="!importing">上传文件导入</span>
+                <span x-show="importing">导入中...</span>
+            </button>
+            <button @click="openDiscoverDialog()" :disabled="discovering"
+                    class="flex items-center gap-1.5 px-4 py-2 text-secondary border border-secondary hover:bg-secondary/5 rounded-lg transition-all text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                <span class="material-symbols-outlined text-base">travel_explore</span>
+                <span x-show="!discovering">探索新码</span>
+                <span x-show="discovering">探索中 <span x-text="discoverProgressLabel"></span></span>
+            </button>
+            <button @click="showAddDialog = true"
+                    class="flex items-center gap-1.5 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg transition-all text-sm font-medium shadow-token-sm">
+                <span class="material-symbols-outlined text-base">add_circle</span>
+                添加单个促销码
+            </button>
+        </div>
+    </div>
+
+    {# ─── 批量选中操作条（有选中才显示）─── #}
+    <div x-show="selectedIds.length > 0"
+         x-transition.opacity
+         class="bg-primary/5 border border-primary/20 px-4 py-3 rounded-xl flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center gap-2 text-sm">
+            <span class="material-symbols-outlined text-primary text-base">check_box</span>
+            <span class="text-body">已选中 <span class="font-bold text-primary" x-text="selectedIds.length"></span> 项</span>
+            <button @click="clearSelection()" class="text-muted hover:text-body underline text-xs ml-1">取消选择</button>
+        </div>
+        <div class="flex items-center gap-2">
+            <button @click="bulkDeleteSelected()" :disabled="bulkDeleting"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-danger text-white rounded-lg hover:bg-danger/90 transition-colors disabled:opacity-50 disabled:cursor-wait text-sm font-medium">
+                <span class="material-symbols-outlined text-base" :class="bulkDeleting ? 'animate-spin' : ''"
+                      x-text="bulkDeleting ? 'progress_activity' : 'delete'"></span>
+                <span x-text="bulkDeleting ? '删除中...' : `删除选中 (${selectedIds.length})`"></span>
+            </button>
+        </div>
+    </div>
+
+    {# ─── Filter + Count Bar ─── #}
+    <div class="bg-surface p-4 rounded-xl shadow-token-sm border border-border flex justify-between items-center gap-3 flex-wrap">
+        <div class="flex items-center gap-2 overflow-x-auto custom-scrollbar pb-1">
+            <template x-for="opt in statusFilters" :key="opt.value">
+                <button @click="filterStatus = opt.value"
+                        :class="filterStatus === opt.value
+                            ? 'bg-primary/10 text-primary font-semibold'
+                            : 'hover:bg-subtle text-muted font-medium'"
+                        class="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm whitespace-nowrap transition-colors">
+                    <span class="material-symbols-outlined text-base" :class="statusIconColor(opt.value)" x-text="statusIcon(opt.value)"></span>
+                    <span x-text="opt.label"></span>
+                    <span class="text-[10px] opacity-70 tabular-nums" x-text="`(${countByStatus(opt.value)})`"></span>
+                </button>
+            </template>
+        </div>
+        <div class="flex items-center gap-3">
+            {{ ui.grid_search(placeholder='搜索 模板/Code/国家...') }}
+            <div class="text-sm text-muted flex items-center bg-subtle px-3 py-1.5 rounded-lg border border-border whitespace-nowrap">
+                <span class="material-symbols-outlined text-sm mr-2">visibility</span>
+                显示 <span class="text-body font-semibold px-1 tabular-nums" x-text="`${filteredRows.length}/${rows.length}`"></span> 条
+            </div>
+            {{ ui.grid_columns_settings() }}
+        </div>
+    </div>
+
+    {# ─── Data Grid ─── #}
+    <div class="bg-surface rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-subtle">
+                    <tr class="border-b border-border">
+                        <th class="px-4 py-4 w-10">
+                            <input type="checkbox"
+                                   :checked="filteredRows.length > 0 && filteredRows.every(r => selectedIds.includes(r.id))"
+                                   :indeterminate.prop="filteredRows.some(r => selectedIds.includes(r.id)) && !filteredRows.every(r => selectedIds.includes(r.id))"
+                                   @change="toggleSelectAllVisible($event.target.checked)"
+                                   class="rounded border-border focus:ring-primary text-primary cursor-pointer"
+                                   title="全选/取消全选当前筛选结果">
+                        </th>
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">
+                            <div class="flex items-center gap-1 group cursor-pointer">
+                                模板名 (TEMPLATE)
+                                <span class="material-symbols-outlined text-xs ml-1 opacity-0 group-hover:opacity-100 transition-opacity">unfold_more</span>
+                            </div>
+                        </th>
+                        <th x-show="visibleColumns.includes('country')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">国家</th>
+                        <th x-show="visibleColumns.includes('code')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">PROMO CODE</th>
+                        <th x-show="visibleColumns.includes('discount')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">折扣详情</th>
+                        <th x-show="visibleColumns.includes('proxy')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">代理</th>
+                        <th x-show="visibleColumns.includes('status')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">最后验证</th>
+                        <th x-show="visibleColumns.includes('checked_at')" class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider">验证时间</th>
+                        <th class="px-6 py-4 text-[11px] font-label font-bold text-muted uppercase tracking-wider text-right">操作</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                    <template x-for="t in filteredRows" :key="t.id">
+                        <tr class="hover:bg-primary/[0.04] transition-colors group"
+                            :class="selectedIds.includes(t.id) ? 'bg-primary/[0.06]' : ''">
+                            <td class="px-4 py-4">
+                                <input type="checkbox"
+                                       :checked="selectedIds.includes(t.id)"
+                                       @change="toggleSelectOne(t.id, $event.target.checked)"
+                                       class="rounded border-border focus:ring-primary text-primary cursor-pointer">
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-sm font-medium text-body" x-text="t.name"></div>
+                                <div x-show="importNote(t)" class="text-[10px] text-muted mt-0.5" x-text="importNote(t)"></div>
+                            </td>
+                            <td x-show="visibleColumns.includes('country')" class="px-6 py-4">
+                                {{ country_flag_card('t.aimizy_country') }}
+                            </td>
+                            <td x-show="visibleColumns.includes('code')" class="px-6 py-4">
+                                <code class="mono-text text-sm text-primary font-medium" x-text="t.promo_code"></code>
+                            </td>
+                            <td x-show="visibleColumns.includes('discount')" class="px-6 py-4">
+                                <div x-show="discountInfo(t)" class="text-sm text-body" x-text="discountInfo(t)"></div>
+                                <div x-show="!discountInfo(t)" class="text-sm text-muted">— / <span class="mono-text" x-text="t.aimizy_currency || ''"></span></div>
+                            </td>
+                            <td x-show="visibleColumns.includes('proxy')" class="px-6 py-4">
+                                <span x-show="t.proxy_id" class="text-sm mono-text">#<span x-text="t.proxy_id"></span></span>
+                                <span x-show="!t.proxy_id" class="text-sm text-muted">按国家选</span>
+                            </td>
+                            <td x-show="visibleColumns.includes('status')" class="px-6 py-4">
+                                <span :class="statusBadgeClass(t.last_eligibility_status)"
+                                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-label font-bold uppercase tracking-wider"
+                                      x-text="statusLabel(t.last_eligibility_status)"></span>
+                                <div x-show="t.last_eligibility_status === 'error'"
+                                     class="text-[10px] text-danger mt-1"
+                                     x-text="(t.last_eligibility_metadata && t.last_eligibility_metadata.error) || ''"></div>
+                            </td>
+                            <td x-show="visibleColumns.includes('checked_at')" class="px-6 py-4">
+                                <span class="text-sm mono-text text-muted tabular-nums" x-text="formatTime(t.last_eligibility_check_at) || '—'"></span>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <div class="flex items-center justify-end gap-2">
+                                    <button @click.stop="verify(t)" :disabled="!!verifying[t.id]"
+                                            type="button"
+                                            class="p-1.5 border border-primary/30 hover:bg-primary hover:text-white text-primary rounded-md transition-colors disabled:opacity-50 disabled:cursor-wait cursor-pointer" title="重新验证">
+                                        <span class="material-symbols-outlined text-lg" :class="verifying[t.id] ? 'animate-spin' : ''">published_with_changes</span>
+                                    </button>
+                                    <button @click.stop="deleteRow(t)" :disabled="!!deleting[t.id]"
+                                            type="button"
+                                            class="p-1.5 border border-danger/30 hover:bg-danger hover:text-white text-danger rounded-md transition-colors disabled:opacity-50 cursor-pointer" title="删除">
+                                        <span class="material-symbols-outlined text-lg">delete</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                    <tr x-show="filteredRows.length === 0">
+                        <td colspan="9" class="px-4 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">local_offer</span>
+                                <span x-show="rows.length === 0" class="text-sm">促销码列表为空，点上方「从扫描器导入」或「添加单个促销码」</span>
+                                <span x-show="rows.length > 0" class="text-sm">没有匹配当前筛选的条目</span>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 添加单个促销码对话框 -->
+    <div x-show="showAddDialog" x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+         @click.self="showAddDialog = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 mx-4">
+            <h3 class="text-lg font-semibold mb-4">添加单个促销码</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">国家代码（ISO 2-letter，大写）<span class="text-danger-500">*</span></label>
+                    <input type="text" x-model="addForm.country" maxlength="8"
+                           placeholder="US / GB / CA / DE ..."
+                           class="w-full px-3 py-2 border rounded-md text-sm font-mono uppercase"
+                           @input="addForm.country = addForm.country.toUpperCase()">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">Promo Code <span class="text-danger-500">*</span></label>
+                    <input type="text" x-model="addForm.code" maxlength="80"
+                           placeholder="如 talentgeniusus"
+                           class="w-full px-3 py-2 border rounded-md text-sm font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">币种（可选）</label>
+                    <input type="text" x-model="addForm.aimizy_currency" maxlength="8"
+                           placeholder="USD / GBP / EUR ..."
+                           class="w-full px-3 py-2 border rounded-md text-sm font-mono uppercase"
+                           @input="addForm.aimizy_currency = addForm.aimizy_currency.toUpperCase()">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">席位数</label>
+                    <input type="number" x-model.number="addForm.seat_quantity" min="1" max="200"
+                           class="w-full px-3 py-2 border rounded-md text-sm">
+                </div>
+                <div class="text-[11px] text-slate-500 bg-slate-50 px-3 py-2 rounded">
+                    模板名会自动生成为 <code class="text-primary-700">promo-<span x-text="(addForm.country || 'XX').toLowerCase()"></span>-<span x-text="(addForm.code || 'xxx').toLowerCase()"></span></code>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-5">
+                <button @click="showAddDialog = false"
+                        class="px-3 py-1.5 text-sm border rounded hover:bg-slate-50">取消</button>
+                <button @click="submitAdd()"
+                        :disabled="adding || !addForm.country || !addForm.code"
+                        class="px-3 py-1.5 text-sm bg-primary-600 text-white rounded hover:bg-primary-700 disabled:opacity-50">
+                    <span x-show="!adding">创建</span>
+                    <span x-show="adding">创建中...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 探索新码模态 -->
+    <div x-show="showDiscoverDialog" x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+         @click.self="if (!discovering) showDiscoverDialog = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 mx-4">
+            <h3 class="text-lg font-semibold mb-1">探索新促销码</h3>
+            <p class="text-xs text-slate-500 mb-4">
+                按"种子词 × 国家后缀"爆破候选 + 用最近 completed 账号的 token 调 ChatGPT API 验证；ELIGIBLE 自动落库
+            </p>
+
+            <!-- 启动表单 -->
+            <div x-show="!discovering" class="space-y-3">
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">模式</label>
+                    <div class="flex gap-2">
+                        <label class="flex-1 inline-flex items-center gap-1.5 px-3 py-2 border rounded-md text-sm cursor-pointer"
+                               :class="discoverForm.mode === 'seeds' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.mode" value="seeds" class="hidden">
+                            <span class="material-symbols-outlined text-sm">target</span>
+                            <span>单国家种子扫描</span>
+                        </label>
+                        <label class="flex-1 inline-flex items-center gap-1.5 px-3 py-2 border rounded-md text-sm cursor-pointer"
+                               :class="discoverForm.mode === 'cross_matrix' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.mode" value="cross_matrix" class="hidden">
+                            <span class="material-symbols-outlined text-sm">grid_on</span>
+                            <span>跨国矩阵</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div x-show="discoverForm.mode === 'seeds'">
+                    <label class="block text-xs text-slate-600 mb-1">国家代码<span class="text-danger-500">*</span></label>
+                    <select x-model="discoverForm.country"
+                            class="w-full px-3 py-2 border rounded-md text-sm font-mono">
+                        <option value="">— 选择国家 —</option>
+                        <template x-for="c in supportedCountries" :key="c.code">
+                            <option :value="c.code"
+                                    x-text="`${c.code} ${c.has_company_dict ? '（含字典 推荐）' : '（无字典 仅种子词）'}`"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">自定义关键词（可选，每行一个）</label>
+                    <textarea x-model="discoverForm.extraWordsText" rows="3"
+                              placeholder="例如：&#10;Stripe&#10;Anthropic&#10;OpenAI"
+                              class="w-full px-3 py-2 border rounded-md text-sm font-mono"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">会做 normalize（小写+去标点+首字母缩写）后参与候选生成</p>
+                </div>
+
+                {# ── 代理源（P7：探索走哪类代理出口）── #}
+                <div>
+                    <label class="block text-xs text-slate-600 mb-1">代理源</label>
+                    <div class="grid grid-cols-3 gap-2 mb-2">
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'dynamic_provider' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="dynamic_provider" class="hidden">
+                            <span class="material-symbols-outlined text-sm">sync</span>
+                            动态供应商
+                        </label>
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'static_proxy' ? 'bg-primary/5 border-primary text-primary' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="static_proxy" class="hidden">
+                            <span class="material-symbols-outlined text-sm">dns</span>
+                            静态代理池
+                        </label>
+                        <label class="flex flex-col items-center justify-center gap-1 px-2 py-2 border rounded-md cursor-pointer transition-all text-xs text-center"
+                               :class="discoverForm.proxySource === 'direct' ? 'bg-danger/5 border-danger text-danger' : 'hover:bg-slate-50'">
+                            <input type="radio" x-model="discoverForm.proxySource" value="direct" class="hidden">
+                            <span class="material-symbols-outlined text-sm">warning</span>
+                            直连
+                        </label>
+                    </div>
+
+                    {# 动态供应商下拉 #}
+                    <div x-show="discoverForm.proxySource === 'dynamic_provider'">
+                        <select x-model="discoverForm.proxyProviderId"
+                                class="w-full px-3 py-2 border rounded-md text-sm">
+                            <option value="">— 选择动态供应商 —</option>
+                            <template x-for="p in proxyProviders" :key="p.id">
+                                <option :value="p.id" x-text="`${p.label}（${p.kind === '1024proxy' ? '1024' : '通用'} · ${p.default_country || 'Rand'}）`"></option>
+                            </template>
+                        </select>
+                        <p class="text-[10px] text-slate-500 mt-1" x-show="proxyProviders.length === 0">
+                            还没有动态供应商，去 <a href="/proxy-providers" class="text-primary hover:underline">/proxy-providers</a> 新建
+                        </p>
+                        <p class="text-[10px] text-success mt-1" x-show="proxyProviders.length > 0">推荐：每 N 条自动换 IP，CF 风控规避最强</p>
+                    </div>
+
+                    {# 静态代理池下拉 #}
+                    <div x-show="discoverForm.proxySource === 'static_proxy'">
+                        <select x-model="discoverForm.staticProxyId"
+                                class="w-full px-3 py-2 border rounded-md text-sm">
+                            <option value="">— 按国家自动选 —</option>
+                            <template x-for="p in staticProxies" :key="p.id">
+                                <option :value="p.id" x-text="`${p.label}（${p.country || '?'}）`"></option>
+                            </template>
+                        </select>
+                        <p class="text-[10px] text-slate-500 mt-1">整轮固定 IP；留空则按探索国家自动匹配</p>
+                    </div>
+
+                    {# 直连警告 #}
+                    <div x-show="discoverForm.proxySource === 'direct'"
+                         class="bg-danger/5 border border-danger/20 rounded px-3 py-2 text-[11px] text-danger">
+                        直连模式下 ChatGPT API 会很快 403，整任务可能扫不到一条就停。仅用于本地排查。
+                    </div>
+                </div>
+
+                <div class="text-[11px] text-slate-500 bg-slate-50 px-3 py-2 rounded space-y-0.5">
+                    <div>调用间隔：1.0s/条；遇 401/403 自动停止</div>
+                    <div>ELIGIBLE 立即建模板（命名 <code class="text-primary-700">promo-{country}-{code}</code>），重名跳过</div>
+                    <div class="text-warning">注意：单次最多扫 5000 条；超大字典会被拒绝</div>
+                </div>
+            </div>
+
+            <!-- 运行中进度面板 -->
+            <div x-show="discovering" class="space-y-3">
+                <div class="flex justify-between items-baseline text-sm">
+                    <span class="text-slate-600">扫描中：<span class="font-mono text-primary" x-text="discoverState.country || '--'"></span></span>
+                    <span class="text-xs text-slate-500" x-text="discoverState.mode === 'cross_matrix' ? '跨国矩阵' : '单国家'"></span>
+                </div>
+                <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                    <div class="bg-primary h-2.5 transition-all"
+                         :style="`width: ${discoverState.total ? Math.round(100 * discoverState.processed / discoverState.total) : 0}%`"></div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 text-center">
+                    <div class="bg-slate-50 rounded p-2">
+                        <div class="text-lg font-semibold tabular-nums" x-text="discoverState.processed || 0"></div>
+                        <div class="text-[10px] text-slate-500">已扫描</div>
+                    </div>
+                    <div class="bg-success/10 rounded p-2">
+                        <div class="text-lg font-semibold tabular-nums text-success" x-text="discoverState.eligible_found || 0"></div>
+                        <div class="text-[10px] text-slate-500">命中 eligible</div>
+                    </div>
+                    <div class="bg-secondary/10 rounded p-2">
+                        <div class="text-lg font-semibold tabular-nums text-secondary" x-text="discoverState.exists_found || 0"></div>
+                        <div class="text-[10px] text-slate-500">已被占用</div>
+                    </div>
+                    <div class="bg-warning/10 rounded p-2">
+                        <div class="text-lg font-semibold tabular-nums text-warning" x-text="discoverState.error_count || 0"></div>
+                        <div class="text-[10px] text-slate-500">错误</div>
+                    </div>
+                </div>
+                <div class="text-xs text-slate-500">
+                    <span>总计：<span class="tabular-nums" x-text="discoverState.total || 0"></span></span>
+                    <span x-show="discoverState.processed && discoverState.total" class="ml-3">
+                        预计剩余 <span class="tabular-nums" x-text="estimateRemaining()"></span> 秒
+                    </span>
+                </div>
+                <div x-show="discoverState.error_message" class="text-xs text-danger bg-danger/5 px-3 py-2 rounded" x-text="discoverState.error_message"></div>
+            </div>
+
+            <div class="flex justify-end gap-2 mt-5">
+                <template x-if="!discovering">
+                    <div class="flex gap-2 w-full">
+                        <button @click="showDiscoverDialog = false"
+                                class="px-3 py-1.5 text-sm border rounded hover:bg-slate-50">取消</button>
+                        <div class="flex-1"></div>
+                        <button @click="startDiscover()"
+                                :disabled="discoverForm.mode === 'seeds' && !discoverForm.country"
+                                class="px-3 py-1.5 text-sm bg-secondary text-white rounded hover:bg-secondary/90 disabled:opacity-50">
+                            开始探索
+                        </button>
+                    </div>
+                </template>
+                <template x-if="discovering">
+                    <div class="flex gap-2 w-full">
+                        <button @click="cancelDiscover()" :disabled="cancelling"
+                                class="px-3 py-1.5 text-sm border border-danger text-danger rounded hover:bg-danger/5 disabled:opacity-50">
+                            <span x-show="!cancelling">请求取消</span>
+                            <span x-show="cancelling">取消中...</span>
+                        </button>
+                        <div class="flex-1"></div>
+                        <button @click="closeDiscoverDialog()" :disabled="!discoverState.finished_at"
+                                class="px-3 py-1.5 text-sm bg-primary text-white rounded hover:bg-primary/90 disabled:opacity-50">
+                            关闭
+                        </button>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function promoCodesData() {
+    // 特殊值 __never__ 表示"未验证"筛选（last_eligibility_status === ''）
+    const STATUS_FILTERS = [
+        { value: '__all__',   label: '全部' },
+        { value: 'eligible',  label: '✓ eligible' },
+        { value: 'exists',    label: '○ exists' },
+        { value: 'not_found', label: '✗ not_found' },
+        { value: 'redeemed',  label: '✗ redeemed' },
+        { value: 'error',     label: '! error' },
+        { value: '__never__', label: '— 未验证' },
+    ];
+
+    const _DEFAULT_COLS = ['country', 'code', 'discount', 'proxy', 'status', 'checked_at'];
+    return {
+        rows: [],
+        verifying: {},
+        deleting: {},
+        importing: false,
+        bulkVerifying: false,
+        // 多选删除
+        selectedIds: [],
+        bulkDeleting: false,
+        // 须知 ℹ️ 浮层（取代底部常驻说明）
+        showHints: false,
+        bulkProgress: '',
+        showAddDialog: false,
+        adding: false,
+        addForm: { country: '', code: '', aimizy_currency: '', seat_quantity: 2 },
+        filterStatus: '__all__',
+        statusFilters: STATUS_FILTERS,
+
+        // 搜索 + 列设置
+        searchTerm: '',
+        searchExpanded: false,
+        visibleColumns: (() => {
+            try { const raw = localStorage.getItem('promo_codes.visibleColumns'); return raw ? JSON.parse(raw) : _DEFAULT_COLS; }
+            catch (_) { return _DEFAULT_COLS; }
+        })(),
+        columnOptions: [
+            { key: 'country',    label: '国家' },
+            { key: 'code',       label: 'PROMO CODE' },
+            { key: 'discount',   label: '折扣详情' },
+            { key: 'proxy',      label: '代理' },
+            { key: 'status',     label: '最后验证' },
+            { key: 'checked_at', label: '验证时间' },
+        ],
+        initColumnWatcher() {
+            this.$watch('visibleColumns', (cols) => {
+                try { localStorage.setItem('promo_codes.visibleColumns', JSON.stringify(cols)); } catch (_) {}
+            });
+        },
+
+        // discover 相关状态
+        showDiscoverDialog: false,
+        discovering: false,
+        cancelling: false,
+        supportedCountries: [],
+        proxyProviders: [],
+        staticProxies: [],
+        discoverForm: { mode: 'seeds', country: '', extraWordsText: '', proxySource: 'dynamic_provider', proxyProviderId: '', staticProxyId: '' },
+        discoverState: { processed: 0, total: 0, eligible_found: 0, exists_found: 0, error_count: 0, country: '', mode: '', finished_at: null, error_message: '' },
+        discoverTaskId: '',
+        discoverEventSource: null,
+        discoverStartTs: 0,
+
+        async init() {
+            // 强制清空 loading 状态：避免上次页面卡死时 verifying/deleting 残留导致按钮永久 disabled
+            this.verifying = {};
+            this.deleting = {};
+            this.selectedIds = [];
+            this.bulkDeleting = false;
+            this.bulkVerifying = false;
+            this.initColumnWatcher();
+            await this.refresh();
+        },
+
+        get discoverProgressLabel() {
+            const s = this.discoverState;
+            if (!s.total) return '';
+            return `${s.processed}/${s.total}`;
+        },
+
+        estimateRemaining() {
+            const s = this.discoverState;
+            if (!s.processed || !s.total) return 0;
+            const elapsed = (Date.now() - this.discoverStartTs) / 1000;
+            const avgPerItem = elapsed / s.processed;
+            return Math.round(avgPerItem * (s.total - s.processed));
+        },
+
+        async openDiscoverDialog() {
+            if (this.supportedCountries.length === 0) {
+                try {
+                    const res = await fetchJson('/api/promo-discovery/supported-countries');
+                    this.supportedCountries = res.countries || [];
+                    // 默认选第一个有字典的
+                    const firstWithDict = this.supportedCountries.find(c => c.has_company_dict);
+                    if (firstWithDict && !this.discoverForm.country) {
+                        this.discoverForm.country = firstWithDict.code;
+                    }
+                } catch (exc) {
+                    showToast(String(exc.message || exc), 'error');
+                    return;
+                }
+            }
+            await this.fetchProxySources();
+            // 打开弹窗前先查后端有没有在跑的任务（页面刷新后也能恢复进度面板）
+            await this._reattachRunningTask();
+            this.showDiscoverDialog = true;
+        },
+
+        async _reattachRunningTask() {
+            // 查最近任务，若有 running 的就重连进度 + SSE（避免重复启动、再点即查进度）
+            try {
+                const res = await fetchJson('/api/promo-discovery/recent?limit=1');
+                const latest = (res.items || [])[0];
+                if (latest && latest.final_status === 'running') {
+                    this.discoverTaskId = latest.task_id;
+                    this.discoverStartTs = Date.now();
+                    this.discoverState = {
+                        processed: latest.processed || 0,
+                        total: latest.total || 0,
+                        eligible_found: latest.eligible_found || 0,
+                        exists_found: latest.exists_found || 0,
+                        error_count: latest.error_count || 0,
+                        country: latest.country || '',
+                        mode: latest.mode || '',
+                        finished_at: null,
+                        error_message: latest.error_message || '',
+                    };
+                    this.discovering = true;
+                    this._subscribeDiscoverEvents(latest.task_id);
+                }
+            } catch (_) { /* 查不到就当没有在跑的任务 */ }
+        },
+
+        async fetchProxySources() {
+            // 拉动态供应商 + 静态代理池，填探索弹窗「代理源」下拉
+            try {
+                this.proxyProviders = (await fetchJson('/api/proxy-providers')).filter(p => p.is_active);
+            } catch (_) { this.proxyProviders = []; }
+            try {
+                this.staticProxies = (await fetchJson('/api/proxies')).filter(p => p.is_active);
+            } catch (_) { this.staticProxies = []; }
+            // 有动态供应商时默认选第一个
+            if (this.proxyProviders.length && !this.discoverForm.proxyProviderId) {
+                this.discoverForm.proxyProviderId = String(this.proxyProviders[0].id);
+            }
+        },
+
+        closeDiscoverDialog() {
+            this.showDiscoverDialog = false;
+            this._closeDiscoverEventSource();
+            // 留状态在内存，下次打开还看得到
+        },
+
+        _closeDiscoverEventSource() {
+            if (this.discoverEventSource) {
+                try { this.discoverEventSource.close(); } catch (_) {}
+                this.discoverEventSource = null;
+            }
+        },
+
+        async startDiscover() {
+            // 防重：已有任务在跑时不重复启动（再点按钮走 openDiscoverDialog 看进度）
+            if (this.discovering) {
+                showToast('已有探索任务在运行，请等待完成或先取消', 'warning');
+                return;
+            }
+            const extras = (this.discoverForm.extraWordsText || '')
+                .split('\n').map(x => x.trim()).filter(Boolean);
+            const payload = {
+                country: this.discoverForm.country,
+                mode: this.discoverForm.mode,
+                extra_words: extras,
+                proxy_source: this.discoverForm.proxySource,
+                proxy_provider_id: this.discoverForm.proxyProviderId ? Number(this.discoverForm.proxyProviderId) : null,
+                static_proxy_id: this.discoverForm.staticProxyId ? Number(this.discoverForm.staticProxyId) : null,
+            };
+            if (payload.proxy_source === 'dynamic_provider' && !payload.proxy_provider_id) {
+                showToast('请先选择一个动态供应商', 'error');
+                return;
+            }
+            try {
+                const res = await fetchJson('/api/promo-discovery/start', {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                });
+                this.discoverTaskId = res.task_id;
+                this.discoverStartTs = Date.now();
+                this.discoverState = {
+                    processed: 0, total: res.total, eligible_found: 0,
+                    exists_found: 0, error_count: 0, country: res.country,
+                    mode: res.mode, finished_at: null, error_message: '',
+                };
+                this.discovering = true;
+                this._subscribeDiscoverEvents(res.task_id);
+                showToast(`已启动探索：${res.country} 共 ${res.total} 候选`, 'info');
+            } catch (exc) {
+                // 后端 BusyError → 409：已有任务在跑，自动重连进度而非报错
+                if (exc && exc.status === 409) {
+                    showToast('已有探索任务在运行，已切换到进度视图', 'info');
+                    await this._reattachRunningTask();
+                    return;
+                }
+                const msg = (exc && exc.payload && exc.payload.detail) || String(exc.message || exc);
+                showToast(msg, 'error');
+            }
+        },
+
+        _subscribeDiscoverEvents(taskId) {
+            this._closeDiscoverEventSource();
+            const es = new EventSource(`/api/tasks/${taskId}/events`);
+            this.discoverEventSource = es;
+            es.onmessage = (ev) => {
+                try {
+                    const event = JSON.parse(ev.data);
+                    const payload = event.payload || {};
+                    // 更新进度计数（payload 自带完整 snapshot）
+                    for (const k of ['processed', 'total', 'eligible_found',
+                                     'exists_found', 'error_count',
+                                     'country', 'mode', 'finished_at',
+                                     'error_message']) {
+                        if (payload[k] !== undefined) {
+                            this.discoverState[k] = payload[k];
+                        }
+                    }
+                    if (event.event_type === 'discovery.eligible') {
+                        showToast(`✓ 命中 ${payload.code}（${payload.country}）`, 'success');
+                    } else if (event.event_type === 'discovery.completed' ||
+                               event.event_type === 'discovery.error') {
+                        this.discovering = false;
+                        this.cancelling = false;
+                        this._closeDiscoverEventSource();
+                        this.refresh();  // 刷新列表把新命中的码拉出来
+                        if (event.event_type === 'discovery.error') {
+                            showToast(payload.error_message || '探索失败', 'error');
+                        } else {
+                            const summary = `已扫描 ${payload.processed}/${payload.total}，` +
+                                            `命中 ${payload.eligible_found}，已占用 ${payload.exists_found}`;
+                            showToast(summary, payload.final_status === 'cancelled' ? 'warning' : 'success');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('SSE parse error:', e);
+                }
+            };
+            es.onerror = () => {
+                // SSE 断开重连由浏览器自动处理；只在任务已完成时主动关闭
+                if (!this.discovering) {
+                    this._closeDiscoverEventSource();
+                }
+            };
+        },
+
+        async cancelDiscover() {
+            if (!this.discoverTaskId) return;
+            this.cancelling = true;
+            try {
+                await fetchJson(`/api/promo-discovery/${this.discoverTaskId}/cancel`, {
+                    method: 'POST',
+                });
+                showToast('已请求取消，等待当前条目完成...', 'info');
+            } catch (exc) {
+                this.cancelling = false;
+                showToast(String(exc.message || exc), 'error');
+            }
+        },
+
+        async refresh() {
+            try {
+                const all = await fetchJson('/api/link-templates');
+                this.rows = (all || []).filter(t => t.promo_code);
+            } catch (exc) {
+                showToast(String(exc.message || exc), 'error');
+            }
+        },
+
+        get filteredRows() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            let arr;
+            if (this.filterStatus === '__all__') arr = this.rows;
+            else if (this.filterStatus === '__never__') arr = this.rows.filter(t => !t.last_eligibility_status);
+            else arr = this.rows.filter(t => t.last_eligibility_status === this.filterStatus);
+            if (!q) return arr;
+            return arr.filter(t => {
+                const haystack = `${t.name || ''} ${t.promo_code || ''} ${t.aimizy_country || ''}`.toLowerCase();
+                return haystack.includes(q);
+            });
+        },
+
+        countByStatus(value) {
+            if (value === '__all__') return this.rows.length;
+            if (value === '__never__') return this.rows.filter(t => !t.last_eligibility_status).length;
+            return this.rows.filter(t => t.last_eligibility_status === value).length;
+        },
+
+        statusLabel(status) {
+            const map = {
+                eligible: '✓ eligible',
+                exists: '○ exists',
+                not_found: '✗ not_found',
+                redeemed: '✗ redeemed',
+                unknown: '? unknown',
+                error: '! error',
+                '': '— 未验证',
+            };
+            return map[status] || status;
+        },
+
+        statusBadgeClass(status) {
+            return {
+                eligible:  'bg-success/10 text-success border border-success/20',
+                exists:    'bg-secondary/10 text-secondary border border-secondary/20',
+                not_found: 'bg-danger/10 text-danger border border-danger/20',
+                redeemed:  'bg-danger/10 text-danger border border-danger/20',
+                unknown:   'bg-subtle text-muted border border-border',
+                error:     'bg-warning/10 text-warning border border-warning/20',
+            }[status] || 'bg-subtle text-muted border border-border';
+        },
+
+        statusIcon(value) {
+            return {
+                __all__:   'apps',
+                eligible:  'check_circle',
+                exists:    'info',
+                not_found: 'cancel',
+                error:     'report',
+                __never__: 'do_not_disturb_on',
+            }[value] || 'circle';
+        },
+
+        statusIconColor(value) {
+            return {
+                __all__:   'text-primary',
+                eligible:  'text-success',
+                exists:    'text-secondary',
+                not_found: 'text-danger',
+                error:     'text-warning',
+                __never__: 'text-muted',
+            }[value] || 'text-muted';
+        },
+
+        formatTime(iso) {
+            if (!iso) return '—';
+            try {
+                const d = new Date(iso);
+                if (isNaN(d.getTime())) return iso;
+                const pad = n => String(n).padStart(2, '0');
+                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            } catch (e) {
+                return iso;
+            }
+        },
+
+        importNote(t) {
+            const m = t.last_eligibility_metadata;
+            return (m && m.import_note) ? m.import_note : '';
+        },
+
+        discountInfo(t) {
+            // 优先 ChatGPT metadata API 返回的折扣字段，回退到 import_note 里的 price_local/discount
+            const m = t.last_eligibility_metadata;
+            if (!m) return '';
+            const apiMeta = m.metadata && m.metadata.metadata;
+            if (apiMeta) {
+                const parts = [];
+                if (apiMeta.discount_amount) parts.push(`-${apiMeta.discount_amount}`);
+                if (apiMeta.discount_duration_months) parts.push(`${apiMeta.discount_duration_months} 月`);
+                if (parts.length) return parts.join(' × ');
+            }
+            // 退回 import_note 中的 price_local
+            const note = m.import_note || '';
+            const priceMatch = note.match(/price_local=([^|]+)/);
+            const discMatch = note.match(/discount=(\d+%)/);
+            const out = [];
+            if (priceMatch) out.push(priceMatch[1].trim());
+            if (discMatch) out.push(discMatch[1]);
+            return out.join(' / ');
+        },
+
+        async verify(t) {
+            this.verifying[t.id] = true;
+            try {
+                const res = await fetchJson(`/api/link-templates/${t.id}/verify-eligibility`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                t.last_eligibility_status = res.status;
+                t.last_eligibility_check_at = res.checked_at;
+                t.last_eligibility_metadata = res.metadata;
+                showToast(`${t.promo_code} → ${res.status}`,
+                          res.status === 'eligible' ? 'success' :
+                          res.status === 'error' ? 'error' : 'info');
+            } catch (exc) {
+                const msg = (exc && exc.payload && exc.payload.detail)
+                    ? (typeof exc.payload.detail === 'string' ? exc.payload.detail : (exc.payload.detail.message || JSON.stringify(exc.payload.detail)))
+                    : String(exc.message || exc);
+                showToast(msg, 'error');
+            } finally {
+                this.verifying[t.id] = false;
+            }
+        },
+
+        async deleteRow(t) {
+            if (!(await confirmDialog({ title: '删除模板', message: `确定删除模板「${t.name}」？此操作不可撤销。`, danger: true }))) return;
+            this.deleting[t.id] = true;
+            try {
+                await fetchJson(`/api/link-templates/${t.id}`, { method: 'DELETE' });
+                this.rows = this.rows.filter(r => r.id !== t.id);
+                this.selectedIds = this.selectedIds.filter(id => id !== t.id);
+                showToast(`已删除 ${t.name}`, 'success');
+            } catch (exc) {
+                const msg = (exc && exc.payload && exc.payload.detail)
+                    ? (typeof exc.payload.detail === 'string' ? exc.payload.detail : (exc.payload.detail.message || JSON.stringify(exc.payload.detail)))
+                    : String(exc.message || exc);
+                showToast(`删除失败：${msg}`, 'error');
+            } finally {
+                this.deleting[t.id] = false;
+            }
+        },
+
+        // ── 多选删除 ─────────────────────────────────────
+        toggleSelectOne(id, checked) {
+            if (checked) {
+                if (!this.selectedIds.includes(id)) this.selectedIds.push(id);
+            } else {
+                this.selectedIds = this.selectedIds.filter(x => x !== id);
+            }
+        },
+
+        toggleSelectAllVisible(checked) {
+            const visibleIds = this.filteredRows.map(r => r.id);
+            if (checked) {
+                // 把当前筛选可见的都加入；已有的保留
+                const set = new Set(this.selectedIds);
+                visibleIds.forEach(id => set.add(id));
+                this.selectedIds = Array.from(set);
+            } else {
+                // 把当前筛选可见的从选中里移除
+                const visibleSet = new Set(visibleIds);
+                this.selectedIds = this.selectedIds.filter(id => !visibleSet.has(id));
+            }
+        },
+
+        clearSelection() {
+            this.selectedIds = [];
+        },
+
+        async bulkDeleteSelected() {
+            if (this.selectedIds.length === 0) return;
+            const n = this.selectedIds.length;
+            const names = this.rows
+                .filter(r => this.selectedIds.includes(r.id))
+                .slice(0, 5)
+                .map(r => r.name)
+                .join('、');
+            const preview = n > 5 ? `${names} 等 ${n} 项` : names;
+            if (!(await confirmDialog({ title: '批量删除促销码', message: `确定删除 ${n} 个促销码？\n${preview}\n\n此操作不可撤销。`, danger: true, confirmText: `删除 ${n} 项` }))) return;
+
+            this.bulkDeleting = true;
+            // 逐条 DELETE（后端没批量接口；并发不超过 5 防止 CSRF 冲突）
+            const idsToDelete = [...this.selectedIds];
+            let ok = 0, fail = 0;
+            const failures = [];
+            const BATCH = 5;
+            for (let i = 0; i < idsToDelete.length; i += BATCH) {
+                const batch = idsToDelete.slice(i, i + BATCH);
+                const results = await Promise.allSettled(
+                    batch.map(id => fetchJson(`/api/link-templates/${id}`, { method: 'DELETE' }))
+                );
+                results.forEach((res, idx) => {
+                    const id = batch[idx];
+                    if (res.status === 'fulfilled') {
+                        ok++;
+                        this.rows = this.rows.filter(r => r.id !== id);
+                    } else {
+                        fail++;
+                        const tpl = this.rows.find(r => r.id === id);
+                        failures.push(`${tpl ? tpl.name : id}: ${res.reason && res.reason.message || res.reason}`);
+                    }
+                });
+            }
+            // 从选中里去掉成功删的
+            const deletedIds = new Set(idsToDelete.filter(id => !this.rows.some(r => r.id === id)));
+            this.selectedIds = this.selectedIds.filter(id => !deletedIds.has(id));
+            this.bulkDeleting = false;
+
+            if (fail === 0) {
+                showToast(`已批量删除 ${ok} 项`, 'success');
+            } else {
+                console.warn('bulk delete failures:', failures);
+                showToast(`删除 ${ok} 成功，${fail} 失败（详见控制台）`, 'warning');
+            }
+        },
+
+        async submitAdd() {
+            this.adding = true;
+            try {
+                const payload = {
+                    country: this.addForm.country.trim().toUpperCase(),
+                    code: this.addForm.code.trim(),
+                    aimizy_currency: this.addForm.aimizy_currency.trim().toUpperCase(),
+                    seat_quantity: this.addForm.seat_quantity || 2,
+                };
+                const created = await fetchJson('/api/link-templates/promo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                this.rows = [created, ...this.rows];
+                showToast(`已创建 ${created.name}`, 'success');
+                this.showAddDialog = false;
+                this.addForm = { country: '', code: '', aimizy_currency: '', seat_quantity: 2 };
+            } catch (exc) {
+                const msg = (exc && exc.payload && exc.payload.detail)
+                    ? (typeof exc.payload.detail === 'string' ? exc.payload.detail : JSON.stringify(exc.payload.detail))
+                    : String(exc.message || exc);
+                showToast(msg, 'error');
+            } finally {
+                this.adding = false;
+            }
+        },
+
+        downloadImportTemplate() {
+            // 直接用 <a> 触发下载（带 cookie 鉴权，端点 admin only）
+            const a = document.createElement('a');
+            a.href = '/api/link-templates/import-template';
+            a.download = 'promo_import_template.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        },
+
+        async uploadImportFile(event) {
+            const input = event.target;
+            const file = input.files && input.files[0];
+            if (!file) return;
+            // 前端文件类型校验（友好拦截；后端仍有真正防线）
+            if (!file.name.toLowerCase().endsWith('.json')) {
+                showToast('只支持 .json 文件，请先下载模板填写', 'error');
+                input.value = '';
+                return;
+            }
+            this.importing = true;
+            try {
+                // FormData 上传：fetchJson 检测到 FormData 不设 Content-Type，
+                // 浏览器自动带 multipart boundary；CSRF header 仍自动注入
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('dry_run', 'false');
+                const res = await fetchJson('/api/link-templates/import-upload', {
+                    method: 'POST',
+                    body: fd,
+                });
+                const msg = `导入完成：新建 ${res.created} 条，跳过已存在 ${res.skipped_existing} 条` +
+                            (res.failed.length ? `，失败 ${res.failed.length} 条` : '');
+                showToast(msg, res.failed.length ? 'warning' : 'success');
+                await this.refresh();
+            } catch (exc) {
+                const msg = (exc && exc.payload && exc.payload.detail)
+                    ? (typeof exc.payload.detail === 'string' ? exc.payload.detail : (exc.payload.detail.message || JSON.stringify(exc.payload.detail)))
+                    : String(exc.message || exc);
+                showToast(msg, 'error');
+            } finally {
+                this.importing = false;
+                input.value = '';  // 清空，允许重复上传同一文件
+            }
+        },
+
+        async bulkVerify() {
+            if (!(await confirmDialog({ title: '批量验证', message: `确认批量验证全部 ${this.rows.length} 个促销码？\n（每条间隔 0.5s，预计耗时约 ${Math.ceil(this.rows.length * 0.5)} 秒，会借最近完成账号的 token）` }))) return;
+            this.bulkVerifying = true;
+            this.bulkProgress = `0/${this.rows.length}`;
+            try {
+                const res = await fetchJson('/api/link-templates/bulk-verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const summary = Object.entries(res.by_status).map(([k, v]) => `${k}:${v}`).join(', ');
+                const msg = `批量验证完成：成功 ${res.verified}/${res.total}` +
+                            (summary ? ` (${summary})` : '') +
+                            (res.failed.length ? `，失败 ${res.failed.length}` : '') +
+                            (res.stopped_early ? '（token 失效已提前停止）' : '');
+                showToast(msg, res.stopped_early ? 'warning' : 'success');
+                await this.refresh();
+            } catch (exc) {
+                const msg = (exc && exc.payload && exc.payload.detail)
+                    ? (typeof exc.payload.detail === 'string' ? exc.payload.detail : (exc.payload.detail.message || JSON.stringify(exc.payload.detail)))
+                    : String(exc.message || exc);
+                showToast(msg, 'error');
+            } finally {
+                this.bulkVerifying = false;
+                this.bulkProgress = '';
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

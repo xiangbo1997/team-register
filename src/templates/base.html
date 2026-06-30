@@ -4,155 +4,579 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Team Register{% endblock %}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script>
+        // Team-Register Enterprise Theme —— 与 Stitch 高保真原型 token 严格对齐
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            DEFAULT:   '#4F46E5',
+                            hover:     '#4338CA',
+                            container: 'rgba(79, 70, 229, 0.16)',
+                            50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 300: '#a5b4fc',
+                            400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca',
+                            800: '#3730a3', 900: '#312e81',
+                        },
+                        secondary: '#0EA5E9',
+                        success:   '#10B981',
+                        warning:   '#F59E0B',
+                        danger:    '#EF4444',
+                        // 语义色：通过 CSS 变量驱动，亮/暗模式各自映射（见下方 :root / html.dark CSS）
+                        // 注意：这些 token 不能用 / alpha 修饰（如 bg-app/50），需要 alpha 时用 white/black 系列
+                        surface:   'var(--color-surface)',
+                        app:       'var(--color-app)',
+                        subtle:    'var(--color-subtle)',
+                        border:    'var(--color-border)',
+                        muted:     'var(--color-muted)',
+                        body:      'var(--color-body)',
+                        // 为了 Stitch 风格的 success/12 danger/12 等 alpha 修饰兼容
+                        info:    { 50: '#f0f9ff', 100: '#e0f2fe', 500: '#0ea5e9', 600: '#0284c7', 700: '#0369a1' },
+                    },
+                    borderRadius: {
+                        DEFAULT: '8px',
+                        lg: '12px',
+                        xl: '16px',
+                    },
+                    fontFamily: {
+                        headline: ['Inter', 'sans-serif'],
+                        display:  ['Inter', 'sans-serif'],
+                        body:     ['Inter', 'sans-serif'],
+                        label:    ['"Public Sans"', 'sans-serif'],
+                        mono:     ['"JetBrains Mono"', 'monospace'],
+                    },
+                    boxShadow: {
+                        'token-sm': '0 1px 2px rgba(15, 23, 42, 0.06)',
+                        'token-md': '0 4px 12px rgba(15, 23, 42, 0.08)',
+                        'token-lg': '0 16px 48px rgba(15, 23, 42, 0.16)',
+                    },
+                },
+            },
+        };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Public+Sans:wght@500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+    {# i18n 基础设施前置到 <head>：必须早于 body 内各页面的内联 <script>（它们在顶层就调 window.i18n
+       构建 EXPORT_FORMATS / tiers / columnOptions 等数据）。若放到 content 之后定义，页面脚本顶层求值时
+       window.i18n 尚未定义 → TypeError → 整个 x-data 组件崩溃（症状：表格列/段位 tab/按钮全空）。#}
+    <script>
+    window._translations = {{ _translations() | tojson }};
+    window._locale = '{{ current_locale() }}';
+    window.__csrfToken = {{ (csrf_token or '') | tojson }};
+    window.i18n = function(key, params, fallback) {
+        let current = window._translations;
+        for (const part of key.split('.')) {
+            if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
+            current = current[part];
+        }
+        if (typeof current !== 'string') return fallback != null ? fallback : key;
+        if (params) {
+            for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
+        }
+        return current;
+    };
+    window.translateEnum = function(namespace, value, fallback) {
+        if (value == null || value === '') return fallback || '';
+        return window.i18n(namespace + '.' + value, null, fallback != null ? fallback : value);
+    };
+    </script>
     <style>
+        /* ──── 主题语义色 CSS 变量：亮色（默认）+ 暗色（html.dark）──── */
+        /* 通过 Tailwind 中的 var(--color-*) 引用，所有 bg-app/text-body/bg-surface/border-border
+           等语义色自动响应主题切换，零页面改动。 */
+        :root {
+            --color-app:     #F8FAFC;
+            --color-surface: #FFFFFF;
+            --color-subtle:  #F1F5F9;
+            --color-border:  #E2E8F0;
+            --color-muted:   #64748B;
+            --color-body:    #0F172A;
+            /* 滚动条 thumb 色，配合 .custom-scrollbar */
+            --color-scrollbar-thumb: #E2E8F0;
+        }
+        html.dark {
+            --color-app:     #0B1120;   /* slate-950 偏冷，比 sidebar #0F172A 稍深做层次 */
+            --color-surface: #111827;   /* slate-900：卡片/topbar 底 */
+            --color-subtle:  #1E293B;   /* slate-800：subtle bg（如 chip、code 块）*/
+            --color-border:  #1F2937;   /* slate-800：边框（比 surface 微亮一点）*/
+            --color-muted:   #94A3B8;   /* slate-400：辅助文字 */
+            --color-body:    #F1F5F9;   /* slate-100：主体文字 */
+            --color-scrollbar-thumb: #334155;
+        }
+        /* 暗色模式下，亮色装饰背景的 dot grid 不显眼，进一步降透明度 */
+        html.dark .theme-decor-dotgrid { opacity: 0.05 !important; }
+        /* 颜色过渡，避免切换时硬切 */
+        html, body, header, main, aside, [class*="bg-surface"], [class*="bg-app"], [class*="bg-subtle"] {
+            transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+        }
+
         [x-cloak] { display: none !important; }
+        body { font-feature-settings: 'cv02','cv03','cv04','cv11'; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .mono-text { font-family: 'JetBrains Mono', monospace; }
+        /* Active nav item: Stitch 设计 —— bg-white/16 底纹（不是 primary/16），3px Indigo 左条做点睛，icon 用 Indigo */
+        .sidebar-active {
+            background-color: rgba(255, 255, 255, 0.10);
+            color: #FFFFFF !important;
+            position: relative;
+        }
+        .sidebar-active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 60%;
+            background-color: #4F46E5;
+            border-radius: 0 2px 2px 0;
+        }
+        .sidebar-active .material-symbols-outlined {
+            color: #4F46E5;
+            font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+        }
+        .sidebar-active .sidebar-label { font-weight: 600; }
+        /* 收起态下 active 的 ::before 仍然显示（视觉锚点保留）*/
         .fade-in { animation: fadeIn 0.25s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+        @keyframes pulse-white { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .pulse-dot { animation: pulse-white 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--color-scrollbar-thumb); border-radius: 10px; }
+        /* Sidebar collapse: 展开 240px / 收起 64px。
+           关键：宽度由纯 CSS class 控制（不依赖 Alpine :class），首屏 IIFE 就把 .sidebar-collapsed 打到 <html>，
+           跳页/刷新都是同步生效，零闪烁（FOUC-free）。 */
+        aside.app-sidebar { width: 240px; }
+        .sidebar-collapsed aside.app-sidebar { width: 64px; }
+        /* header / main 的 ml 也走纯 CSS，跟 sidebar 同源同步 */
+        header.app-topbar { margin-left: 240px; max-width: calc(100% - 240px); }
+        main.app-main { margin-left: 240px; }
+        .sidebar-collapsed header.app-topbar { margin-left: 64px; max-width: calc(100% - 64px); }
+        .sidebar-collapsed main.app-main { margin-left: 64px; }
+        .sidebar-collapsed .sidebar-label,
+        .sidebar-collapsed .sidebar-brand-text { display: none; }
+        .sidebar-collapsed .sidebar-nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
+        .sidebar-collapsed .sidebar-brand { justify-content: center; padding-left: 0; padding-right: 0; }
+        /* 收起态：section header 退化为细分隔线（保留分组语义，但极简） */
+        .sidebar-collapsed .sidebar-section-header {
+            padding: 8px 12px 0;
+        }
+        .sidebar-collapsed .sidebar-section-header span { display: none; }
+        .sidebar-collapsed .sidebar-section-header::after {
+            content: '';
+            display: block;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.06);
+        }
+        /* 收起态：status pill 居中，仅留 dot */
+        .sidebar-collapsed .sidebar-status { justify-content: center; padding-top: 4px; }
+        /* Active 指示条在收起态居中（item 内已无 padding 偏移） */
+        .sidebar-collapsed .sidebar-active::before { left: -4px; }
+        /* Toggle icon 用 CSS rotate 切换方向，零 Alpine 依赖、零闪烁 */
+        .sidebar-toggle-icon { transition: transform 200ms ease-out; }
+        .sidebar-collapsed .sidebar-toggle-icon { transform: rotate(180deg); }
+
+        /* 收起态 hover tooltip：CSS-only，深色背景 + 左侧小箭头 + 柔和阴影 */
+        .sidebar-collapsed .sidebar-nav-item { position: relative; }
+        .sidebar-collapsed .sidebar-nav-item[data-tooltip]:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            left: calc(100% + 12px);
+            top: 50%;
+            transform: translateY(-50%);
+            background: #1E293B;
+            color: #F8FAFC;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.06);
+            z-index: 70;
+            pointer-events: none;
+        }
+        /* Tooltip 左侧的小三角箭头指向 icon */
+        .sidebar-collapsed .sidebar-nav-item[data-tooltip]:hover::before {
+            content: '';
+            position: absolute;
+            left: calc(100% + 6px);
+            top: 50%;
+            transform: translateY(-50%) rotate(45deg);
+            width: 8px;
+            height: 8px;
+            background: #1E293B;
+            z-index: 70;
+            pointer-events: none;
+        }
+        /* 重要：active item 已经有 ::before（左边条），收起态 hover 不能覆盖。仅 hover 时显示 tooltip arrow，用更高优先级选择器 */
+        .sidebar-collapsed .sidebar-nav-item[data-tooltip].sidebar-active:hover::before {
+            content: '';
+            left: -4px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 60%;
+            background: #4F46E5;
+            border-radius: 0 2px 2px 0;
+            rotate: none;
+        }
     </style>
+    <script>
+        // 零闪烁折叠 + 主题：所有视觉态由 <html> 的 className 通过纯 CSS 驱动。
+        // 1) 首屏 IIFE 在 Alpine 加载前同步注入 className（FOUC-free）；
+        // 2) toggle 函数直接操作 className，不走 Alpine 响应式（避免页面跳转时的 re-init 闪烁）；
+        // 3) localStorage 持久化跨页一致；默认主题为亮色（light）。
+        (function () {
+            try {
+                if (localStorage.getItem('tr.sidebarCollapsed') === '1') {
+                    document.documentElement.classList.add('sidebar-collapsed');
+                }
+                // 主题：默认 light，仅当用户显式选择 dark 才切；不读系统偏好（按用户需求默认亮色）
+                if (localStorage.getItem('tr.theme') === 'dark') {
+                    document.documentElement.classList.add('dark');
+                }
+            } catch (_) { /* localStorage 不可用时静默 */ }
+        })();
+        window.toggleSidebar = function () {
+            var html = document.documentElement;
+            var next = !html.classList.contains('sidebar-collapsed');
+            html.classList.toggle('sidebar-collapsed', next);
+            try { localStorage.setItem('tr.sidebarCollapsed', next ? '1' : '0'); } catch (_) {}
+        };
+        window.toggleTheme = function () {
+            var html = document.documentElement;
+            var next = !html.classList.contains('dark');
+            html.classList.toggle('dark', next);
+            try { localStorage.setItem('tr.theme', next ? 'dark' : 'light'); } catch (_) {}
+            // 派发自定义事件，供 Alpine 切换图标
+            window.dispatchEvent(new CustomEvent('tr:theme', { detail: { dark: next } }));
+        };
+        window.getCurrentTheme = function () {
+            return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+        };
+    </script>
     {% block head %}{% endblock %}
 </head>
-<body class="h-full bg-gray-50 text-gray-900">
-<div class="flex h-full" x-data="{ sidebarOpen: true }">
-    <aside class="w-56 bg-gray-900 text-gray-100 flex flex-col shrink-0" :class="sidebarOpen ? '' : 'hidden'">
-        <div class="px-4 py-5 border-b border-gray-700">
-            <h1 class="text-lg font-bold tracking-tight">{{ _('app.title') }}</h1>
-            <p class="text-xs text-gray-400 mt-0.5">{{ _('app.subtitle') }}</p>
-        </div>
-        <nav class="flex-1 px-2 py-3 space-y-1 text-sm">
-            <a href="/" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_overview %}{% endblock %}">
-                <span class="w-5 text-center">&#9635;</span> {{ _('nav.overview') }}
-            </a>
-            <a href="/tasks" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_tasks %}{% endblock %}">
-                <span class="w-5 text-center">&#9654;</span> {{ _('nav.tasks') }}
-            </a>
-            <a href="/config" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_config %}{% endblock %}">
-                <span class="w-5 text-center">&#9881;</span> {{ _('nav.config') }}
-            </a>
-            <a href="/providers" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_providers %}{% endblock %}">
-                <span class="w-5 text-center">&#9741;</span> {{ _('nav.providers') }}
-            </a>
-            <a href="/mail-accounts" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_mail_accounts %}{% endblock %}">
-                <span class="w-5 text-center">&#9993;</span> {{ _('nav.mail_accounts') }}
-            </a>
-            <a href="/cards" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_cards %}{% endblock %}">
-                <span class="w-5 text-center">&#128179;</span> 虚拟卡缓存
-            </a>
-            <a href="/help" class="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-gray-800 {% block nav_help %}{% endblock %}">
-                <span class="w-5 text-center">?</span> {{ _('nav.help') }}
-            </a>
-        </nav>
-        <div class="px-4 py-3 border-t border-gray-700 text-xs text-gray-500 space-y-1">
-            <a href="/docs" target="_blank" class="block hover:text-gray-300">{{ _('app.api_docs') }} &rarr;</a>
-            <a href="/manual" target="_blank" class="block hover:text-gray-300">{{ _('assistant.open_manual') }} &rarr;</a>
-        </div>
-    </aside>
+<body class="bg-app text-body font-body antialiased min-h-screen">
 
-    <main class="flex-1 overflow-y-auto">
-        <header class="bg-white border-b px-6 py-3 flex items-center justify-between sticky top-0 z-10">
-            <div class="flex items-center gap-3">
-                <button @click="sidebarOpen = !sidebarOpen" class="text-gray-500 hover:text-gray-700">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-                </button>
-                <h2 class="text-base font-semibold">{% block page_title %}Dashboard{% endblock %}</h2>
-            </div>
-            <div class="flex items-center gap-4">
-                <div x-data="langSwitcher()" class="flex items-center gap-1 text-xs" role="group" aria-label="Language">
-                    <button @click="setLang('zh-CN')" class="px-1.5 py-0.5 rounded" :aria-pressed="currentLang === 'zh-CN'"
-                            :class="currentLang === 'zh-CN' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-400 hover:text-gray-600'">ZH</button>
-                    <span class="text-gray-300">|</span>
-                    <button @click="setLang('en')" class="px-1.5 py-0.5 rounded" :aria-pressed="currentLang === 'en'"
-                            :class="currentLang === 'en' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-400 hover:text-gray-600'">EN</button>
-                </div>
-                <div class="hidden sm:block text-xs text-gray-500">
-                    {% if current_user %}
-                    <span class="font-medium">{{ current_user.username }}</span>
-                    <span class="text-gray-400">/ {{ current_user.role }}</span>
-                    {% else %}
-                    <a href="/login" class="hover:text-gray-700">{{ _('auth.login') }}</a>
-                    {% endif %}
-                </div>
-                <div class="text-xs text-gray-400" id="clock" x-data x-init="setInterval(() => $el.textContent = new Date().toLocaleTimeString('{{ current_locale() }}'), 1000)"></div>
-                {% if current_user %}
-                <button onclick="logoutConsole()" class="text-xs px-3 py-1.5 border rounded-md hover:bg-gray-50">{{ _('auth.logout') }}</button>
-                {% endif %}
-            </div>
-        </header>
-        <div class="p-6">
-            {% block content %}{% endblock %}
-        </div>
-    </main>
-</div>
+{# ─────────────── 装饰背景：subtle indigo dot grid（暗色模式自动降透明）─────────────── #}
+<div class="theme-decor-dotgrid fixed inset-0 pointer-events-none -z-10 opacity-[0.03]" style="background-image: radial-gradient(#4F46E5 1px, transparent 1px); background-size: 24px 24px;"></div>
 
+{# ─────────────── Sidebar （Stitch 高保真重构）─────────────── #}
+{# 设计要点：Brand 简化为 icon+单行标题 / Nav 分两组（工作流·资源管理）/ Active 用 white/10 底 + 3px Indigo 左条 + filled icon / 收起态留 rail 64px / Toggle 按钮浮贴右边缘 #}
+<aside x-data class="app-sidebar h-screen flex flex-col fixed left-0 top-0 bg-[#0F172A] z-[60] transition-[width] duration-200 ease-out">
+    {# Brand block：icon + 单行品牌 #}
+    <div class="h-[60px] flex items-center px-4 sidebar-brand flex-shrink-0">
+        <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0 shadow-token-sm">
+            <span class="material-symbols-outlined text-white text-[20px]">account_tree</span>
+        </div>
+        <span class="ml-3 text-base font-semibold text-white tracking-tight sidebar-brand-text">{{ _('app.title') }}</span>
+    </div>
+
+    {# Rail-toggle 按钮：浮贴 sidebar 右边缘（Linear/Notion 风格），不再挤在 header 里
+       icon 用 CSS rotate 切换方向（不依赖 Alpine 响应式 → 零闪烁）#}
+    <button onclick="window.toggleSidebar()"
+            class="sidebar-rail-toggle absolute top-[72px] -right-3 w-6 h-6 rounded-full bg-surface border border-border shadow-token-md flex items-center justify-center text-muted hover:border-primary hover:text-primary hover:scale-105 active:scale-95 transition-all z-[61]"
+            aria-label="{{ _('common.toggle_sidebar') }}" title="{{ _('common.toggle_sidebar') }}">
+        <span class="material-symbols-outlined text-[16px] sidebar-toggle-icon">chevron_left</span>
+    </button>
+
+    {# Nav items —— 分两组：工作流 / 资源管理；每个 item 用 Material icon + 中文 label；收起态 hover 显示 CSS tooltip #}
+    <nav class="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
+
+        {# Group: 工作流 #}
+        <div class="px-3 pt-2 pb-1 sidebar-section-header">
+            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">{{ _('nav.group_workflow') }}</span>
+        </div>
+
+        <a href="/" data-tooltip="{{ _('nav.overview') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_overview %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">dashboard</span>
+            <span class="sidebar-label truncate">{{ _('nav.overview') }}</span>
+        </a>
+        <a href="/tasks" data-tooltip="{{ _('nav.tasks') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_tasks %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">assignment</span>
+            <span class="sidebar-label truncate flex items-center gap-1.5">{{ _('nav.tasks') }}
+                <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#10A37F] leading-none">openai</span>
+            </span>
+        </a>
+        <a href="/grok" data-tooltip="{{ _('nav.grok') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_grok %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">rocket_launch</span>
+            <span class="sidebar-label truncate flex items-center gap-1.5">{{ _('nav.grok') }}
+                <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/10 text-[#0EA5E9] leading-none">x.ai</span>
+            </span>
+        </a>
+        <a href="/checkout-link" data-tooltip="{{ _('nav.checkout_link') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_checkout_link %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">rocket_launch</span>
+            <span class="sidebar-label truncate">{{ _('nav.checkout_link') }}</span>
+        </a>
+        <a href="/config" data-tooltip="{{ _('nav.config') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_config %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">settings</span>
+            <span class="sidebar-label truncate">{{ _('nav.config') }}</span>
+        </a>
+
+        {# Group: 资源管理 #}
+        <div class="px-3 pt-4 pb-1 sidebar-section-header">
+            <span class="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">{{ _('nav.group_resources') }}</span>
+        </div>
+
+        <a href="/providers" data-tooltip="{{ _('nav.providers') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_providers %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">cloud_queue</span>
+            <span class="sidebar-label truncate">{{ _('nav.providers') }}</span>
+        </a>
+        <a href="/registration-profiles" data-tooltip="{{ _('nav.registration_profiles') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_registration_profiles %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">category</span>
+            <span class="sidebar-label truncate">{{ _('nav.registration_profiles') }}</span>
+        </a>
+        <a href="/mail-accounts" data-tooltip="{{ _('nav.mail_accounts') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_mail_accounts %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">mail</span>
+            <span class="sidebar-label truncate">{{ _('nav.mail_accounts') }}</span>
+        </a>
+        <a href="/cards" data-tooltip="{{ _('nav.cards') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_cards %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">credit_card</span>
+            <span class="sidebar-label truncate">{{ _('nav.cards') }}</span>
+        </a>
+        <a href="/workflows" data-tooltip="{{ _('nav.workflows') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_workflows %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">neurology</span>
+            <span class="sidebar-label truncate">{{ _('nav.workflows') }}</span>
+        </a>
+        <a href="/proxies" data-tooltip="{{ _('nav.proxies') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_proxies %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">vpn_lock</span>
+            <span class="sidebar-label truncate">{{ _('nav.proxies') }}</span>
+        </a>
+        <a href="/proxy-providers" data-tooltip="{{ _('nav.proxy_providers') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_proxy_providers %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">cloud_sync</span>
+            <span class="sidebar-label truncate">{{ _('nav.proxy_providers') }}</span>
+        </a>
+        <a href="/promo-codes" data-tooltip="{{ _('nav.promo_codes') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_promo_codes %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">confirmation_number</span>
+            <span class="sidebar-label truncate">{{ _('nav.promo_codes') }}</span>
+        </a>
+        <a href="/accounts" data-tooltip="{{ _('nav.accounts') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_accounts %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">group</span>
+            <span class="sidebar-label truncate">{{ _('nav.accounts') }}</span>
+        </a>
+    </nav>
+
+    {# Footer：帮助链接 + status pill（API 版本 + 健康 dot），收起态保留 status dot #}
+    <div class="px-3 py-3 border-t border-white/5 space-y-1 flex-shrink-0">
+        <a href="/help" data-tooltip="{{ _('nav.help') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                          {% block nav_help %}text-[#94A3B8] hover:bg-white/[0.06] hover:text-white{% endblock %}">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">help</span>
+            <span class="sidebar-label truncate">{{ _('nav.help') }}</span>
+        </a>
+        <a href="/manual" target="_blank" data-tooltip="{{ _('nav.manual') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-[#94A3B8] hover:bg-white/[0.06] hover:text-white text-sm transition-colors">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">menu_book</span>
+            <span class="sidebar-label truncate">{{ _('nav.manual') }}</span>
+        </a>
+        <a href="/docs" target="_blank" data-tooltip="{{ _('nav.api_docs') }}"
+           class="sidebar-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-[#94A3B8] hover:bg-white/[0.06] hover:text-white text-sm transition-colors">
+            <span class="material-symbols-outlined text-[20px] flex-shrink-0">api</span>
+            <span class="sidebar-label truncate">{{ _('nav.api_docs') }}</span>
+        </a>
+        {# Status pill：展开态显示版本号 + 健康 dot，收起态只留 dot 居中 #}
+        <div class="flex items-center justify-between px-3 pt-2 mt-1 border-t border-white/5 sidebar-status">
+            <span class="text-[10px] font-label tracking-wider uppercase text-[#475569] sidebar-label">API v2.4</span>
+            <div class="w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_6px_rgba(16,185,129,0.6)]"></div>
+        </div>
+    </div>
+</aside>
+
+{# ─────────────── Top Bar ─────────────── #}
+{# 左边距 / 宽度跟随 sidebar 状态；transition 与 aside 同步 200ms #}
+<header class="app-topbar h-[60px] w-full sticky top-0 z-50 bg-surface border-b border-border shadow-token-sm flex justify-between items-center px-6 transition-[margin,max-width] duration-200 ease-out">
+    <div class="flex items-center gap-4">
+        <span class="material-symbols-outlined text-muted md:hidden cursor-pointer">menu</span>
+        <h2 class="text-lg font-semibold text-body">{% block page_title %}Dashboard{% endblock %}</h2>
+    </div>
+    <div class="flex items-center gap-6">
+        {# Theme toggle：sun（亮色态显示，点击切到暗）/ moon（暗色态显示，点击切到亮）#}
+        <button
+            x-data="{ dark: window.getCurrentTheme() === 'dark' }"
+            x-init="window.addEventListener('tr:theme', e => dark = e.detail.dark)"
+            @click="window.toggleTheme()"
+            class="w-8 h-8 flex items-center justify-center rounded-full bg-subtle text-muted hover:text-primary hover:scale-105 active:scale-95 transition-all"
+            :aria-label="dark ? i18n('common.theme_to_light') : i18n('common.theme_to_dark')"
+            :title="dark ? i18n('common.theme_to_light') : i18n('common.theme_to_dark')"
+        >
+            <span class="material-symbols-outlined text-[18px]" x-text="dark ? 'light_mode' : 'dark_mode'"></span>
+        </button>
+
+        {# ZH/EN toggle #}
+        <div x-data="langSwitcher()" class="flex items-center gap-2 px-3 py-1 bg-subtle rounded-full text-xs font-medium" role="group" aria-label="Language">
+            <span @click="setLang('zh-CN')" :class="currentLang === 'zh-CN' ? 'text-primary cursor-pointer' : 'text-neutral-500 cursor-pointer hover:text-primary'">ZH</span>
+            <span class="text-neutral-300">|</span>
+            <span @click="setLang('en')" :class="currentLang === 'en' ? 'text-primary cursor-pointer' : 'text-neutral-500 cursor-pointer hover:text-primary'">EN</span>
+        </div>
+
+        {# User chip #}
+        {% if current_user %}
+        <div class="flex items-center gap-3">
+            <div class="flex flex-col items-end">
+                <span class="text-sm font-medium">{{ current_user.username }}</span>
+                <span class="mono-text text-[10px] text-muted">{{ current_user.role }}</span>
+            </div>
+            <div class="w-8 h-8 rounded-full bg-primary/10 border border-border flex items-center justify-center text-primary text-xs font-bold">
+                {{ current_user.username[0]|upper if current_user.username else '?' }}
+            </div>
+        </div>
+        {% else %}
+        <a href="/login" class="text-sm text-muted hover:text-primary transition-colors">{{ _('auth.login') }}</a>
+        {% endif %}
+
+        {# Clock + logout #}
+        <div class="flex items-center gap-4 text-muted">
+            <div class="flex items-center gap-1 mono-text text-xs">
+                <span class="material-symbols-outlined text-sm">schedule</span>
+                <span id="clock" x-data x-init="setInterval(() => $el.textContent = new Date().toLocaleTimeString('{{ current_locale() }}'), 1000)"></span>
+            </div>
+            {% if current_user %}
+            <button onclick="logoutConsole()" class="flex items-center gap-1 px-3 py-1.5 border border-danger/20 text-danger rounded-lg hover:bg-danger/5 transition-all text-sm font-medium">
+                <span class="material-symbols-outlined text-sm">logout</span>
+                <span>{{ _('auth.logout') }}</span>
+            </button>
+            {% endif %}
+        </div>
+    </div>
+</header>
+
+{# ─────────────── Main Content ─────────────── #}
+<main class="app-main p-6 min-h-[calc(100vh-60px)] transition-[margin] duration-200 ease-out">
+    {% block content %}{% endblock %}
+</main>
+
+{# ─────────────── AI Assistant FAB + Panel ─────────────── #}
 {% if assistant_enabled %}
 <div
     x-data="assistantWidget({ enabled: {{ 'true' if assistant_enabled else 'false' }}, backendReady: {{ 'true' if assistant_backend_ready else 'false' }} })"
     x-init="init()"
-    class="fixed bottom-4 right-4 z-40"
+    @keydown.escape.window="open = false"
+    data-assistant-root
+    class="fixed bottom-8 right-8 z-[70]"
+    :style="widgetStyle()"
     x-cloak
 >
     <button
         x-show="!open"
-        @click="open = true"
-        class="inline-flex items-center gap-2 rounded-full bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-lg hover:bg-blue-700"
+        @mousedown="startDrag($event)"
+        @touchstart="startDrag($event)"
+        @click="onLauncherClick()"
+        type="button"
+        title="{{ _('assistant.drag_hint') }}"
+        class="bg-primary text-white flex items-center gap-3 px-5 py-3 rounded-full shadow-token-lg hover:bg-primary-hover active:scale-95 transition-all cursor-grab active:cursor-grabbing select-none"
     >
-        <span class="h-2.5 w-2.5 rounded-full bg-white pulse-dot"></span>
-        <span>{{ _('assistant.launcher') }}</span>
+        <div class="relative pointer-events-none">
+            <span class="material-symbols-outlined">smart_toy</span>
+            <span class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-white rounded-full border-2 border-primary pulse-dot"></span>
+        </div>
+        <span class="font-semibold text-sm pointer-events-none">{{ _('assistant.launcher') }}</span>
     </button>
 
-    <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-gray-200 bg-white shadow-2xl fade-in">
-        <div class="flex items-start justify-between border-b px-4 py-3">
+    <div x-show="open" class="w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-token-lg fade-in relative z-[71]">
+        {# 标题栏：绑拖拽事件让展开态也能拖动；close 按钮加 @mousedown.stop 防止冒泡触发 startDrag #}
+        <div
+            class="flex items-start justify-between border-b border-border px-4 py-3 cursor-grab active:cursor-grabbing select-none"
+            @mousedown="startDrag($event)"
+            @touchstart="startDrag($event)"
+        >
             <div>
-                <h3 class="text-sm font-semibold text-gray-900">{{ _('assistant.title') }}</h3>
-                <p class="mt-1 text-xs text-gray-500" x-text="ready ? i18n('assistant.status_ready') : i18n('assistant.status_fallback')"></p>
+                <h3 class="text-sm font-semibold text-body">{{ _('assistant.title') }}</h3>
+                <p class="mt-1 text-xs text-muted" x-text="ready ? i18n('assistant.status_ready') : i18n('assistant.status_fallback')"></p>
             </div>
-            <button @click="open = false" class="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700">{{ _('common.close') }}</button>
+            {# Close 按钮：type=button 防止隐含 submit；@click.stop 防止冒泡到父 widget；
+               @mousedown.stop 防止触发标题栏的 startDrag；
+               z-[72] + relative 保证按钮永远在最顶层不被任何透明覆盖层挡住（修复"× 点不掉"）#}
+            <button
+                @click.stop="open = false"
+                @mousedown.stop
+                type="button"
+                aria-label="{{ _('assistant.close_widget') }}"
+                title="{{ _('assistant.close_esc') }}"
+                class="relative z-[72] rounded-md p-1 text-muted hover:bg-subtle hover:text-body cursor-pointer pointer-events-auto"
+            >
+                <span class="material-symbols-outlined text-base pointer-events-none">close</span>
+            </button>
         </div>
 
-        <div class="border-b bg-gray-50 px-4 py-3 space-y-3">
+        <div class="border-b border-border bg-subtle px-4 py-3 space-y-3">
             <div class="flex items-center gap-2 text-xs">
                 <button
                     @click="intentMode = 'answer'"
-                    class="rounded-full px-2.5 py-1"
-                    :class="intentMode === 'answer' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 border'"
+                    class="rounded-full px-2.5 py-1 transition-colors"
+                    :class="intentMode === 'answer' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted border border-border'"
                 >{{ _('assistant.mode_answer') }}</button>
                 <button
                     @click="intentMode = 'action'"
-                    class="rounded-full px-2.5 py-1"
-                    :class="intentMode === 'action' ? 'bg-blue-100 text-blue-700' : 'bg-white text-gray-500 border'"
+                    class="rounded-full px-2.5 py-1 transition-colors"
+                    :class="intentMode === 'action' ? 'bg-primary/10 text-primary' : 'bg-surface text-muted border border-border'"
                 >{{ _('assistant.mode_action') }}</button>
-                <a href="/help" class="ml-auto text-blue-600 hover:text-blue-700">{{ _('common.learn_more') }}</a>
+                <a href="/help" class="ml-auto text-primary hover:text-primary-hover">{{ _('common.learn_more') }}</a>
             </div>
             <div class="flex flex-wrap gap-2">
                 <template x-for="prompt in quickPrompts" :key="prompt">
-                    <button @click="sendPrompt(prompt)" class="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-700" x-text="prompt"></button>
+                    <button @click="sendPrompt(prompt)" class="rounded-full border border-border bg-surface px-3 py-1 text-xs text-muted hover:border-primary/40 hover:text-primary transition-colors" x-text="prompt"></button>
                 </template>
             </div>
         </div>
 
-        <div class="max-h-[20rem] space-y-3 overflow-y-auto px-4 py-3">
+        <div class="max-h-[20rem] space-y-3 overflow-y-auto px-4 py-3 custom-scrollbar">
             <template x-for="(item, index) in messages" :key="index">
                 <div>
-                    <div class="mb-1 text-[11px] uppercase tracking-wide text-gray-400" x-text="item.role === 'user' ? i18n('assistant.you') : i18n('assistant.title')"></div>
+                    <div class="mb-1 text-[11px] font-label uppercase tracking-wider text-muted" x-text="item.role === 'user' ? i18n('assistant.you') : i18n('assistant.title')"></div>
                     <div
                         class="rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap"
-                        :class="item.role === 'user' ? 'bg-blue-600 text-white ml-8' : 'bg-gray-100 text-gray-800 mr-8'"
+                        :class="item.role === 'user' ? 'bg-primary text-white ml-8' : 'bg-subtle text-body mr-8'"
                         x-text="item.content"
                     ></div>
 
                     <template x-if="item.manual_citations && item.manual_citations.length">
-                        <div class="mt-2 rounded-xl border border-blue-100 bg-blue-50 p-3">
-                            <div class="text-xs font-medium text-blue-700">{{ _('assistant.manual_citations') }}</div>
+                        <div class="mt-2 rounded-xl border border-primary/20 bg-primary/5 p-3">
+                            <div class="text-xs font-medium text-primary">{{ _('assistant.manual_citations') }}</div>
                             <div class="mt-2 space-y-2">
                                 <template x-for="cite in item.manual_citations" :key="cite.reference">
-                                    <div class="rounded-lg bg-white p-2 text-xs text-gray-700">
+                                    <div class="rounded-lg bg-surface p-2 text-xs text-body">
                                         <div class="font-medium" x-text="cite.title"></div>
-                                        <div class="mt-1 text-gray-500" x-text="cite.reference"></div>
+                                        <div class="mt-1 text-muted" x-text="cite.reference"></div>
                                         <div class="mt-1" x-text="cite.snippet"></div>
                                     </div>
                                 </template>
@@ -161,13 +585,13 @@
                     </template>
 
                     <template x-if="item.repo_citations && item.repo_citations.length">
-                        <div class="mt-2 rounded-xl border border-gray-200 bg-white p-3">
-                            <div class="text-xs font-medium text-gray-700">{{ _('assistant.repo_citations') }}</div>
+                        <div class="mt-2 rounded-xl border border-border bg-surface p-3">
+                            <div class="text-xs font-medium text-body">{{ _('assistant.repo_citations') }}</div>
                             <div class="mt-2 space-y-2">
                                 <template x-for="cite in item.repo_citations" :key="cite.reference">
-                                    <div class="rounded-lg bg-gray-50 p-2 text-xs text-gray-700">
+                                    <div class="rounded-lg bg-subtle p-2 text-xs text-body">
                                         <div class="font-medium" x-text="cite.title"></div>
-                                        <div class="mt-1 font-mono text-[11px] text-gray-500" x-text="cite.reference"></div>
+                                        <div class="mt-1 mono-text text-[11px] text-muted" x-text="cite.reference"></div>
                                         <div class="mt-1" x-text="cite.snippet"></div>
                                     </div>
                                 </template>
@@ -176,31 +600,31 @@
                     </template>
 
                     <template x-if="item.required_fields && item.required_fields.length">
-                        <div class="mt-2 rounded-xl border border-yellow-200 bg-yellow-50 p-3 text-xs text-yellow-800">
+                        <div class="mt-2 rounded-xl border border-warning/20 bg-warning/5 p-3 text-xs text-warning">
                             <div class="font-medium">{{ _('assistant.need_fields') }}</div>
                             <div class="mt-1" x-text="item.required_fields.join(', ')"></div>
                         </div>
                     </template>
 
                     <template x-if="item.preview">
-                        <div class="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                        <div class="mt-2 rounded-xl border border-success/20 bg-success/5 p-3 text-xs text-success">
                             <div class="flex items-center justify-between gap-3">
                                 <div class="font-medium">{{ _('assistant.preview_title') }}</div>
                                 <button
                                     x-show="item.can_commit"
                                     @click="commitPreview(item.preview_id)"
-                                    class="rounded-md bg-emerald-600 px-2.5 py-1 text-white hover:bg-emerald-700"
+                                    class="rounded-md bg-success px-2.5 py-1 text-white hover:opacity-90"
                                 >{{ _('common.commit') }}</button>
                             </div>
                             <div class="mt-2" x-text="item.preview.summary"></div>
                             <template x-if="item.preview.diff && item.preview.diff.length">
                                 <div class="mt-2 space-y-1">
                                     <template x-for="diff in item.preview.diff" :key="diff.field + String(diff.after)">
-                                        <div class="rounded-lg bg-white px-2 py-1 text-[11px] text-gray-700">
+                                        <div class="rounded-lg bg-surface px-2 py-1 text-[11px] text-body">
                                             <span class="font-medium" x-text="diff.field"></span>
-                                            <span class="mx-1 text-gray-400">:</span>
-                                            <span class="text-gray-500" x-text="JSON.stringify(diff.before)"></span>
-                                            <span class="mx-1 text-gray-400">→</span>
+                                            <span class="mx-1 text-muted">:</span>
+                                            <span class="text-muted" x-text="JSON.stringify(diff.before)"></span>
+                                            <span class="mx-1 text-muted">→</span>
                                             <span x-text="JSON.stringify(diff.after)"></span>
                                         </div>
                                     </template>
@@ -208,39 +632,60 @@
                             </template>
                         </div>
                     </template>
+
+                    <template x-if="item.suggested_actions && item.suggested_actions.length">
+                        <div class="mt-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-700">
+                            <div class="font-medium mb-2">{{ _('assistant.suggested_templates') }}</div>
+                            <div class="flex flex-wrap gap-2">
+                                <template x-for="sa in item.suggested_actions" :key="sa.label">
+                                    <button
+                                        @click="applySuggestedAction(sa)"
+                                        class="rounded-md border border-violet-300 bg-surface px-2.5 py-1 text-violet-700 hover:bg-violet-100"
+                                        :title="sa.warning || ''"
+                                        x-text="sa.label"
+                                    ></button>
+                                </template>
+                            </div>
+                            <template x-if="item.suggested_actions.some(a => a.warning)">
+                                <div class="mt-2 text-[11px] text-warning">
+                                    ⚠ {{ _('assistant.template_placeholder_warning') }}
+                                </div>
+                            </template>
+                        </div>
+                    </template>
                 </div>
             </template>
 
-            <div x-show="loading" class="rounded-2xl bg-gray-100 px-3 py-2 text-sm text-gray-500">
+            <div x-show="loading" class="rounded-2xl bg-subtle px-3 py-2 text-sm text-muted">
                 {{ _('assistant.thinking') }}
             </div>
         </div>
 
-        <div class="border-t px-4 py-3 space-y-2">
+        <div class="border-t border-border px-4 py-3 space-y-2">
             <template x-if="intentMode === 'action'">
                 <textarea
                     x-model="draftActionText"
                     rows="3"
-                    class="w-full rounded-xl border border-gray-200 px-3 py-2 text-xs font-mono focus:border-blue-500 focus:outline-none"
+                    class="w-full rounded-xl border border-border px-3 py-2 text-xs mono-text focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-colors"
                     :placeholder="i18n('assistant.action_json_placeholder')"
                 ></textarea>
             </template>
             <textarea
                 x-model="messageInput"
                 rows="2"
-                class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                class="w-full rounded-xl border border-border px-3 py-2 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-colors"
                 :placeholder="i18n('assistant.input_placeholder')"
                 @keydown.meta.enter.prevent="sendPrompt()"
                 @keydown.ctrl.enter.prevent="sendPrompt()"
             ></textarea>
             <div class="flex items-center justify-between gap-2">
-                <div class="text-[11px] text-gray-500">{{ _('assistant.safe_boundary') }}</div>
+                <div class="text-[11px] text-muted">{{ _('assistant.safe_boundary') }}</div>
                 <div class="flex items-center gap-2">
-                    <a href="/manual" target="_blank" class="text-xs text-blue-600 hover:text-blue-700">{{ _('assistant.open_manual') }}</a>
+                    <a href="/manual" target="_blank" class="text-xs text-primary hover:text-primary-hover">{{ _('assistant.open_manual') }}</a>
                     <button
                         @click="sendPrompt()"
                         :disabled="loading"
-                        class="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        class="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                     >{{ _('assistant.send') }}</button>
                 </div>
             </div>
@@ -249,30 +694,12 @@
 </div>
 {% endif %}
 
-<div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+<div id="toast-container" class="fixed bottom-4 right-4 z-[100] space-y-2"></div>
+<!-- 全局弹窗单例宿主：confirmDialog / promptDialog 复用，feedback.js 接管显隐 -->
+<div id="feedback-modal-root" class="hidden"></div>
 
 <script>
-window._translations = {{ _translations() | tojson }};
-window._locale = '{{ current_locale() }}';
-window.__csrfToken = {{ (csrf_token or '') | tojson }};
-window.i18n = function(key, params, fallback) {
-    let current = window._translations;
-    for (const part of key.split('.')) {
-        if (current == null || typeof current !== 'object') return fallback != null ? fallback : key;
-        current = current[part];
-    }
-    if (typeof current !== 'string') return fallback != null ? fallback : key;
-    if (params) {
-        for (const [k, v] of Object.entries(params)) current = current.replace('{' + k + '}', v);
-    }
-    return current;
-};
-
-window.translateEnum = function(namespace, value, fallback) {
-    if (value == null || value === '') return fallback || '';
-    return window.i18n(namespace + '.' + value, null, fallback != null ? fallback : value);
-};
-
+{# window._translations / i18n / translateEnum 已前移到 <head>（见上方注释），此处不再重复定义。#}
 function langSwitcher() {
     return {
         currentLang: window._locale,
@@ -283,16 +710,6 @@ function langSwitcher() {
             window.location.reload();
         }
     }
-}
-
-function showToast(msg, type = 'info') {
-    const container = document.getElementById('toast-container');
-    const colors = { success: 'bg-green-600', error: 'bg-red-600', warning: 'bg-yellow-600', info: 'bg-gray-700' };
-    const el = document.createElement('div');
-    el.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-lg shadow-lg fade-in`;
-    el.textContent = msg;
-    container.appendChild(el);
-    setTimeout(() => el.remove(), 4000);
 }
 
 async function fetchJson(url, options = {}) {
@@ -317,11 +734,7 @@ async function fetchJson(url, options = {}) {
     }
     const response = await fetch(url, { ...options, method, headers, body });
     let data = {};
-    try {
-        data = await response.json();
-    } catch (_) {
-        data = {};
-    }
+    try { data = await response.json(); } catch (_) { data = {}; }
     if (typeof data.csrf_token === 'string' && data.csrf_token) {
         window.__csrfToken = data.csrf_token;
     }
@@ -332,6 +745,134 @@ async function fetchJson(url, options = {}) {
         throw error;
     }
     return data;
+}
+
+// 从 Content-Disposition 响应头解析下载文件名（兼容 filename* / filename 两种写法）。
+function _parseDownloadFilename(headers, fallback) {
+    const cd = headers.get('Content-Disposition') || '';
+    // RFC 5987 filename*=UTF-8''xxx 优先
+    let m = cd.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+    if (m && m[1]) {
+        try { return decodeURIComponent(m[1].trim().replace(/^["']|["']$/g, '')); } catch (_) {}
+    }
+    m = cd.match(/filename="?([^";]+)"?/i);
+    if (m && m[1]) return m[1].trim();
+    return fallback || 'download';
+}
+
+// ArrayBuffer → base64 字符串（桌面端二进制经 Python 桥另存为时无损传输用）。
+// 分块处理避免 String.fromCharCode 对大 buffer 触发栈溢出。
+function _arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunk = 0x8000;  // 32KB 一块
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+}
+
+// 用 fetch 拉取附件并通过 Blob + createObjectURL 触发浏览器下载。
+//
+// 为什么不用 <a href> 直接指向下载 URL：桌面应用（pywebview/WebView）没有内置
+// 下载管理器，点这种返回 Content-Disposition:attachment 的链接要么静默无反应，
+// 要么把二进制当页面导航把控制台冲掉。改成前端拉 blob 再下载，浏览器与 WebView 通用。
+//
+// 返回服务端通过 X-Export-Skipped-Count 头暴露的跳过条数（无则 0）。
+async function downloadFile(url, { fallbackName = 'download' } = {}) {
+    const response = await fetch(url, { credentials: 'same-origin' });
+    if (!response.ok) {
+        let detail = response.statusText || `HTTP ${response.status}`;
+        try { const j = await response.json(); detail = j.detail || j.message || detail; } catch (_) {}
+        const err = new Error(detail);
+        err.status = response.status;
+        throw err;
+    }
+    const filename = _parseDownloadFilename(response.headers, fallbackName);
+    const skipped = parseInt(response.headers.get('X-Export-Skipped-Count') || '0', 10);
+    const skippedCount = Number.isFinite(skipped) ? skipped : 0;
+
+    // 桌面端（pywebview / macOS WKWebView）：<a download> 与 blob URL 不触发下载，
+    // 点击会被 WebView 当页面导航把 CSV/JSON 平铺渲染。改走 Python 桥的原生保存
+    // 对话框，把内容交给系统另存为。
+    //
+    // 文本（CSV / JSON / TXT）直接传字符串；二进制（多账号导出 zip）必须 base64 传输——
+    // 否则 response.text() 会把 zip 字节按 UTF-8 解码替换成 U+FFFD 损坏文件（症状：
+    // 多账号导出 zip 解压后为空）。按 Content-Type 判定是否二进制。
+    const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.save_file
+        ? window.pywebview.api : null;
+    if (bridge) {
+        const ctype = (response.headers.get('Content-Type') || '').toLowerCase();
+        const isBinary = ctype.includes('zip') || ctype.includes('octet-stream');
+        let res;
+        if (isBinary) {
+            const buf = await response.arrayBuffer();
+            const b64 = _arrayBufferToBase64(buf);
+            res = await bridge.save_file(filename, b64, true);
+        } else {
+            const text = await response.text();
+            res = await bridge.save_file(filename, text, false);
+        }
+        if (res && res.ok) {
+            return { filename, skipped: skippedCount, savedPath: res.path };
+        }
+        if (res && res.cancelled) {
+            // 用户主动取消：抛带标记的错误，调用方据此静默处理、不报错。
+            const err = new Error('用户取消了保存');
+            err.cancelled = true;
+            throw err;
+        }
+        throw new Error((res && res.error) || i18n('common.save_failed_native'));
+    }
+
+    // Web 端（浏览器访问）：标准 blob 下载，行为不变。
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 延迟 revoke：部分 WebView 立即 revoke 会中断尚未开始的下载
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    return { filename, skipped: skippedCount };
+}
+
+// 复制文本到剪贴板，带桌面 WebView 降级。
+// navigator.clipboard 要求 secure context，且部分 WebView（macOS WKWebView 在
+// http://localhost 下）会拒绝或静默失败；失败时降级到 execCommand('copy') +
+// 临时 textarea，保证桌面端也能复制。
+async function copyToClipboard(text) {
+    if (!text) return;
+    // 桌面端（pywebview WKWebView）：navigator.clipboard 非安全上下文被拒、
+    // execCommand 已被新版 WebKit 弃用，两层降级都失败。优先走 Python 原生桥
+    // （pbcopy / clip / xclip 写系统剪贴板），绕开浏览器沙箱。Web 端无此桥，跳过。
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.copy_to_clipboard) {
+        try {
+            const res = await window.pywebview.api.copy_to_clipboard(text);
+            if (res && res.ok) return;
+        } catch (_) { /* 桥失败则落到浏览器 API 降级 */ }
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch (_) { /* 落到 execCommand 降级 */ }
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    ta.remove();
+    if (!ok) throw new Error(i18n('accounts.copy_failed_manual'));
 }
 
 async function logoutConsole() {
@@ -350,52 +891,116 @@ function assistantWidget({ enabled, backendReady }) {
         loading: false,
         enabled,
         backendReady,
+        // ── 浮窗拖拽（避免遮挡表格操作列）──
+        // pos=null 表示用默认右下角定位；拖拽后存绝对 left/top（px），记 localStorage。
+        pos: null,            // { left, top } 或 null
+        _drag: null,          // 拖拽过程中的临时状态
+        _moved: false,        // 区分点击 vs 拖拽（移动 > 4px 算拖拽，不触发 open）
         messageInput: '',
         draftActionText: '',
         intentMode: 'answer',
-        // 默认 quick prompts；init() 会根据当前页面路径替换为更相关的
         quickPrompts: [
             i18n('assistant.quick_login'),
             i18n('assistant.quick_provider'),
             i18n('assistant.quick_preview'),
             i18n('assistant.quick_scope'),
         ],
-        // 路径感知的 quick prompts —— 进入对应页面时自动替换浮窗按钮
-        // 这些 prompt 命中 docs/architecture/provider-config-flow.md 中的内容
-        pageAwarePrompts: {
-            '/config': [
-                'L1 .env / L2 provider profile / L3 任务级 三层优先级是什么？',
-                'efuncard_token 在 .env 和 /providers 都设了，谁赢？',
-                '改了 /config 没生效，怎么排查？',
-                'WARMUP_ACCOUNT_POOL 怎么填？',
-            ],
-            '/providers': [
-                '我想加一个新的 card provider 档案，该填什么？',
-                'provider profile 的 driver 字段支持哪些值？',
-                '改 provider profile 会立即生效吗？需要重启吗？',
-                'provider 改错了能回滚吗？',
-            ],
-            '/mail-accounts': [
-                'mail_accounts 和 WARMUP_ACCOUNT_POOL 有什么区别？',
-                '凭据账号的 role 字段什么意思？',
-                '如何为任务绑定特定的邮箱账号？',
-                'credentialed 模式邮箱账号怎么配？',
-            ],
-            '/tasks': [
-                '创建任务时 card_provider / mail_provider 下拉是哪里来的？',
-                '任务级 provider 选择会覆盖全局配置吗？',
-                'mail_account_id 是必填吗？',
-                '任务跑起来用的是 .env 还是 provider profile？',
-            ],
+        // 页面感知建议：从语言包 assistant.page_prompts.* 取（随 locale 切换；key 去掉前导斜杠并把 - 转 _）
+        get pageAwarePrompts() {
+            const pp = (window._translations && window._translations.assistant && window._translations.assistant.page_prompts) || {};
+            return {
+                '/config': pp.config || [],
+                '/providers': pp.providers || [],
+                '/mail-accounts': pp.mail_accounts || [],
+                '/tasks': pp.tasks || [],
+            };
         },
         messages: [
             { role: 'assistant', content: i18n('assistant.welcome'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' }
         ],
 
+        // ── 拖拽方法 ──────────────────────────────
+        _restorePos() {
+            try {
+                const raw = localStorage.getItem('assistant_widget_pos');
+                if (raw) {
+                    const p = JSON.parse(raw);
+                    if (p && typeof p.left === 'number' && typeof p.top === 'number') {
+                        this.pos = this._clampPos(p.left, p.top);
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        },
+        _clampPos(left, top, panelWidth) {
+            // 保证浮窗不被拖出可视区：展开时用面板真实宽度（22rem≈352px），收起时用按钮宽约 180px
+            // panelWidth 可选，调用方按当前 open 状态传入；未传则按展开态保守估算
+            const pw = typeof panelWidth === 'number' ? panelWidth : (this.open ? 352 : 180);
+            const maxLeft = Math.max(0, window.innerWidth - pw - 8);
+            const maxTop = Math.max(0, window.innerHeight - 48);
+            return {
+                left: Math.min(Math.max(8, left), maxLeft),
+                top: Math.min(Math.max(8, top), maxTop),
+            };
+        },
+        widgetStyle() {
+            if (this.pos) {
+                // 展开时重新 clamp，防止收起位置合法但展开后面板右侧超出可视区
+                const clamped = this._clampPos(this.pos.left, this.pos.top);
+                return `left:${clamped.left}px; top:${clamped.top}px; right:auto; bottom:auto;`;
+            }
+            return '';  // 用 class 的 bottom-8 right-8 默认定位
+        },
+        startDrag(ev) {
+            // 只左键拖拽；触摸用 touchstart
+            const point = ev.touches ? ev.touches[0] : ev;
+            // 守卫：拖拽手柄同时绑在 launcher 按钮和展开面板标题栏上，
+            // 两处 closest 都能上溯到 data-assistant-root；模板被改坏时返回 null 直接放弃，不崩。
+            const root = ev.currentTarget.closest('[data-assistant-root]');
+            if (!root) return;
+            const rect = root.getBoundingClientRect();
+            this._moved = false;
+            this._drag = {
+                startX: point.clientX,
+                startY: point.clientY,
+                originLeft: rect.left,
+                originTop: rect.top,
+            };
+            const move = (e) => {
+                const p = e.touches ? e.touches[0] : e;
+                const dx = p.clientX - this._drag.startX;
+                const dy = p.clientY - this._drag.startY;
+                if (Math.abs(dx) > 4 || Math.abs(dy) > 4) this._moved = true;
+                this.pos = this._clampPos(this._drag.originLeft + dx, this._drag.originTop + dy);
+            };
+            const up = () => {
+                window.removeEventListener('mousemove', move);
+                window.removeEventListener('mouseup', up);
+                window.removeEventListener('touchmove', move);
+                window.removeEventListener('touchend', up);
+                if (this.pos) {
+                    try { localStorage.setItem('assistant_widget_pos', JSON.stringify(this.pos)); } catch (e) {}
+                }
+                this._drag = null;
+                // 拖拽结束后短暂保持 _moved，阻止 click 误触发 open
+                setTimeout(() => { this._moved = false; }, 50);
+            };
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+            window.addEventListener('touchmove', move, { passive: false });
+            window.addEventListener('touchend', up);
+        },
+        onLauncherClick() {
+            // 拖拽过的不触发打开（区分点击 vs 拖拽）
+            if (this._moved) return;
+            this.open = true;
+        },
+
         async init() {
             if (!this.enabled) return;
-            // 路径感知 quick prompts：根据当前 location.pathname 替换默认提示词，
-            // 让用户在 /config /providers /mail-accounts /tasks 页面直接看到相关问题。
+            this._restorePos();
+            // 存成实例属性便于 destroy() 移除（匿名函数无法 removeEventListener，HTMX 局部刷新会重建组件导致监听器累积）
+            this._resizeHandler = () => { if (this.pos) this.pos = this._clampPos(this.pos.left, this.pos.top); };
+            window.addEventListener('resize', this._resizeHandler);
             this._applyPageAwarePrompts();
             if (!this.backendReady) {
                 this.messages.push({ role: 'assistant', content: i18n('assistant.backend_not_ready'), manual_citations: [], repo_citations: [], required_fields: [], preview: null, can_commit: false, preview_id: '' });
@@ -407,14 +1012,9 @@ function assistantWidget({ enabled, backendReady }) {
                 this.messages.push({
                     role: 'assistant',
                     content: i18n('assistant.bootstrap_ready', { version: bootstrap.index_version || '-' }),
-                    manual_citations: [],
-                    repo_citations: [],
-                    required_fields: [],
-                    preview: null,
-                    can_commit: false,
-                    preview_id: '',
+                    manual_citations: [], repo_citations: [], required_fields: [],
+                    preview: null, can_commit: false, preview_id: '',
                 });
-                // 在欢迎语后加一条页面感知的 hint，告诉用户可以问什么
                 this._maybePushPageHint();
             } catch (error) {
                 this.ready = false;
@@ -422,8 +1022,15 @@ function assistantWidget({ enabled, backendReady }) {
             }
         },
 
+        destroy() {
+            // Alpine 在组件元素移除时调用：清理 resize 监听器，避免 HTMX 局部刷新累积泄漏
+            if (this._resizeHandler) {
+                window.removeEventListener('resize', this._resizeHandler);
+                this._resizeHandler = null;
+            }
+        },
+
         _matchPagePrefix() {
-            // 找最长前缀匹配，避免 /tasks 被 /tasks/create 之类长路径吃掉
             const path = (typeof location !== 'undefined' ? location.pathname : '') || '';
             const keys = Object.keys(this.pageAwarePrompts || {});
             let best = '';
@@ -445,23 +1052,19 @@ function assistantWidget({ enabled, backendReady }) {
         _maybePushPageHint() {
             const matched = this._matchPagePrefix();
             if (!matched) return;
+            const ph = (window._translations && window._translations.assistant && window._translations.assistant.page_hints) || {};
             const hintMap = {
-                '/config': '我熟悉 docs/architecture/provider-config-flow.md，可以帮你判断 .env / provider profile / 任务级 三层配置该改哪里。',
-                '/providers': '我熟悉 provider 档案的字段含义和优先级，可以帮你判断改这里会不会被 .env 或任务级覆盖。',
-                '/mail-accounts': '我可以解释 mail_accounts 和 WARMUP_ACCOUNT_POOL 的区别，以及 role 字段（regular / pro_warmup）的语义。',
-                '/tasks': '我可以解释任务级 provider 下拉是怎么工作的，以及 mail_account_id 在 credentialed 模式下的语义。',
+                '/config': ph.config,
+                '/providers': ph.providers,
+                '/mail-accounts': ph.mail_accounts,
+                '/tasks': ph.tasks,
             };
             const hint = hintMap[matched];
             if (!hint) return;
             this.messages.push({
-                role: 'assistant',
-                content: hint,
-                manual_citations: [],
-                repo_citations: [],
-                required_fields: [],
-                preview: null,
-                can_commit: false,
-                preview_id: '',
+                role: 'assistant', content: hint,
+                manual_citations: [], repo_citations: [], required_fields: [],
+                preview: null, can_commit: false, preview_id: '',
             });
         },
 
@@ -473,16 +1076,9 @@ function assistantWidget({ enabled, backendReady }) {
         async sendPrompt(prompt = null) {
             const message = (prompt != null ? prompt : this.messageInput).trim();
             let draftAction = null;
-            try {
-                draftAction = this.buildActionPayload();
-            } catch (error) {
-                showToast(i18n('assistant.invalid_action_json'), 'error');
-                return;
-            }
-            if (!message && !draftAction) {
-                showToast(i18n('assistant.empty_message'), 'warning');
-                return;
-            }
+            try { draftAction = this.buildActionPayload(); }
+            catch (error) { showToast(i18n('assistant.invalid_action_json'), 'error'); return; }
+            if (!message && !draftAction) { showToast(i18n('assistant.empty_message'), 'warning'); return; }
 
             this.loading = true;
             if (message) {
@@ -509,6 +1105,7 @@ function assistantWidget({ enabled, backendReady }) {
                     preview: response.preview || null,
                     can_commit: Boolean(response.can_commit),
                     preview_id: response.preview_id || '',
+                    suggested_actions: response.suggested_actions || [],
                 });
                 this.messageInput = '';
                 if (response.mode !== 'needs_info') this.draftActionText = '';
@@ -524,6 +1121,13 @@ function assistantWidget({ enabled, backendReady }) {
             }
         },
 
+        applySuggestedAction(sa) {
+            const payload = { action_type: sa.action_type, payload: sa.payload || {}, title: sa.title || sa.label };
+            this.draftActionText = JSON.stringify(payload, null, 2);
+            this.intentMode = 'action';
+            showToast(i18n('assistant.template_filled').replace('{label}', sa.label).replace('{warning}', sa.warning ? '；' + sa.warning : ''), 'info');
+        },
+
         async commitPreview(previewId) {
             if (!previewId) return;
             this.loading = true;
@@ -534,14 +1138,9 @@ function assistantWidget({ enabled, backendReady }) {
                     body: JSON.stringify({ preview_id: previewId }),
                 });
                 this.messages.push({
-                    role: 'assistant',
-                    content: i18n('assistant.commit_success'),
-                    manual_citations: [],
-                    repo_citations: [],
-                    required_fields: [],
-                    preview: null,
-                    can_commit: false,
-                    preview_id: '',
+                    role: 'assistant', content: i18n('assistant.commit_success'),
+                    manual_citations: [], repo_citations: [], required_fields: [],
+                    preview: null, can_commit: false, preview_id: '',
                 });
                 showToast(i18n('assistant.commit_success'), 'success');
             } catch (error) {
@@ -554,6 +1153,9 @@ function assistantWidget({ enabled, backendReady }) {
     }
 }
 </script>
+
+<!-- 全局统一反馈系统：增强 showToast + notify + confirmDialog + promptDialog -->
+<script src="/static/js/feedback.js"></script>
 
 {% block scripts %}{% endblock %}
 </body>

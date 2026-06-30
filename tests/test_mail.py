@@ -64,7 +64,18 @@ class TestMailManagerHTTPIntegration(unittest.TestCase):
     def test_get_verification_code_success(self, mock_poll):
         result = self.mgr.get_verification_code("test@example.com", wait_timeout=30)
         self.assertEqual(result, "482910")
-        mock_poll.assert_called_once_with("test@example.com", 30)
+        # 默认不传 code_pattern（OpenAI 走通用提取）
+        mock_poll.assert_called_once_with("test@example.com", 30, code_pattern=None)
+
+    @patch.object(MailManager, "_poll_code_via_api", return_value="810-XC2")
+    def test_get_verification_code_passes_code_pattern(self, mock_poll):
+        """Grok 场景：调用方传 code_pattern 应透传到 _poll_code_via_api。"""
+        grok_pat = r"(?is)\bcode\b.{0,60}?(\d{3}-[A-Z0-9]{3})"
+        result = self.mgr.get_verification_code(
+            "grok@example.com", wait_timeout=30, code_pattern=grok_pat,
+        )
+        self.assertEqual(result, "810-XC2")
+        mock_poll.assert_called_once_with("grok@example.com", 30, code_pattern=grok_pat)
 
     @patch.object(MailManager, "_poll_code_via_api", return_value=None)
     def test_get_verification_code_timeout(self, mock_poll):
@@ -116,8 +127,38 @@ class TestMailManagerPollCodeViaAPI(unittest.TestCase):
 
         self.assertEqual(result, "123456")
         self.mock_provider.create_session.assert_called_once()
-        self.mock_provider.poll_code.assert_called_once_with(session, timeout_seconds=60)
+        # poll_code 调用：session 位置参 + timeout_seconds + otp_sent_at（修复 before_ids 竞态）
+        self.mock_provider.poll_code.assert_called_once()
+        args, kwargs = self.mock_provider.poll_code.call_args
+        self.assertEqual(args[0], session)
+        self.assertEqual(kwargs["timeout_seconds"], 60)
+        self.assertIn("otp_sent_at", kwargs)
         self.mock_provider.complete.assert_called_once_with(session, result="success", reason="")
+
+    def test_poll_passes_recent_otp_sent_at(self):
+        """otp_sent_at 必须是建会话前不久的时间戳（绕开 before_ids 脏快照）。
+
+        线上 run 077421e6：复用邮箱 + 验证码件在建会话窗口内到达被算进 before_ids，
+        poll 把真验证码件当旧件跳过 → CODE_TIMEOUT。otp_sent_at 让 cfworker 改用
+        时间 cutoff 收件。这里断言传入值在 (now - slack - 1, now] 区间。
+        """
+        import time as _t
+        import src.mail as mail_mod
+
+        session = _make_session()
+        self.mock_provider.create_session.return_value = session
+        self.mock_provider.poll_code.return_value = "123456"
+
+        before = _t.time()
+        self.mgr._poll_code_via_api("test@example.com", 30)
+        after = _t.time()
+
+        _args, kwargs = self.mock_provider.poll_code.call_args
+        otp_sent_at = kwargs["otp_sent_at"]
+        slack = mail_mod._OTP_SENT_AT_SLACK_SEC
+        # 应落在 [before - slack - 1, after - slack + 1]：建会话前的时刻减余量
+        self.assertGreaterEqual(otp_sent_at, before - slack - 1.0)
+        self.assertLessEqual(otp_sent_at, after - slack + 1.0)
 
     def test_poll_builds_applemail_extra_from_legacy_fields(self):
         mgr = _make_manager(refresh_token="rt-1", client_id="cid-1")

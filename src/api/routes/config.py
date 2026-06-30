@@ -59,6 +59,9 @@ _MAIL_MANAGED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     # 让服务端从加密 DB 注入 cfworker_api_url / admin_token 等
     "cfworker": frozenset({"config_name"}),
     "skymail": frozenset({"config_name"}),
+    # outlook_email_plus 自托管账号池 — 必须有 config_name 指向 outlook-pool-default
+    # 让服务端从加密 DB 注入 outlook_email_plus_api_url + api_key
+    "outlook_email_plus": frozenset({"config_name"}),
     # freemail / tempmail_lol 等 auto-allocate 类不需要 config_name；不在白名单的
     # provider 默认不强制校验，避免锁死扩展
 }
@@ -67,19 +70,50 @@ _MAIL_MANAGED_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
 def _validate_mail_provider_config(provider_name: str, config: dict[str, Any]) -> None:
     """L1 fail-fast — admin UI 创建/更新 mail-* ProviderConfig 时强制必填字段。
 
-    校验规则：
-      - 当 session_mode == "managed" 且 provider_name 在白名单里时，要求白名单声明的所有字段都非空
-      - credentialed 模式 / managed 但 provider 不在白名单 → 不校验（向后兼容）
-      - 当 session_mode 字段缺失时，按 provider 默认推断为 managed（与 .env.example 默认一致）
+    **插拔式优先**：先委托给 ``ProviderRegistry.validate("mail", kind, config)``，
+    每个 mail provider 类自己在 ``@register_provider(schema=...)`` 里声明必填字段。
+    新增 mail provider 自动获得校验能力，**无需修改本函数**。
 
-    缺字段 → 422 PROVIDER_NOT_CONFIGURED + missing_fields 列表，与服务端 contract 对齐。
+    **白名单兼容**：如果 kind 未在 registry 注册（向后兼容旧 provider），回落到
+    ``_MAIL_MANAGED_REQUIRED_FIELDS`` 老规则。
     """
     payload = dict(config or {})
     session_mode = str(payload.get("session_mode") or "managed").strip().lower()
     if session_mode != "managed":
         return
-    normalized_provider = str(payload.get("provider_name") or provider_name or "").strip().lower()
-    required = _MAIL_MANAGED_REQUIRED_FIELDS.get(normalized_provider)
+    # config 内的 provider_name 即 kind（mail provider 的历史命名）
+    normalized_kind = str(payload.get("provider_name") or provider_name or "").strip().lower()
+
+    # 路径 1：registry 驱动
+    try:
+        from src.providers import get_registry
+
+        meta = get_registry().get_meta("mail", normalized_kind)
+        if meta is not None:
+            missing = get_registry().validate("mail", normalized_kind, payload)
+            if missing:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "PROVIDER_NOT_CONFIGURED",
+                        "message": (
+                            f"mail provider '{normalized_kind}' (managed) "
+                            f"必须配置: {', '.join(missing)}"
+                        ),
+                        "missing_fields": missing,
+                    },
+                )
+            return
+    except HTTPException:
+        raise
+    except Exception as exc:  # registry 异常不阻塞，回落老规则
+        import logging
+        logging.getLogger(__name__).warning(
+            "registry 校验 mail/%s 异常，回落白名单: %s", normalized_kind, exc,
+        )
+
+    # 路径 2：旧白名单兼容
+    required = _MAIL_MANAGED_REQUIRED_FIELDS.get(normalized_kind)
     if not required:
         return
     missing = [field for field in sorted(required) if not str(payload.get(field) or "").strip()]
@@ -89,12 +123,99 @@ def _validate_mail_provider_config(provider_name: str, config: dict[str, Any]) -
             detail={
                 "code": "PROVIDER_NOT_CONFIGURED",
                 "message": (
-                    f"mail provider '{normalized_provider}' (managed) "
+                    f"mail provider '{normalized_kind}' (managed) "
                     f"必须配置: {', '.join(missing)}"
                 ),
                 "missing_fields": missing,
             },
         )
+
+
+def _validate_sms_provider_config(provider_name: str, config: dict[str, Any]) -> None:
+    """SMS provider 必填字段：api_key（country 可选，默认 0=any）。"""
+    api_key = str((config or {}).get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROVIDER_NOT_CONFIGURED",
+                "message": f"sms provider '{provider_name}' 必须配置: api_key",
+                "missing_fields": ["api_key"],
+            },
+        )
+
+
+def _validate_llm_provider_config(provider_name: str, config: dict[str, Any]) -> None:
+    """LLM provider 必填：base_url + api_key + model。"""
+    payload = config or {}
+    missing = [
+        field
+        for field in ("base_url", "api_key", "model")
+        if not str(payload.get(field) or "").strip()
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROVIDER_NOT_CONFIGURED",
+                "message": (
+                    f"llm provider '{provider_name}' 必须配置: {', '.join(missing)}"
+                ),
+                "missing_fields": missing,
+            },
+        )
+
+
+_CAPTCHA_VALID_KINDS = frozenset({"noop", "manual", "nocaptcha"})
+
+
+def _validate_captcha_provider_config(provider_name: str, config: dict[str, Any]) -> None:
+    """Captcha provider 校验：
+    - kind 必填且属于 {noop, manual, nocaptcha}
+    - kind=nocaptcha 时 user_token 非空
+    """
+    payload = config or {}
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in _CAPTCHA_VALID_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROVIDER_NOT_CONFIGURED",
+                "message": (
+                    f"captcha provider '{provider_name}' kind 必须是 "
+                    f"{sorted(_CAPTCHA_VALID_KINDS)} 之一"
+                ),
+                "missing_fields": ["kind"],
+            },
+        )
+    if kind == "nocaptcha":
+        token = str(payload.get("user_token") or "").strip()
+        if not token:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "PROVIDER_NOT_CONFIGURED",
+                    "message": (
+                        f"captcha provider '{provider_name}' kind=nocaptcha "
+                        f"必须配置: user_token"
+                    ),
+                    "missing_fields": ["user_token"],
+                },
+            )
+
+
+def _validate_provider_config(provider_type: str, provider_name: str, config: dict[str, Any]) -> None:
+    """按 provider_type 分派到对应 validator。未识别类型直接放行（向后兼容）。"""
+    type_norm = str(provider_type or "").strip().lower()
+    if type_norm == "mail":
+        _validate_mail_provider_config(provider_name, config)
+    elif type_norm == "sms":
+        _validate_sms_provider_config(provider_name, config)
+    elif type_norm == "llm":
+        _validate_llm_provider_config(provider_name, config)
+    elif type_norm == "captcha":
+        _validate_captcha_provider_config(provider_name, config)
+    # browser / card 暂不强制必填，保持当前行为
 
 
 def _validate_pro_warmup_credentials(body: MailAccountRequest, *, is_update: bool = False) -> None:
@@ -224,10 +345,9 @@ def upsert_provider(
 ):
     """创建或更新 Provider 配置。
 
-    L1 fail-fast：mail-* provider managed 模式必填字段在入库前校验。
+    L1 fail-fast：mail / sms / llm / captcha provider 必填字段在入库前校验。
     """
-    if str(provider_type or "").strip().lower() == "mail":
-        _validate_mail_provider_config(provider_name, dict(body.config or {}))
+    _validate_provider_config(provider_type, provider_name, dict(body.config or {}))
     _audit_or_raise(
         audit_service,
         action_type="upsert_provider",
@@ -320,9 +440,59 @@ def test_provider(
         elif session_mode not in {"managed", "credentialed"}:
             ok = False
             message = "mail provider.session_mode 必须是 managed 或 credentialed"
+    elif provider_type == "sms":
+        # SMS provider 走真实连通性自检：实例化对应 driver → 调 test_connection
+        # 比 browser/card/mail 三类「只看 schema」严格一档，因为 SMS 的 api_key
+        # 是否有效在保存当下就能验证（getBalance 端点不消耗配额）
+        from src.providers.registry import (
+            ProviderConfigInvalidError,
+            ProviderNotRegisteredError,
+            get_registry,
+        )
+
+        registry = get_registry()
+        # ProviderRegistry._extract_kind_and_config 同款逻辑：优先 driver，再
+        # provider_name 字段，最后兜底 pc.provider_name 实例名
+        raw_cfg = dict(payload)
+        kind = (
+            str(raw_cfg.pop("driver", "") or "").strip()
+            or str(raw_cfg.pop("provider_name", "") or "").strip()
+            or str(provider_name or "").strip()
+        )
+        try:
+            provider_instance = registry.build("sms", kind, raw_cfg)
+        except ProviderNotRegisteredError:
+            ok = False
+            available = registry.list_kinds("sms")
+            message = (
+                f"sms provider driver={kind!r} 未注册；"
+                f"当前可用: {available or '(空，请先重启服务让 discover 扫到新 driver)'}"
+            )
+        except ProviderConfigInvalidError as exc:
+            ok = False
+            message = f"配置无效: {exc}"
+        except (ValueError, TypeError) as exc:
+            # SmsActivateProvider __init__ 的 operator/max_price 互斥校验等
+            ok = False
+            message = f"配置无效: {exc}"
+        else:
+            try:
+                result = provider_instance.test_connection()
+                ok = bool(result.get("ok"))
+                message = (
+                    str(result.get("message") or "")
+                    or ("连通正常" if ok else "连通失败")
+                )
+            except NotImplementedError:
+                # 子类没实现自检 → 只能给个静态消息
+                ok = True
+                message = "provider 配置结构校验通过（该 driver 未实现 test_connection）"
+            except Exception as exc:  # noqa: BLE001 — provider 自检无论何种错误都不应阻塞端点
+                ok = False
+                message = f"测试失败: {exc}"
     else:
         ok = False
-        message = "当前仅支持 browser/card/mail 三类 provider"
+        message = "当前仅支持 browser/card/mail/sms 四类 provider"
     return {"ok": ok, "message": message}
 
 
@@ -620,3 +790,67 @@ def list_config_revisions(
             for rev in revisions
         ]
     }
+
+
+# ── 插拔式 Provider Registry 暴露端点 ──────────────
+#
+# 前端 /providers 页面从这里拿可选 kinds + 字段 schema 动态渲染表单，
+# 新增 provider（丢一个 .py 到 src/providers/<type>s/ 子目录）后刷新即可见。
+
+@router.get("/providers/kinds")
+def list_provider_kinds(
+    provider_type: Optional[str] = Query(default=None),
+    user: User = Depends(require_authenticated_user),
+):
+    """列出已注册的 provider kinds。
+
+    - 无 ``provider_type`` 参数 → 返回 {type: [kinds]} 全量
+    - 指定 ``provider_type`` → 返回该类型的 kind + display_name + description 详情
+    """
+    from src.providers import get_registry
+
+    registry = get_registry()
+    if not provider_type:
+        all_metas = registry.list_all_metas()
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for meta in all_metas:
+            grouped.setdefault(meta.provider_type, []).append({
+                "kind": meta.kind,
+                "display_name": meta.display_name,
+                "description": meta.description,
+            })
+        for v in grouped.values():
+            v.sort(key=lambda x: x["kind"])
+        return grouped
+
+    type_norm = str(provider_type).strip().lower()
+    return [
+        {
+            "kind": meta.kind,
+            "display_name": meta.display_name,
+            "description": meta.description,
+        }
+        for meta in sorted(registry.list_all_metas(), key=lambda m: m.kind)
+        if meta.provider_type == type_norm
+    ]
+
+
+@router.get("/providers/schemas/{provider_type}/{kind}")
+def get_provider_schema(
+    provider_type: str,
+    kind: str,
+    user: User = Depends(require_authenticated_user),
+):
+    """返回指定 provider kind 的字段 schema，给前端动态渲染表单用。"""
+    from src.providers import get_registry
+
+    meta = get_registry().get_meta(
+        str(provider_type).strip().lower(),
+        str(kind).strip().lower(),
+    )
+    if meta is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未注册的 provider: {provider_type}/{kind}",
+        )
+    return meta.to_dict()

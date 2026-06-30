@@ -1,99 +1,335 @@
 {% extends "base.html" %}
+{% import 'components/_ui.html' as ui %}
 {% block title %}{{ _('tasks.list.title') }} - Team Register{% endblock %}
-{% block nav_tasks %}bg-gray-800 text-white{% endblock %}
+{% block nav_tasks %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('tasks.list.title') }}{% endblock %}
 
 {% block content %}
 {% set can_manage_tasks = current_user and current_user.role in ('operator', 'admin') %}
-<div x-data="taskListData()" x-init="fetchTasks()">
-    <!-- Toolbar -->
-    <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center gap-2">
-            <select x-model="filter" @change="fetchTasks()" class="text-sm border rounded-md px-3 py-1.5">
-                <option value="" x-text="i18n('tasks.list.filter_all')"></option>
-                <option value="pending" x-text="i18n('status.pending')"></option>
-                <option value="running" x-text="i18n('status.running')"></option>
-                <option value="success" x-text="i18n('status.success')"></option>
-                <option value="failed" x-text="i18n('status.failed')"></option>
-                <option value="cancelled" x-text="i18n('status.cancelled')"></option>
-            </select>
-            <button @click="fetchTasks()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('common.refresh')"></button>
+<div x-data="taskListData()" x-init="fetchTasks()" class="flex flex-col h-[calc(100vh-108px)] gap-6">
+
+    {# ─── Toolbar ─── #}
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center space-x-3">
+            {# Status filter dropdown #}
+            <div class="relative">
+                <select x-model="filter" @change="page = 1; fetchTasks()"
+                        class="appearance-none flex items-center px-4 py-2 pr-9 bg-white border border-border rounded-lg text-sm font-medium hover:border-primary transition-colors focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                    <option value="" x-text="i18n('tasks.list.filter_all')"></option>
+                    <option value="pending" x-text="i18n('status.pending')"></option>
+                    <option value="running" x-text="i18n('status.running')"></option>
+                    <option value="success" x-text="i18n('status.success')"></option>
+                    <option value="failed" x-text="i18n('status.failed')"></option>
+                    <option value="cancelled" x-text="i18n('status.cancelled')"></option>
+                </select>
+                <span class="material-symbols-outlined text-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">expand_more</span>
+            </div>
+
+            {# Platform filter dropdown（GPT / Grok）#}
+            <div class="relative">
+                <select x-model="platformFilter" @change="page = 1; fetchTasks()"
+                        class="appearance-none flex items-center px-4 py-2 pr-9 bg-white border border-border rounded-lg text-sm font-medium hover:border-primary transition-colors focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                    <option value="" x-text="i18n('tasks.list.platform_all')"></option>
+                    <option value="openai" x-text="i18n('tasks.list.platform_gpt')"></option>
+                    <option value="grok" x-text="i18n('tasks.list.platform_grok')"></option>
+                </select>
+                <span class="material-symbols-outlined text-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">expand_more</span>
+            </div>
+
+            {# Refresh ghost btn #}
+            <button @click="fetchTasks()"
+                    class="flex items-center space-x-2 px-4 py-2 text-muted hover:text-primary hover:bg-primary/5 rounded-lg transition-all">
+                <span class="material-symbols-outlined text-lg">refresh</span>
+                <span class="text-sm font-medium" x-text="i18n('common.refresh')"></span>
+            </button>
         </div>
-        <a href="/tasks/create" class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
-           x-text="'+ ' + i18n('overview.new_task')"></a>
+
+        {# Primary action: 新建任务 #}
+        <a href="/tasks/create"
+           class="flex items-center space-x-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg shadow-token-sm transition-transform active:scale-95">
+            <span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">add_circle</span>
+            <span class="text-sm font-semibold" x-text="i18n('overview.new_task')"></span>
+        </a>
     </div>
 
-    <!-- Table -->
-    <div class="bg-white rounded-lg shadow-sm border overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
-                <tr>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.id')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.email')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.status')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.phase')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.error')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.created')"></th>
-                    <th class="px-4 py-3 text-left" x-text="i18n('tasks.list.table.actions')"></th>
-                </tr>
-            </thead>
-            <tbody class="divide-y">
-                <template x-for="t in tasks" :key="t.id">
-                    <tr class="hover:bg-gray-50">
-                        <td class="px-4 py-3 font-mono text-xs text-gray-400">
-                            <a :href="'/tasks/' + t.id" class="hover:text-blue-600" x-text="t.id.slice(0,8)"></a>
-                        </td>
-                        <td class="px-4 py-3 font-mono text-xs" x-text="t.email"></td>
-                        <td class="px-4 py-3">
-                            <span class="px-2 py-0.5 rounded-full text-xs font-medium"
-                                  :class="{
-                                      'bg-green-100 text-green-700': t.status === 'success',
-                                      'bg-red-100 text-red-700': t.status === 'failed',
-                                      'bg-blue-100 text-blue-700': t.status === 'running',
-                                      'bg-yellow-100 text-yellow-700': t.status === 'pending',
-                                      'bg-gray-100 text-gray-700': t.status === 'cancelled'
-                                  }"
-                                  x-text="translateEnum('status', t.status, t.status)"></span>
-                        </td>
-                        <td class="px-4 py-3 text-gray-500 text-xs" x-text="translateEnum('phase', t.phase, t.phase)"></td>
-                        <td class="px-4 py-3 text-red-500 text-xs truncate max-w-[200px]" x-text="t.error_reason ? translateEnum('errors', t.error_reason, t.error_reason) : ''"></td>
-                        <td class="px-4 py-3 text-gray-400 text-xs" x-text="new Date(t.created_at).toLocaleString(window._locale)"></td>
-                        <td class="px-4 py-3">
+    {# ─── Data Grid ─── #}
+    <div class="bg-surface rounded-xl shadow-token-sm border border-border overflow-hidden flex-1 flex flex-col min-h-0">
+
+        {# Filter chips + density toggle #}
+        <div class="p-4 border-b border-border flex items-center justify-between">
+            <div class="flex items-center space-x-1">
+                <template x-for="chip in filterChips" :key="chip.value">
+                    <button @click="filter = chip.value; page = 1; fetchTasks()"
+                            :class="filter === chip.value
+                                ? 'bg-primary/10 text-primary font-semibold border border-primary/20'
+                                : 'text-muted hover:bg-subtle border border-transparent'"
+                            class="px-4 py-1.5 text-sm rounded-full flex items-center transition-colors">
+                        <span x-text="chip.label"></span>
+                        <template x-if="chip.count !== null && chip.count !== undefined">
+                            <span :class="chip.value === 'failed' ? 'bg-danger/10 text-danger' : 'bg-subtle text-muted'"
+                                  class="ml-1.5 px-1.5 text-[10px] rounded-full mono-text tabular-nums"
+                                  x-text="chip.count"></span>
+                        </template>
+                    </button>
+                </template>
+            </div>
+
+            <div class="flex items-center space-x-2">
+                {{ ui.grid_search(placeholder='搜索 邮箱 / Run ID / 阶段...') }}
+                <button @click="density = density === 'medium' ? 'small' : 'medium'"
+                        class="p-2 text-muted hover:text-body hover:bg-subtle rounded-lg transition-all" title="显示密度">
+                    <span class="material-symbols-outlined" x-text="density === 'medium' ? 'density_medium' : 'density_small'"></span>
+                </button>
+                {{ ui.grid_columns_settings() }}
+            </div>
+        </div>
+
+        {% if can_manage_tasks %}
+        {# Batch action toolbar — 选中行时浮现 #}
+        <div x-show="selectedIds.length > 0" x-transition
+             class="px-4 py-2 bg-primary/5 border-b border-primary/20 flex items-center justify-between">
+            <span class="text-sm text-primary font-medium"
+                  x-text="i18n('tasks.list.batch.selected_count').replace('{n}', selectedIds.length)"></span>
+            <div class="flex items-center gap-2">
+                <button :disabled="actionBusy" @click="batchAction('cancel')"
+                        class="flex items-center gap-1 px-3 py-1 border border-warning/40 text-warning text-xs font-medium rounded hover:bg-warning/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-sm">stop_circle</span>
+                    <span x-text="i18n('tasks.list.batch.cancel')"></span>
+                </button>
+                <button :disabled="actionBusy" @click="batchAction('retry')"
+                        class="flex items-center gap-1 px-3 py-1 border border-secondary/40 text-secondary text-xs font-medium rounded hover:bg-secondary/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-sm">sync</span>
+                    <span x-text="i18n('tasks.list.batch.retry')"></span>
+                </button>
+                <button :disabled="actionBusy" @click="batchAction('delete')"
+                        class="flex items-center gap-1 px-3 py-1 border border-danger/40 text-danger text-xs font-medium rounded hover:bg-danger/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span class="material-symbols-outlined text-sm">delete</span>
+                    <span x-text="i18n('tasks.list.batch.delete')"></span>
+                </button>
+                <button @click="selectedIds = []"
+                        class="px-3 py-1 text-muted hover:text-body text-xs font-medium rounded transition-colors">
+                    <span x-text="i18n('tasks.list.batch.clear_selection')"></span>
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
+        {# Grid table #}
+        <div class="flex-1 overflow-auto custom-scrollbar min-h-0">
+            <table class="w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-subtle">
+                    <tr class="border-b border-border">
+                        {% if can_manage_tasks %}
+                        <th class="px-4 py-4 w-10">
+                            <input type="checkbox"
+                                   :checked="allSelected"
+                                   :indeterminate.camel="someSelected"
+                                   @change="toggleAll()"
+                                   class="rounded border-border text-primary focus:ring-primary/20 cursor-pointer"/>
+                        </th>
+                        {% endif %}
+                        <th x-show="visibleColumns.includes('id')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider">
+                            <button @click="toggleSort('id')" class="flex items-center space-x-1 hover:text-primary">
+                                <span x-text="i18n('tasks.list.table.id')"></span>
+                                <span class="material-symbols-outlined text-[14px]"
+                                      x-text="sortKey === 'id' ? (sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward') : 'unfold_more'"></span>
+                            </button>
+                        </th>
+                        <th x-show="visibleColumns.includes('email')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.email')"></th>
+                        <th x-show="visibleColumns.includes('platform')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.platform')"></th>
+                        <th x-show="visibleColumns.includes('status')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.status')"></th>
+                        <th x-show="visibleColumns.includes('phase')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.phase')"></th>
+                        <th x-show="visibleColumns.includes('error_reason')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider" x-text="i18n('tasks.list.table.error')"></th>
+                        <th x-show="visibleColumns.includes('created_at')" class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider bg-primary/5">
+                            <button @click="toggleSort('created_at')" class="flex items-center space-x-1 text-primary">
+                                <span x-text="i18n('tasks.list.table.created')"></span>
+                                <span class="material-symbols-outlined text-[14px]"
+                                      x-text="sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward'"></span>
+                            </button>
+                        </th>
+                        <th class="px-6 py-4 font-label text-[11px] font-medium text-muted uppercase tracking-wider text-right" x-text="i18n('tasks.list.table.actions')"></th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                    <template x-for="(t, idx) in sortedTasks" :key="t.id">
+                        <tr :class="idx % 2 === 1 ? 'bg-subtle/50' : ''"
+                            class="hover:bg-primary/[0.04] transition-colors">
+
                             {% if can_manage_tasks %}
-                            <div class="flex gap-1">
-                                <button x-show="t.status === 'failed' || t.status === 'cancelled'"
-                                        :disabled="actionBusy"
-                                        @click="retryTask(t.id, 'resume')"
-                                        class="text-xs px-2 py-1 text-amber-600 hover:bg-amber-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.retry_resume')"></button>
-                                <button x-show="t.status === 'failed' || t.status === 'cancelled'"
-                                        :disabled="actionBusy"
-                                        @click="retryTask(t.id, 'restart')"
-                                        class="text-xs px-2 py-1 text-blue-600 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.retry_restart')"></button>
-                                <button x-show="t.status === 'pending' || t.status === 'running'"
-                                        :disabled="actionBusy"
-                                        @click="cancelTask(t.id)"
-                                        class="text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded disabled:opacity-50 disabled:cursor-not-allowed" x-text="i18n('tasks.list.cancel')"></button>
-                            </div>
+                            <td :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-4 w-10">
+                                <input type="checkbox"
+                                       :checked="selectedIds.includes(t.id)"
+                                       @change="toggleOne(t.id)"
+                                       class="rounded border-border text-primary focus:ring-primary/20 cursor-pointer"/>
+                            </td>
                             {% endif %}
+
+                            {# ID（mono short hash） #}
+                            <td x-show="visibleColumns.includes('id')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <a :href="'/tasks/' + t.id" class="mono-text text-sm text-body hover:text-primary" x-text="t.id.slice(0, 8)"></a>
+                            </td>
+
+                            {# Email #}
+                            <td x-show="visibleColumns.includes('email')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span x-show="t.email" class="text-sm font-mono text-muted" x-text="t.email"></span>
+                                <span x-show="!t.email" class="text-sm text-border">—</span>
+                            </td>
+
+                            {# Platform badge（GPT / Grok）#}
+                            <td x-show="visibleColumns.includes('platform')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span :class="platformBadgeClass(t.platform)"
+                                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider"
+                                      x-text="platformLabel(t.platform)"></span>
+                            </td>
+
+                            {# Status badge —— Stitch 风格 bg-X/12 text-X #}
+                            <td x-show="visibleColumns.includes('status')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span :class="statusBadgeClass(t.status)"
+                                      class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider"
+                                      x-text="translateEnum('status', t.status, t.status)"></span>
+                            </td>
+
+                            {# Phase #}
+                            <td x-show="visibleColumns.includes('phase')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span class="text-sm text-muted" x-text="translateEnum('phase', t.phase, t.phase) || '—'"></span>
+                            </td>
+
+                            {# Error reason #}
+                            <td x-show="visibleColumns.includes('error_reason')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                {# Hint-based 配色：MAILBOX_POOL_CONTENTION 用 amber（业务态、可重试）
+                                   其它 mail/registration 失败用 red（基础设施 / 代码 bug）。 #}
+                                <span x-show="t.error_reason"
+                                      class="text-sm font-mono truncate inline-block max-w-[200px]"
+                                      :class="t.error_reason && t.error_reason.includes('MAILBOX_POOL_CONTENTION')
+                                              ? 'text-amber-700' : 'text-danger'"
+                                      :title="t.error_reason"
+                                      x-text="translateEnum('errors', t.error_reason, t.error_reason)"></span>
+                                <span x-show="!t.error_reason" class="text-sm text-border">—</span>
+                            </td>
+
+                            {# Created at #}
+                            <td x-show="visibleColumns.includes('created_at')" :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6">
+                                <span class="text-sm font-mono text-muted tabular-nums"
+                                      x-text="new Date(t.created_at).toLocaleString(window._locale, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })"></span>
+                            </td>
+
+                            {# Row actions #}
+                            <td :class="density === 'small' ? 'py-2.5' : 'py-4'" class="px-6 text-right">
+                                {% if can_manage_tasks %}
+                                <div class="flex items-center justify-end space-x-2">
+                                    {# Failed: Resume + Restart + Delete #}
+                                    <template x-if="t.status === 'failed'">
+                                        <div class="flex items-center space-x-2">
+                                            <button :disabled="actionBusy" @click="retryTask(t.id, 'resume')"
+                                                    class="flex items-center px-2 py-1 border border-warning/40 text-warning text-xs font-medium rounded hover:bg-warning/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                                <span class="material-symbols-outlined text-sm mr-1">sync</span>
+                                                <span x-text="i18n('tasks.list.retry_resume')"></span>
+                                            </button>
+                                            <button :disabled="actionBusy" @click="retryTask(t.id, 'restart')"
+                                                    class="flex items-center px-2 py-1 border border-secondary/40 text-secondary text-xs font-medium rounded hover:bg-secondary/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                                <span class="material-symbols-outlined text-sm mr-1">history_edu</span>
+                                                <span x-text="i18n('tasks.list.retry_restart')"></span>
+                                            </button>
+                                            <button :disabled="actionBusy" @click="deleteTask(t.id)"
+                                                    class="p-1 text-danger hover:bg-danger/5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :title="i18n('tasks.list.delete')">
+                                                <span class="material-symbols-outlined text-lg">close</span>
+                                            </button>
+                                        </div>
+                                    </template>
+
+                                    {# Running/Pending: Cancel only #}
+                                    <template x-if="t.status === 'running' || t.status === 'pending'">
+                                        <button :disabled="actionBusy" @click="cancelTask(t.id)"
+                                                class="p-1 text-danger hover:bg-danger/5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed" :title="i18n('tasks.list.cancel')">
+                                            <span class="material-symbols-outlined text-lg">close</span>
+                                        </button>
+                                    </template>
+
+                                    {# Cancelled: Resume + Restart + Delete #}
+                                    <template x-if="t.status === 'cancelled'">
+                                        <div class="flex items-center space-x-2">
+                                            <button :disabled="actionBusy" @click="retryTask(t.id, 'resume')"
+                                                    class="px-3 py-1 bg-subtle hover:bg-border text-body text-xs font-medium rounded transition-colors disabled:opacity-50"
+                                                    x-text="i18n('tasks.list.retry_resume')"></button>
+                                            <button :disabled="actionBusy" @click="retryTask(t.id, 'restart')"
+                                                    class="px-3 py-1 bg-subtle hover:bg-border text-body text-xs font-medium rounded transition-colors disabled:opacity-50"
+                                                    x-text="i18n('tasks.list.retry_restart')"></button>
+                                            <button :disabled="actionBusy" @click="deleteTask(t.id)"
+                                                    class="p-1 text-danger hover:bg-danger/5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :title="i18n('tasks.list.delete')">
+                                                <span class="material-symbols-outlined text-lg">close</span>
+                                            </button>
+                                        </div>
+                                    </template>
+
+                                    {# Success: Clone（克隆为新任务） + Delete #}
+                                    <template x-if="t.status === 'success'">
+                                        <div class="flex items-center justify-end space-x-2">
+                                            <button :disabled="actionBusy" @click="cloneTask(t.id)"
+                                                    class="p-1 text-secondary hover:bg-secondary/5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :title="i18n('tasks.list.clone')">
+                                                <span class="material-symbols-outlined text-lg">restart_alt</span>
+                                            </button>
+                                            <button :disabled="actionBusy" @click="deleteTask(t.id)"
+                                                    class="p-1 text-danger hover:bg-danger/5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :title="i18n('tasks.list.delete')">
+                                                <span class="material-symbols-outlined text-lg">close</span>
+                                            </button>
+                                        </div>
+                                    </template>
+                                </div>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </template>
+
+                    {# Empty state #}
+                    <tr x-show="tasks.length === 0">
+                        <td :colspan="visibleColumns.length + 1 + ({{ 1 if can_manage_tasks else 0 }})" class="px-6 py-16 text-center">
+                            <div class="inline-flex flex-col items-center gap-2 text-muted">
+                                <span class="material-symbols-outlined text-5xl text-border">inbox</span>
+                                <span class="text-sm" x-text="i18n('tasks.list.no_tasks')"></span>
+                            </div>
                         </td>
                     </tr>
-                </template>
-                <tr x-show="tasks.length === 0">
-                    <td colspan="7" class="px-4 py-8 text-center text-gray-400" x-text="i18n('tasks.list.no_tasks')"></td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+                </tbody>
+            </table>
+        </div>
 
-    <!-- Pagination -->
-    <div class="flex items-center justify-between mt-4 text-sm text-gray-500">
-        <span><span x-text="i18n('common.total')"></span>: <span x-text="total"></span></span>
-        <div class="flex gap-2">
-            <button @click="page > 1 && (page--, fetchTasks())" :disabled="page <= 1"
-                    class="px-3 py-1 border rounded disabled:opacity-30" x-text="i18n('common.prev')"></button>
-            <span class="px-3 py-1"><span x-text="i18n('common.page')"></span> <span x-text="page"></span></span>
-            <button @click="page * 20 < total && (page++, fetchTasks())" :disabled="page * 20 >= total"
-                    class="px-3 py-1 border rounded disabled:opacity-30" x-text="i18n('common.next')"></button>
+        {# Pagination footer #}
+        <div class="px-6 py-4 bg-subtle/30 border-t border-border flex items-center justify-between">
+            <div class="text-sm text-muted">
+                显示 <span class="font-medium text-body tabular-nums" x-text="rangeStart"></span>-<span class="font-medium text-body tabular-nums" x-text="rangeEnd"></span>
+                / <span class="font-medium text-body tabular-nums" x-text="total"></span> <span x-text="i18n('common.rows')"></span>
+            </div>
+            <div class="flex items-center space-x-6">
+                <div class="flex items-center space-x-2">
+                    <span class="text-sm text-muted">每页显示:</span>
+                    <select x-model.number="pageSize" @change="page = 1; fetchTasks()"
+                            class="text-sm bg-white border-border rounded-lg focus:ring-primary focus:border-primary py-1 px-3">
+                        <option value="10">10 / page</option>
+                        <option value="25">25 / page</option>
+                        <option value="50">50 / page</option>
+                    </select>
+                </div>
+                <div class="flex items-center space-x-1">
+                    <button @click="page > 1 && (page--, fetchTasks())" :disabled="page <= 1"
+                            class="p-1 rounded hover:bg-subtle text-muted disabled:opacity-30 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined">chevron_left</span>
+                    </button>
+                    <template x-for="n in totalPages" :key="n">
+                        <button @click="page = n; fetchTasks()"
+                                :class="page === n ? 'bg-primary text-white font-bold shadow-token-sm' : 'hover:bg-subtle text-muted'"
+                                class="w-8 h-8 flex items-center justify-center rounded-lg text-sm transition-colors tabular-nums"
+                                x-text="n"></button>
+                    </template>
+                    <button @click="page * pageSize < total && (page++, fetchTasks())" :disabled="page * pageSize >= total"
+                            class="p-1 rounded hover:bg-subtle text-muted disabled:opacity-30 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined">chevron_right</span>
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -101,47 +337,218 @@
 <script>
 function taskListData() {
     return {
-        tasks: [], total: 0, page: 1, filter: '', actionBusy: false,
+        tasks: [],
+        total: 0,
+        page: 1,
+        pageSize: 25,
+        filter: '',
+        platformFilter: '',
+        actionBusy: false,
+        density: 'medium',
+        sortKey: 'created_at',
+        sortDir: 'desc',
+        // 搜索 expand（客户端过滤当前页：用户翻页前先在当前页面筛）
+        searchTerm: '',
+        searchExpanded: false,
+        // 批量选择 —— 仅 operator/admin 可见，但 state 始终存在以避免 Alpine 引用未定义
+        selectedIds: [],
+        // 列显隐：从 localStorage 读，默认全显。actions 列恒显（不在此数组里）。
+        visibleColumns: (() => {
+            try {
+                const raw = localStorage.getItem('tasks.visibleColumns');
+                return raw ? JSON.parse(raw) : ['id', 'email', 'platform', 'status', 'phase', 'error_reason', 'created_at'];
+            } catch (_) {
+                return ['id', 'email', 'platform', 'status', 'phase', 'error_reason', 'created_at'];
+            }
+        })(),
+
+        get columnOptions() {
+            return [
+                { key: 'id',           label: i18n('tasks.list.table.id') },
+                { key: 'email',        label: i18n('tasks.list.table.email') },
+                { key: 'platform',     label: i18n('tasks.list.table.platform') },
+                { key: 'status',       label: i18n('tasks.list.table.status') },
+                { key: 'phase',        label: i18n('tasks.list.table.phase') },
+                { key: 'error_reason', label: i18n('tasks.list.table.error') },
+                { key: 'created_at',   label: i18n('tasks.list.table.created') },
+            ];
+        },
+
+        toggleColumn(key) {
+            const idx = this.visibleColumns.indexOf(key);
+            if (idx >= 0) this.visibleColumns.splice(idx, 1);
+            else this.visibleColumns.push(key);
+            try { localStorage.setItem('tasks.visibleColumns', JSON.stringify(this.visibleColumns)); } catch (_) {}
+        },
+
+        get filterChips() {
+            return [
+                { value: '',          label: i18n('tasks.list.filter_all'), count: null },
+                { value: 'pending',   label: i18n('status.pending'),       count: null },
+                { value: 'running',   label: i18n('status.running'),       count: null },
+                { value: 'success',   label: i18n('status.success'),       count: null },
+                { value: 'failed',    label: i18n('status.failed'),        count: null },
+                { value: 'cancelled', label: i18n('status.cancelled'),     count: null },
+            ];
+        },
+
+        get sortedTasks() {
+            const q = (this.searchTerm || '').trim().toLowerCase();
+            const filtered = q
+                ? this.tasks.filter(t => `${t.email || ''} ${t.id || ''} ${t.phase || ''} ${t.error_reason || ''}`.toLowerCase().includes(q))
+                : this.tasks;
+            if (!this.sortKey) return filtered;
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            return [...filtered].sort((a, b) => {
+                const av = a[this.sortKey] ?? '';
+                const bv = b[this.sortKey] ?? '';
+                if (av < bv) return -1 * dir;
+                if (av > bv) return  1 * dir;
+                return 0;
+            });
+        },
+
+        get rangeStart() { return this.total === 0 ? 0 : (this.page - 1) * this.pageSize + 1; },
+        get rangeEnd()   { return Math.min(this.page * this.pageSize, this.total); },
+        get totalPages() {
+            const pages = Math.max(1, Math.ceil(this.total / this.pageSize));
+            // 显示当前页前后 1 页的窗口，最多 3 个数字
+            const start = Math.max(1, this.page - 1);
+            const end   = Math.min(pages, start + 2);
+            const out = [];
+            for (let i = start; i <= end; i++) out.push(i);
+            return out;
+        },
+
+        toggleSort(key) {
+            if (this.sortKey === key) this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+            else { this.sortKey = key; this.sortDir = 'asc'; }
+        },
+
+        statusBadgeClass(status) {
+            // Stitch 原型严格对齐：bg-X/12 text-X
+            const map = {
+                success:   'bg-success/12 text-success',
+                failed:    'bg-danger/12 text-danger',
+                running:   'bg-secondary/12 text-secondary',
+                pending:   'bg-warning/12 text-warning',
+                cancelled: 'bg-neutral-200 text-neutral-700',
+            };
+            return map[status] || map.cancelled;
+        },
+
+        // 平台徽章（openai=GPT 绿 / grok=蓝），对齐本页 status 徽章的 bg-X/12 无边框风格
+        platformBadgeClass(p) {
+            return { openai: 'bg-success/12 text-success', grok: 'bg-secondary/12 text-secondary' }[p]
+                || 'bg-neutral-200 text-neutral-700';
+        },
+        platformLabel(p) {
+            return { openai: 'GPT', grok: 'Grok' }[p] || (p || '').toUpperCase();
+        },
+
         async fetchTasks() {
-            const params = new URLSearchParams({ page: this.page, limit: 20 });
+            const params = new URLSearchParams({ page: this.page, limit: this.pageSize });
             if (this.filter) params.set('status', this.filter);
+            if (this.platformFilter) params.set('platform', this.platformFilter);
             const res = await fetchJson('/api/tasks?' + params);
             this.tasks = res.items || [];
             this.total = res.total || 0;
+            // 刷新后剔除已不在当前页的选中项（翻页/筛选切换时也需要清）
+            const ids = new Set(this.tasks.map(t => t.id));
+            this.selectedIds = this.selectedIds.filter(id => ids.has(id));
         },
-        async retryTask(id, mode = 'restart') {
+
+        get allSelected() {
+            return this.sortedTasks.length > 0
+                && this.selectedIds.length === this.sortedTasks.length;
+        },
+
+        get someSelected() {
+            return this.selectedIds.length > 0 && !this.allSelected;
+        },
+
+        toggleAll() {
+            this.selectedIds = this.allSelected
+                ? []
+                : this.sortedTasks.map(t => t.id);
+        },
+
+        toggleOne(id) {
+            const i = this.selectedIds.indexOf(id);
+            if (i >= 0) this.selectedIds.splice(i, 1);
+            else this.selectedIds.push(id);
+        },
+
+        async batchAction(action) {
+            if (this.selectedIds.length === 0) return;
+            if (action === 'delete') {
+                const msg = i18n('tasks.list.batch.delete_confirm')
+                    .replace('{count}', this.selectedIds.length);
+                if (!(await confirmDialog({ message: msg, danger: action === 'delete' }))) return;
+            }
             this.actionBusy = true;
+            const taskIds = [...this.selectedIds];
             try {
-                await fetchJson(`/api/tasks/${id}/retry`, {
+                const res = await fetchJson('/api/tasks/batch-actions', {
                     method: 'POST',
-                    body: { mode },
+                    body: { action, task_ids: taskIds }
                 });
+                const succeededCount = (res.succeeded || []).length;
+                const total = res.total || taskIds.length;
+                showToast(i18n(`tasks.list.batch.${action}_succeeded`)
+                    .replace('{n}', succeededCount)
+                    .replace('{total}', total),
+                    succeededCount === total ? 'success' : 'warning');
+                this.selectedIds = [];
                 await this.fetchTasks();
-                showToast(
-                    mode === 'resume'
-                        ? i18n('tasks.list.retry_resume_submitted')
-                        : i18n('tasks.list.retry_restart_submitted'),
-                    'success'
-                );
-            } catch (error) {
-                showToast(error.message || i18n('assistant.request_failed'), 'error');
+            } catch (e) {
+                showToast(e.message || i18n('assistant.request_failed'), 'error');
             } finally {
                 this.actionBusy = false;
             }
         },
+
+        async retryTask(id, mode = 'restart') {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${id}/retry`, { method: 'POST', body: { mode } });
+                await this.fetchTasks();
+                showToast(mode === 'resume' ? i18n('tasks.list.retry_resume_submitted') : i18n('tasks.list.retry_restart_submitted'), 'success');
+            } catch (error) { showToast(error.message || i18n('assistant.request_failed'), 'error'); }
+            finally { this.actionBusy = false; }
+        },
+
         async cancelTask(id) {
             this.actionBusy = true;
             try {
                 await fetchJson(`/api/tasks/${id}/cancel`, { method: 'POST' });
                 await this.fetchTasks();
                 showToast(i18n('tasks.list.cancel_submitted'), 'success');
-            } catch (error) {
-                showToast(error.message || i18n('assistant.request_failed'), 'error');
-            } finally {
-                this.actionBusy = false;
-            }
-        }
-    }
+            } catch (error) { showToast(error.message || i18n('assistant.request_failed'), 'error'); }
+            finally { this.actionBusy = false; }
+        },
+
+        async cloneTask(id) {
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${id}/clone`, { method: 'POST' });
+                await this.fetchTasks();
+                showToast(i18n('tasks.list.clone_submitted'), 'success');
+            } catch (error) { showToast(error.message || i18n('assistant.request_failed'), 'error'); }
+            finally { this.actionBusy = false; }
+        },
+
+        async deleteTask(id) {
+            if (!(await confirmDialog({ message: i18n('tasks.list.delete_confirm'), danger: true }))) return;
+            this.actionBusy = true;
+            try {
+                await fetchJson(`/api/tasks/${id}`, { method: 'DELETE' });
+                await this.fetchTasks();
+                showToast(i18n('tasks.list.delete_submitted'), 'success');
+            } catch (error) { showToast(error.message || i18n('assistant.request_failed'), 'error'); }
+            finally { this.actionBusy = false; }
+        },
+    };
 }
 </script>
 {% endblock %}

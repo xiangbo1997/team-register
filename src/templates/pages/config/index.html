@@ -1,60 +1,111 @@
 {% extends "base.html" %}
 {% block title %}{{ _('config.title') }} - Team Register{% endblock %}
-{% block nav_config %}bg-gray-800 text-white{% endblock %}
+{% block nav_config %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('config.title') }}{% endblock %}
 
 {% block content %}
-<div x-data="configData()" x-init="fetchConfig()">
-    <!-- Tabs -->
-    <div class="flex border-b mb-6">
-        <template x-for="t in tabs" :key="t.key">
-            <button @click="activeTab = t.key"
-                    class="px-4 py-2 text-sm font-medium border-b-2 -mb-px transition"
-                    :class="activeTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
-                    x-text="i18n('config.tabs.' + t.key)"></button>
-        </template>
+<div x-data="configData()" x-init="fetchConfig()" class="space-y-6">
+
+    {# ─── 迁移引导横幅：A 类 provider 字段已迁出 ─── #}
+    <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
+        <span class="material-symbols-outlined text-blue-600 mt-0.5">info</span>
+        <div class="flex-1 text-sm">
+            <p class="font-semibold text-blue-900 mb-1">供应商配置已迁移</p>
+            <p class="text-blue-700">
+                凭据和默认选择请去
+                <a href="/providers" class="underline font-semibold hover:text-blue-900">/providers</a>
+                （管 efuncard_token / ads_api_key 等凭据）和
+                <a href="/registration-profiles" class="underline font-semibold hover:text-blue-900">/registration-profiles</a>
+                （管"邮箱注册 / 手机注册"默认用哪些 provider）。
+                本页只保留全局运行时参数（重试、支付计划、账单地址等）。
+            </p>
+        </div>
     </div>
 
-    <!-- Config Form -->
-    <div class="bg-white rounded-lg shadow-sm border p-6">
-        <template x-for="t in tabs" :key="t.key">
-            <div x-show="activeTab === t.key">
-                <div class="space-y-4">
+    {# ─── Tab Navigation Card —— 严格按 Stitch ─── #}
+    <div class="bg-surface rounded-xl shadow-token-sm border border-border p-1 flex items-center overflow-x-auto custom-scrollbar">
+        <div class="flex space-x-1 px-2">
+            <template x-for="t in tabs" :key="t.key">
+                <button @click="activeTab = t.key"
+                        :class="activeTab === t.key
+                            ? 'text-primary border-primary'
+                            : 'text-muted hover:text-primary border-transparent'"
+                        class="relative px-6 py-3 text-sm font-medium border-b-2 transition-colors"
+                        x-text="i18n('config.tabs.' + t.key)"></button>
+            </template>
+        </div>
+    </div>
+
+    {# ─── Settings Card —— 含 floating label fields + override warning ─── #}
+    <div class="max-w-[960px]">
+        <div class="bg-surface rounded-xl shadow-token-sm border border-border p-8">
+            <template x-for="t in tabs" :key="t.key">
+                <div x-show="activeTab === t.key" class="space-y-6">
                     <template x-for="field in t.fields" :key="field.key">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1" x-text="field.labelKey ? i18n(field.labelKey) : field.label"></label>
-                            <div class="flex gap-2">
-                                <input :type="field.secret ? 'password' : 'text'"
+                        <div class="space-y-3">
+                            {# Floating-label input —— top label + bg-transparent input #}
+                            <div class="relative">
+                                <input :type="field.secret && !field._visible ? 'password' : 'text'"
                                        :value="config[field.key] || ''"
                                        @input="setField(field.key, $event.target.value)"
-                                       class="flex-1 text-sm border rounded-md px-3 py-2 font-mono focus:ring-2 focus:ring-blue-500"
-                                       :placeholder="field.placeholder || ''">
-                                <button x-show="field.secret" @click="field.secret = !field.secret"
-                                        class="text-xs px-2 border rounded hover:bg-gray-50" x-text="i18n('common.show')"></button>
+                                       :id="'cfg-' + field.key"
+                                       :placeholder="field.placeholder || ' '"
+                                       class="block w-full px-4 pt-6 pb-2 text-sm text-body bg-transparent border border-border rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary transition-all font-mono">
+                                <label :for="'cfg-' + field.key"
+                                       class="absolute text-[11px] font-label font-medium text-muted uppercase tracking-wider top-2 left-4"
+                                       x-text="field.labelKey ? i18n(field.labelKey) : field.label"></label>
+                                {# Eye toggle for secrets #}
+                                <button x-show="field.secret" type="button"
+                                        @click="field._visible = !field._visible"
+                                        class="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-primary transition-colors p-1">
+                                    <span class="material-symbols-outlined text-base" x-text="field._visible ? 'visibility_off' : 'visibility'"></span>
+                                </button>
                             </div>
-                            <p x-show="field.hint || field.hintKey" class="text-xs text-gray-400 mt-1" x-text="field.hintKey ? i18n(field.hintKey) : field.hint"></p>
-                            <!-- L2 覆盖提示（消除 Ambiguity #1）：当字段被 ProviderConfig profile 覆盖时显示 -->
-                            <p x-show="effective[field.key] && (effective[field.key].source || '').startsWith('provider_profile:')"
-                               class="mt-1 text-[11px] text-amber-600 bg-amber-50 px-2 py-1 rounded">
-                                ⚠ 当前值被 provider profile 覆盖：<span class="font-mono" x-text="(effective[field.key] || {}).source"></span>。在此处编辑可能不生效，需到 /providers 改对应档案。
-                            </p>
-                            <p x-show="effective[field.key] && (effective[field.key].source) === 'appsetting'"
-                               class="mt-1 text-[11px] text-blue-500">
-                                ℹ 此字段被运行时 AppSetting 覆盖（来自之前的 /config 修改），改动将立即生效。
-                            </p>
+
+                            {# Hint text #}
+                            <p x-show="field.hint || field.hintKey" class="text-xs text-muted px-1"
+                               x-text="field.hintKey ? i18n(field.hintKey) : field.hint"></p>
+
+                            {# Override warning banner —— provider profile #}
+                            <div x-show="effective[field.key] && (effective[field.key].source || '').startsWith('provider_profile:')"
+                                 class="flex items-start gap-3 p-3 bg-warning/[0.14] border-l-4 border-warning rounded text-warning">
+                                <span class="material-symbols-outlined text-warning text-lg mt-0.5 shrink-0">warning</span>
+                                <p class="text-sm leading-relaxed">
+                                    当前值被 provider profile 覆盖：<span class="font-mono bg-warning/10 px-1 rounded text-[12px]" x-text="(effective[field.key] || {}).source"></span>。在此处编辑可能不生效，需到 /providers 改对应档案
+                                </p>
+                            </div>
+
+                            {# AppSetting override info banner #}
+                            <div x-show="effective[field.key] && (effective[field.key].source) === 'appsetting'"
+                                 class="flex items-start gap-3 p-3 bg-primary/5 border-l-4 border-primary rounded text-primary">
+                                <span class="material-symbols-outlined text-primary text-lg mt-0.5 shrink-0">info</span>
+                                <p class="text-sm leading-relaxed">
+                                    此字段被运行时 AppSetting 覆盖（来自之前的 /config 修改），改动将立即生效
+                                </p>
+                            </div>
                         </div>
                     </template>
                 </div>
-            </div>
-        </template>
+            </template>
 
-        <div class="flex items-center justify-between mt-6 pt-4 border-t">
-            <button @click="fetchConfig()" class="text-sm text-gray-500 hover:text-gray-700" x-text="i18n('config.reset')"></button>
-            <div class="flex gap-2">
-                <button @click="reloadBase()" class="text-sm px-3 py-1.5 border rounded-md hover:bg-gray-50" x-text="i18n('config.reload_env')"></button>
-                <button @click="saveConfig()" :disabled="!dirty"
-                        class="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
-                        x-text="i18n('config.save_changes')"></button>
+            {# Footer actions #}
+            <div class="flex items-center justify-between mt-8 pt-6 border-t border-border">
+                <button @click="fetchConfig()" class="text-sm text-muted hover:text-body transition-colors flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-base">restart_alt</span>
+                    <span x-text="i18n('config.reset')"></span>
+                </button>
+                <div class="flex gap-2">
+                    <button @click="reloadBase()" :disabled="reloading"
+                            class="flex items-center gap-1.5 text-sm px-4 py-2 border border-border text-body rounded-lg hover:bg-subtle transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" :class="reloading ? 'animate-spin' : ''" x-text="reloading ? 'progress_activity' : 'refresh'"></span>
+                        <span x-text="reloading ? i18n('common.processing') : i18n('config.reload_env')"></span>
+                    </button>
+                    <button @click="saveConfig()" :disabled="!dirty || saving"
+                            class="flex items-center gap-1.5 px-5 py-2 bg-primary text-white text-sm font-semibold rounded-lg hover:bg-primary-hover transition-colors shadow-token-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" style="font-variation-settings: 'FILL' 1;" :class="saving ? 'animate-spin' : ''" x-text="saving ? 'progress_activity' : 'save'"></span>
+                        <span x-text="saving ? i18n('common.processing') : i18n('config.save_changes')"></span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -70,16 +121,19 @@ function configData() {
         effective: {},
         dirty: false,
         changes: {},
+        saving: false,        // 保存配置请求中
+        reloading: false,     // 重载 env 请求中
         activeTab: 'basic',
         tabs: [
             { key: 'basic', fields: [
-                { key: 'ads_api', labelKey: 'config.fields.basic.ads_api', placeholder: 'http://local.adspower.net:50325' },
-                { key: 'ads_api_key', labelKey: 'config.fields.basic.ads_api_key', secret: true },
-                { key: 'proxy', label: '代理地址', placeholder: 'socks5://user:pass@host:port' },
-                { key: 'default_browser_provider', label: '默认浏览器 Provider', placeholder: 'browser-default' },
-                { key: 'default_card_provider', label: '默认卡 Provider', placeholder: 'card-default' },
-                { key: 'default_mail_provider', label: '默认邮件 Provider', placeholder: 'mail-default' },
-                { key: 'default_mail_account_id', label: '默认邮件账号 ID', placeholder: '可留空' },
+                // 注：以下 A 类 provider 凭据/选择器已迁移到 /providers 和 /registration-profiles 管理：
+                //   ads_api / ads_api_key → /providers (browser-default)
+                //   default_browser_provider / default_card_provider / default_mail_provider /
+                //   default_mail_account_id → /registration-profiles
+                //   email_provider_base_url / email_provider_api_key → /providers (mail-default)
+                //   card_provider / efuncard_token / nodecard_* / x988card_* → /providers (card-*)
+                //   sms_api_key / sms_country → /providers (未来 sms-* provider)
+                { key: 'proxy', label: '代理地址', placeholder: 'socks5://user:pass@host:port', hint: '全局代理；可被 browser provider 单独覆盖' },
                 { key: 'max_navigation_retries', labelKey: 'config.fields.basic.max_navigation_retries', placeholder: '2' },
                 { key: 'max_email_attempts', labelKey: 'config.fields.basic.max_email_attempts', placeholder: '3' },
                 { key: 'max_profile_reconnects', label: '最大 Profile 重连次数', placeholder: '2' },
@@ -87,23 +141,6 @@ function configData() {
                 { key: 'clean_context_mode', label: '上下文清理模式', placeholder: 'reuse_and_clean', hint: 'reuse_and_clean / new_context' },
                 { key: 'run_artifacts_dir', label: '运行产物目录', placeholder: 'artifacts/runs' },
                 { key: 'trace_on_failure', label: '失败时录制 Trace', placeholder: 'true / false' },
-            ]},
-            { key: 'mail', fields: [
-                { key: 'email_provider_base_url', label: '邮件服务地址', placeholder: 'http://127.0.0.1:8000' },
-                { key: 'email_provider_api_key', label: '邮件服务 API Key', secret: true },
-            ]},
-            { key: 'card', fields: [
-                { key: 'card_provider', labelKey: 'config.fields.card.card_provider', hintKey: 'config.hints.card_provider', placeholder: 'efuncard / nodecard / x988card' },
-                { key: 'efuncard_token', labelKey: 'config.fields.card.efuncard_token', secret: true },
-                { key: 'nodecard_api_url', label: 'NodeCard API URL', placeholder: 'https://api.node-card.com' },
-                { key: 'nodecard_merchant_id', label: 'NodeCard Merchant ID', placeholder: '0' },
-                { key: 'nodecard_platform_id', label: 'NodeCard Platform ID', placeholder: '0' },
-                { key: 'x988card_api_base', label: 'X988Card API Base', placeholder: 'https://cards.779.chat', hint: '当 card_provider=x988card 时使用；卡商域名 cards.779.chat / card.988.chat' },
-                { key: 'x988card_request_timeout', label: 'X988Card 请求超时 (秒)', placeholder: '15' },
-            ]},
-            { key: 'sms', fields: [
-                { key: 'sms_api_key', labelKey: 'config.fields.sms.sms_api_key', secret: true },
-                { key: 'sms_country', labelKey: 'config.fields.sms.sms_country', placeholder: '6' },
             ]},
             { key: 'llm', fields: [
                 { key: 'llm_enabled', labelKey: 'config.fields.llm.llm_enabled', placeholder: 'true / false' },
@@ -152,6 +189,8 @@ function configData() {
         },
 
         async saveConfig() {
+            if (this.saving) return;
+            this.saving = true;
             try {
                 await fetchJson('/api/config', {
                     method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -162,16 +201,22 @@ function configData() {
                 this.changes = {};
             } catch (_) {
                 showToast(i18n('config.save_failed'), 'error');
+            } finally {
+                this.saving = false;
             }
         },
 
         async reloadBase() {
+            if (this.reloading) return;
+            this.reloading = true;
             try {
                 await fetchJson('/api/config/reload', { method: 'POST' });
                 await this.fetchConfig();
                 showToast(i18n('config.reloaded'), 'success');
             } catch (error) {
                 showToast(error.message || i18n('config.save_failed'), 'error');
+            } finally {
+                this.reloading = false;
             }
         }
     }

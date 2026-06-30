@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "probed_at": "2026-05-29",
+    "note": "P0 部分真实 schema。socks5h 修复后 chatgpt metadata 端点返回 HTTP 200（不再超时）。但目前手上的码（thinkiafr / known_codes.json 里的）今天都已失效，只拿到了失效码的响应结构，还差一个当前 ELIGIBLE 的码来确认 metadata 非空时的字段。",
+    "confirmed_real": true,
+    "still_missing": "ELIGIBLE 码的 metadata 非空对象结构"
+  },
+  "ineligible_response_REAL": {
+    "_source": "直接 GET /backend-api/promotions/metadata/thinkiafr?type=promo，HTTP 200，真实响应",
+    "metadata": null,
+    "is_eligible": false,
+    "ineligible_reason": {
+      "title": "Promo Unavailable",
+      "message": "The promo code is invalid.",
+      "code": "invalid_code"
+    }
+  },
+  "eligible_response_UNKNOWN": {
+    "_note": "当 is_eligible=true 时，metadata 字段应为非空对象（含折扣详情）。具体结构需要一个当前有效的码才能确认——尚未拿到。",
+    "metadata": "<待真实 ELIGIBLE 码确认>"
+  }
+}

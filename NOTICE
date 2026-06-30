@@ -1,0 +1,67 @@
+team-register
+=============
+
+Copyright (c) 2026 team-register contributors
+
+This product includes software derived from or inspired by:
+
+----
+
+gpt-pp-team
+-----------
+Source: https://github.com/<gpt-mitm>/gpt-pp-team (sibling research project)
+License: MIT
+Copyright (c) 2026 gpt-mitm contributors
+
+The following components in this repository are derived from or inspired by
+gpt-pp-team's design and source code:
+
+  * `.github/workflows/ci.yml`
+    - Inspired by gpt-pp-team `.github/workflows/ci.yml`
+    - Borrowed: 4-job CI pattern (lint / syntax / secret-scan), ruff
+      `--select=E9,F63,F7,F82` flag set, secret-scan via grep with concatenated
+      patterns to avoid self-matching, absolute-path sweep step.
+    - Adapted: token patterns rewritten for team-register's env vars
+      (EFUNCARD_TOKEN / NODECARD_TOKEN / X988_TOKEN / SMS_API_KEY /
+      MAIL_REFRESH_TOKEN / LLM_API_KEY / SESSION_SECRET); path patterns
+      changed to /Users/* (macOS dev box) instead of /home/kali.
+
+  * `src/services/decline_retry_service.py` (planned, not yet committed)
+    - Inspired by gpt-pp-team `CTF-pay/retry_house_decline.py`
+    - Borrowed: per-attempt time-on-page jitter strategy (`base_min * attempt`),
+      terminal-decline vs challenge vs session-inactive result classification.
+    - Adapted: function-level retry instead of subprocess respawn; integrates
+      with team-register's existing `_classify_decline()` and `Run` model.
+
+  * `docs/research/risk-control-insights.md` (planned, not yet committed)
+    - Inspired by gpt-pp-team `docs/anti-fraud-research.md`
+    - Borrowed: methodology and section structure (probe vs ban layer model,
+      multi-dimensional scattering: IP / domain / payment / timing).
+    - NOT borrowed: any specific empirical data, IP/account anonymized samples,
+      or production statistics. team-register documents its own design only.
+
+The full text of the MIT License governing the borrowed components is
+reproduced below.
+
+----
+
+MIT License (gpt-pp-team)
+-------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

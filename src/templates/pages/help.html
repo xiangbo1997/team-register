@@ -1,70 +1,136 @@
 {% extends "base.html" %}
 {% block title %}{{ _('help.title') }} - Team Register{% endblock %}
-{% block nav_help %}bg-gray-800 text-white{% endblock %}
+{% block nav_help %}sidebar-active{% endblock %}
 {% block page_title %}{{ _('help.title') }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-    <section class="rounded-2xl border bg-white p-6 shadow-sm">
-        <h3 class="text-lg font-semibold">{{ _('help.quick_start_title') }}</h3>
-        <p class="mt-2 text-sm text-gray-600">{{ _('help.quick_start_intro') }}</p>
-        <div class="mt-4 grid gap-3 md:grid-cols-2">
-            <div class="rounded-xl bg-gray-50 p-4">
-                <div class="text-sm font-medium">{{ _('help.login_title') }}</div>
-                <p class="mt-2 text-sm text-gray-600">{{ _('help.login_desc') }}</p>
-            </div>
-            <div class="rounded-xl bg-gray-50 p-4">
-                <div class="text-sm font-medium">{{ _('help.assistant_title') }}</div>
-                <p class="mt-2 text-sm text-gray-600">{{ _('help.assistant_desc') }}</p>
-            </div>
-        </div>
-    </section>
+<div class="space-y-6 max-w-7xl mx-auto">
 
-    <section class="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <div class="rounded-2xl border bg-white p-6 shadow-sm">
-            <h3 class="text-lg font-semibold">{{ _('help.preview_commit_title') }}</h3>
-            <ol class="mt-4 space-y-3 text-sm text-gray-700">
-                <li><span class="font-medium">1.</span> {{ _('help.preview_commit_step_1') }}</li>
-                <li><span class="font-medium">2.</span> {{ _('help.preview_commit_step_2') }}</li>
-                <li><span class="font-medium">3.</span> {{ _('help.preview_commit_step_3') }}</li>
-                <li><span class="font-medium">4.</span> {{ _('help.preview_commit_step_4') }}</li>
-            </ol>
-
-            <h4 class="mt-6 text-sm font-semibold text-gray-900">{{ _('help.example_title') }}</h4>
-            <div class="mt-3 rounded-xl bg-gray-900 p-4 text-sm text-gray-100">
-                <p>{{ _('help.example_prompt_1') }}</p>
-                <p class="mt-2">{{ _('help.example_prompt_2') }}</p>
-                <p class="mt-2">{{ _('help.example_prompt_3') }}</p>
+    {# ─── Section 1: 快速开始 ─── #}
+    <section class="bg-surface rounded-lg shadow-token-sm p-8 border border-border">
+        <h3 class="text-2xl font-semibold mb-2 text-body">{{ _('help.quick_start_title') }}</h3>
+        <p class="text-muted text-base mb-8">{{ _('help.quick_start_intro') }}</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-slate-50 rounded-lg p-6 border border-slate-100 flex gap-4">
+                <div class="w-9 h-9 shrink-0 bg-secondary/10 text-secondary rounded-lg flex items-center justify-center">
+                    <span class="material-symbols-outlined">login</span>
+                </div>
+                <div>
+                    <h4 class="text-base font-semibold mb-2 text-body">{{ _('help.login_title') }}</h4>
+                    <p class="text-slate-600 text-sm leading-6">{{ _('help.login_desc') }}</p>
+                </div>
             </div>
-        </div>
-
-        <div class="rounded-2xl border bg-white p-6 shadow-sm">
-            <h3 class="text-lg font-semibold">{{ _('help.boundary_title') }}</h3>
-            <ul class="mt-4 space-y-3 text-sm text-gray-700">
-                <li>• {{ _('help.boundary_item_1') }}</li>
-                <li>• {{ _('help.boundary_item_2') }}</li>
-                <li>• {{ _('help.boundary_item_3') }}</li>
-                <li>• {{ _('help.boundary_item_4') }}</li>
-            </ul>
-            <div class="mt-6 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
-                <div class="font-medium">{{ _('help.manual_box_title') }}</div>
-                <p class="mt-2">{{ _('help.manual_box_desc') }}</p>
-                <div class="mt-3 flex flex-wrap gap-2">
-                    <a href="{{ manual_url or '/manual' }}" target="_blank" class="rounded-lg bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700">{{ _('assistant.open_manual') }}</a>
-                    <a href="/docs" target="_blank" class="rounded-lg border border-blue-200 px-3 py-1.5 text-blue-700 hover:bg-white">{{ _('app.api_docs') }}</a>
+            <div class="bg-slate-50 rounded-lg p-6 border border-slate-100 flex gap-4">
+                <div class="w-9 h-9 shrink-0 bg-success/10 text-success rounded-lg flex items-center justify-center">
+                    <span class="material-symbols-outlined">smart_toy</span>
+                </div>
+                <div>
+                    <h4 class="text-base font-semibold mb-2 text-body">{{ _('help.assistant_title') }}</h4>
+                    <p class="text-slate-600 text-sm leading-6">{{ _('help.assistant_desc') }}</p>
                 </div>
             </div>
         </div>
     </section>
 
-    <section class="rounded-2xl border bg-white p-6 shadow-sm">
-        <div class="flex items-center justify-between gap-4">
-            <h3 class="text-lg font-semibold">{{ _('help.manual_section_title') }}</h3>
-            <a href="{{ manual_url or '/manual' }}" target="_blank" class="text-sm text-blue-600 hover:text-blue-700">{{ _('common.learn_more') }}</a>
-        </div>
-        <div class="prose prose-sm mt-4 max-w-none">
+    {# ─── Section 2: Preview→Commit + 权限边界 ─── #}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {# Left: Preview Workflow #}
+        <section class="bg-surface rounded-lg shadow-token-sm p-8 border border-border flex flex-col">
+            <h3 class="text-2xl font-semibold mb-6 text-body">{{ _('help.preview_commit_title') }}</h3>
+            <div class="space-y-4 flex-1">
+                <ol class="space-y-4">
+                    <li class="flex gap-4">
+                        <span class="w-6 h-6 shrink-0 rounded-full bg-primary/10 text-primary text-[12px] font-bold flex items-center justify-center">1</span>
+                        <p class="text-slate-700 text-base leading-6">{{ _('help.preview_commit_step_1') }}</p>
+                    </li>
+                    <li class="flex gap-4">
+                        <span class="w-6 h-6 shrink-0 rounded-full bg-primary/10 text-primary text-[12px] font-bold flex items-center justify-center">2</span>
+                        <p class="text-slate-700 text-base leading-6">
+                            {{ _('help.preview_commit_step_2') }}
+                            <span class="px-2 py-0.5 bg-warning/10 text-warning rounded-full text-[11px] font-bold ml-1">PREVIEW</span>
+                        </p>
+                    </li>
+                    <li class="flex gap-4">
+                        <span class="w-6 h-6 shrink-0 rounded-full bg-primary/10 text-primary text-[12px] font-bold flex items-center justify-center">3</span>
+                        <p class="text-slate-700 text-base leading-6">{{ _('help.preview_commit_step_3') }}</p>
+                    </li>
+                    <li class="flex gap-4">
+                        <span class="w-6 h-6 shrink-0 rounded-full bg-primary/10 text-primary text-[12px] font-bold flex items-center justify-center">4</span>
+                        <p class="text-slate-700 text-base leading-6">{{ _('help.preview_commit_step_4') }}</p>
+                    </li>
+                </ol>
+            </div>
+
+            <div class="mt-8 pt-6 border-t border-slate-100">
+                <h4 class="text-base font-semibold mb-3 text-body">{{ _('help.example_title') }}</h4>
+                <div class="bg-[#0F172A] rounded-lg p-4 mono-text text-xs text-slate-100 leading-6 space-y-2">
+                    <p class="opacity-80"># 示例 1</p>
+                    <p class="border-l-2 border-primary pl-3">{{ _('help.example_prompt_1') }}</p>
+                    <p class="opacity-80 mt-4"># 示例 2</p>
+                    <p class="border-l-2 border-primary pl-3">{{ _('help.example_prompt_2') }}</p>
+                    <p class="opacity-80 mt-4"># 示例 3</p>
+                    <p class="border-l-2 border-primary pl-3">{{ _('help.example_prompt_3') }}</p>
+                </div>
+            </div>
+        </section>
+
+        {# Right: Permissions Boundary #}
+        <section class="bg-surface rounded-lg shadow-token-sm p-8 border border-border">
+            <h3 class="text-2xl font-semibold mb-6 text-body">{{ _('help.boundary_title') }}</h3>
+            <ul class="space-y-4">
+                <li class="flex items-start gap-3">
+                    <span class="material-symbols-outlined text-muted text-[18px] mt-0.5">verified_user</span>
+                    <p class="text-slate-700 text-base leading-6">{{ _('help.boundary_item_1') }}</p>
+                </li>
+                <li class="flex items-start gap-3">
+                    <span class="material-symbols-outlined text-muted text-[18px] mt-0.5">lock</span>
+                    <p class="text-slate-700 text-base leading-6">{{ _('help.boundary_item_2') }}</p>
+                </li>
+                <li class="flex items-start gap-3">
+                    <span class="material-symbols-outlined text-muted text-[18px] mt-0.5">history</span>
+                    <p class="text-slate-700 text-base leading-6">{{ _('help.boundary_item_3') }}</p>
+                </li>
+                <li class="flex items-start gap-3">
+                    <span class="material-symbols-outlined text-muted text-[18px] mt-0.5">group</span>
+                    <p class="text-slate-700 text-base leading-6">{{ _('help.boundary_item_4') }}</p>
+                </li>
+            </ul>
+
+            <div class="mt-8 p-6 bg-secondary/5 border border-secondary/20 rounded-lg">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="material-symbols-outlined text-secondary">menu_book</span>
+                    <h4 class="text-base font-semibold text-body">{{ _('help.manual_box_title') }}</h4>
+                </div>
+                <p class="text-secondary/80 text-sm leading-6 mb-6">{{ _('help.manual_box_desc') }}</p>
+                <div class="flex gap-3">
+                    <a href="{{ manual_url or '/manual' }}" target="_blank"
+                       class="bg-primary hover:bg-primary-hover text-white px-4 py-2 rounded-lg text-sm font-semibold shadow-token-sm transition-all flex items-center gap-2">
+                        <span>{{ _('assistant.open_manual') }}</span>
+                        <span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+                    </a>
+                    <a href="/docs" target="_blank"
+                       class="bg-white border border-primary text-primary hover:bg-primary/5 px-4 py-2 rounded-lg text-sm font-semibold transition-all">
+                        {{ _('app.api_docs') }}
+                    </a>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    {# ─── Section 3: Manual full ─── #}
+    <section class="bg-surface rounded-lg shadow-token-sm p-8 border border-border">
+        <header class="flex justify-between items-center mb-6">
+            <h3 class="text-2xl font-semibold text-body">{{ _('help.manual_section_title') }}</h3>
+            <a href="{{ manual_url or '/manual' }}" target="_blank"
+               class="text-secondary hover:underline text-sm flex items-center gap-1 font-semibold">
+                {{ _('common.learn_more') }}
+                <span class="material-symbols-outlined text-[16px]">open_in_new</span>
+            </a>
+        </header>
+        <article class="prose prose-slate max-w-none text-slate-700 prose-headings:text-body prose-strong:text-body prose-code:text-primary prose-code:bg-primary/10 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono">
             {{ manual_html | safe }}
-        </div>
+        </article>
     </section>
 </div>
 {% endblock %}

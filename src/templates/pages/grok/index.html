@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}Grok 注册 - Team Register{% endblock %}
+{% block nav_grok %}sidebar-active{% endblock %}
+{% block page_title %}Grok 注册{% endblock %}
+
+{% block content %}
+{# feat/grok-register：按 Stitch 原型（.claude/prototypes/grok-register-stitch.html）落地。
+   单个注册 / 批量并发 已接 worker；别名循环 P2 前占位禁用。
+   PROVIDER 配置仅 3 槽（browser/mail/captcha）—— Grok 无卡、无 SMS。 #}
+<div x-data="grokRegisterData()" x-init="init()" class="max-w-[920px] mx-auto space-y-6">
+
+    {# ─── Tab 切换 ─── #}
+    <section class="bg-white rounded-xl shadow-token-sm border border-border overflow-hidden">
+        <nav class="flex border-b border-neutral-100">
+            <button type="button" @click="activeMode='single'"
+                    :class="activeMode==='single' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="flex-1 py-4 text-sm font-semibold transition-all border-b-2">单个注册</button>
+            <button type="button" @click="activeMode='batch'"
+                    :class="activeMode==='batch' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="flex-1 py-4 text-sm font-semibold transition-all border-b-2">批量并发</button>
+            <button type="button" @click="activeMode='alias'"
+                    :class="activeMode==='alias' ? 'border-primary text-primary' : 'border-transparent text-neutral-500 hover:text-neutral-700'"
+                    class="flex-1 py-4 text-sm font-semibold transition-all border-b-2 flex items-center justify-center gap-2">
+                别名循环
+                <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/12 text-sky-600">Hotmail</span>
+            </button>
+        </nav>
+
+        {# ─── 模式 A：单个注册 ─── #}
+        <div class="p-8" x-show="activeMode==='single'" x-cloak>
+            <div class="mb-6">
+                <h3 class="text-[20px] font-semibold text-neutral-900">单个 Grok 注册</h3>
+                <p class="text-sm text-muted mt-1">填写真实邮箱 / 密码 / AdsPower Profile，自动完成 Grok 邮箱验证码注册并提取 SSO Token。</p>
+            </div>
+
+            {# info banner #}
+            <div class="mb-6 flex gap-3 p-3.5 rounded-lg bg-sky-50 border-l-4 border-sky-500">
+                <span class="material-symbols-outlined text-sky-500 text-[20px]">info</span>
+                <p class="text-sm text-sky-900">Grok 需要 <b>真实可收码邮箱</b>（复用现有邮箱 Provider 取验证码），<b>无需手机号、无需绑卡</b>，产物为 <span class="font-mono">sso</span> token。</p>
+            </div>
+
+            <form @submit.prevent="submitSingle()">
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2"
+                                   x-text="'邮箱 Email' + (emailBlankAllowed() ? '' : ' *')"></label>
+                            <input type="email" x-model="form.email" :required="!emailBlankAllowed()"
+                                   class="font-mono text-sm w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   :placeholder="emailBlankAllowed() ? '留空将自动生成（当前邮箱 Provider 支持）' : 'user@hotmail.com'">
+                            <p class="mt-1.5 text-xs text-muted" x-text="emailHint()"></p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2">密码 Password</label>
+                            <input type="text" x-model="form.password"
+                                   class="w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                                   placeholder="留空将自动生成">
+                            <p class="mt-1.5 text-xs text-muted">留空则后端自动生成强密码</p>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium uppercase text-muted tracking-wider mb-2">AdsPower Profile ID *</label>
+                        <input type="text" x-model="form.profile_id" required
+                               class="font-mono text-sm w-full h-12 px-4 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+                               placeholder="k1b9945d">
+                    </div>
+                </div>
+
+                <div class="mt-10 flex items-center justify-between pt-6 border-t border-neutral-100">
+                    <a href="/tasks" class="px-6 py-2.5 text-sm font-medium text-neutral-500 hover:bg-neutral-50 rounded-lg transition-colors">取消</a>
+                    <button type="submit" :disabled="submitting"
+                            class="flex items-center gap-1.5 px-8 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-semibold shadow-token-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span class="material-symbols-outlined text-base" x-show="!submitting">rocket_launch</span>
+                        <span x-text="submitting ? '启动中...' : '启动 Grok 注册'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        {# ─── 模式 B：批量并发 ─── #}
+        <div class="p-8" x-show="activeMode==='batch'" x-cloak>
+            <section class="bg-gradient-to-br from-indigo-50/50 to-sky-50/50 border border-indigo-100 rounded-card p-8 relative overflow-hidden">
+                <div class="absolute -right-16 -top-16 w-64 h-64 bg-indigo-200/10 rounded-full blur-3xl pointer-events-none"></div>
+                <div class="mb-6 relative">
+                    <h3 class="text-[18px] font-bold text-indigo-900">🚀 Grok 批量并发注册</h3>
+                    <p class="text-sm text-indigo-700/70 mt-1">多 Profile 并发；每行一个邮箱（每行 <span class="font-mono">邮箱----密码</span>，密码可省略走共用密码）。</p>
+                </div>
+                <div class="grid grid-cols-2 gap-3 relative">
+                    <div class="col-span-2">
+                        <label class="block text-[11px] font-medium uppercase text-indigo-600/60 tracking-widest mb-1.5">邮箱列表 *（每行：邮箱 或 邮箱----密码）</label>
+                        <textarea x-model="batch.emails_text" rows="5"
+                                  class="w-full p-3 font-mono text-xs border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none bg-white/60"
+                                  placeholder="alice@hotmail.com&#10;bob@outlook.com----MyPwd123!"></textarea>
+                        <p class="text-xs mt-1" :class="batchEmails.length > 0 ? 'text-success font-medium' : 'text-danger'">
+                            <span x-show="batchEmails.length === 0">⚠️ 请至少填一个邮箱</span>
+                            <span x-show="batchEmails.length > 0" x-text="`✓ 解析 ${batchEmails.length} 个邮箱`"></span>
+                        </p>
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-[11px] font-medium uppercase text-indigo-600/60 tracking-widest mb-1.5">AdsPower Profile IDs *（每行一个；并发数 = 行数）</label>
+                        <textarea x-model="batch.profile_ids_text" rows="3"
+                                  class="w-full p-3 font-mono text-xs border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none bg-white/60"
+                                  placeholder="k1b9945d&#10;k1b9946e"></textarea>
+                        <p class="text-xs mt-1 text-indigo-700/60" x-show="batchProfiles.length > 0" x-text="`并发数 ${batchProfiles.length}`"></p>
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs font-medium text-indigo-700/70 mb-1">共用密码（邮箱行未指定密码时使用）*</label>
+                        <input type="text" x-model="batch.password"
+                               class="w-full h-11 px-4 border border-indigo-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary outline-none bg-white/60"
+                               placeholder="所有未指定密码的号都用这个">
+                    </div>
+                </div>
+                <div class="mt-8 flex items-center justify-end pt-6 border-t border-indigo-200/50 relative">
+                    <button @click="submitBatch()" :disabled="batch.submitting"
+                            class="px-8 py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-bold shadow-md shadow-primary/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span x-text="batch.submitting ? '启动中...' : '🚀 启动批量注册'"></span>
+                        <span class="material-symbols-outlined text-lg">arrow_forward</span>
+                    </button>
+                </div>
+                <p x-show="batch.lastResult" x-cloak class="mt-4 text-sm text-indigo-700/80" x-text="batch.lastResult"></p>
+            </section>
+        </div>
+
+        {# ─── 模式 C：别名循环（P2 占位）─── #}
+        <div class="p-8" x-show="activeMode==='alias'" x-cloak>
+            <section class="bg-gradient-to-br from-indigo-50/50 to-sky-50/50 border border-indigo-100 rounded-card p-8 relative overflow-hidden opacity-90">
+                <div class="mb-4 relative">
+                    <h3 class="text-[18px] font-bold text-indigo-900 flex items-center gap-2">🔁 Hotmail 别名循环注册</h3>
+                    <p class="text-sm text-indigo-700/70 mt-1">一个真实主号派生 <span class="font-mono">邮箱+0</span> / <span class="font-mono">邮箱+1</span> … 别名，每个别名注册一个 Grok 账号（别名邮件均投递到主号收件箱）。</p>
+                </div>
+                <div class="relative p-4 rounded-lg bg-amber-50 border-l-4 border-amber-400 flex gap-3">
+                    <span class="material-symbols-outlined text-amber-500 text-[20px]">construction</span>
+                    <p class="text-sm text-amber-800">别名循环模式开发中（P2）——依赖远程 email-provider 的别名收码能力确认后开放。当前可用「单个注册」「批量并发」。</p>
+                </div>
+            </section>
+        </div>
+    </section>
+
+    {# ─── PROVIDER 配置（仅 3 槽：browser / mail / captcha）─── #}
+    <section class="bg-white rounded-card shadow-token-sm p-8 border border-neutral-100">
+        <div class="mb-4 flex items-start justify-between">
+            <div>
+                <h4 class="text-sm font-bold text-neutral-900 uppercase tracking-wider">PROVIDER 配置 (Grok)</h4>
+                <p class="text-xs text-muted mt-1">Grok 无卡 / 无 SMS 槽位（无支付、无手机验证）。
+                    <a href="/providers" class="text-primary underline ml-1">管理 Provider</a>
+                </p>
+            </div>
+        </div>
+        <div class="bg-neutral-50/50 border border-border rounded-lg p-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <template x-for="slot in GROK_SLOTS" :key="slot">
+                <div>
+                    <label class="block text-[11px] font-medium uppercase text-muted tracking-widest mb-1.5" x-text="slotLabel(slot)"></label>
+                    <select :value="overrides[slot] || ''" @change="overrides[slot] = $event.target.value"
+                            class="w-full h-11 px-3 border border-neutral-200 rounded-lg focus:ring-4 focus:ring-primary/20 focus:border-primary text-sm font-mono outline-none bg-white">
+                        <option value="" x-text="(providersByType[slot] || []).length === 0 ? '（无可用 Provider）' : '（默认）'"></option>
+                        <template x-for="opt in (providersByType[slot] || [])" :key="opt.provider_name">
+                            <option :value="opt.provider_name" x-text="opt.provider_name + (opt.is_active ? '' : ' (停用)')"></option>
+                        </template>
+                    </select>
+                </div>
+            </template>
+        </div>
+    </section>
+</div>
+
+<script>
+const GROK_SLOTS = ['browser', 'mail', 'captcha'];
+const GROK_SLOT_LABELS = { browser: '浏览器 Provider', mail: '邮箱 Provider', captcha: 'Captcha Provider' };
+
+function grokRegisterData() {
+    return {
+        activeMode: 'single',
+        GROK_SLOTS,
+        providersByType: {},
+        overrides: {},
+        defaults: {},
+        submitting: false,
+
+        form: { email: '', password: '', profile_id: '' },
+        batch: { emails_text: '', profile_ids_text: '', password: '', submitting: false, lastResult: '' },
+
+        get batchEmails() {
+            return (this.batch.emails_text || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+        },
+        get batchProfiles() {
+            const items = (this.batch.profile_ids_text || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+            return [...new Set(items)];
+        },
+
+        slotLabel(slot) { return GROK_SLOT_LABELS[slot] || slot; },
+
+        // 当前所选 mail provider 的上游 provider_name（cfworker / outlook_email_plus / ...）
+        selectedMailUpstream() {
+            const name = String(this.overrides.mail || '').trim();
+            const list = this.providersByType.mail || [];
+            const found = list.find(p => p.provider_name === name) || null;
+            return String(found?.config?.provider_name || '').toLowerCase();
+        },
+        // cfworker / outlook_email_plus 支持自动生成邮箱 → 上面邮箱框可留空
+        emailBlankAllowed() {
+            const upstream = this.selectedMailUpstream();
+            return upstream === 'cfworker' || upstream === 'outlook_email_plus';
+        },
+        emailHint() {
+            const upstream = this.selectedMailUpstream();
+            if (upstream === 'cfworker') return '留空时由 cfworker 自动生成邮箱（firstname.lastname@域名）';
+            if (upstream === 'outlook_email_plus') return '留空时从 Outlook 号池自动分配';
+            return 'Grok 需要真实可收码邮箱';
+        },
+
+        async init() {
+            const [config, allProviders] = await Promise.all([
+                fetchJson('/api/config').catch(() => ({})),
+                fetchJson('/api/providers?active_only=true').catch(() => []),
+            ]);
+            this.defaults = config || {};
+            const grouped = {};
+            GROK_SLOTS.forEach(s => { grouped[s] = []; });
+            for (const p of (allProviders || [])) {
+                const t = String(p.provider_type || '').toLowerCase();
+                if (grouped[t]) grouped[t].push(p);
+            }
+            this.providersByType = grouped;
+            // 默认值兜底
+            GROK_SLOTS.forEach(s => { this.overrides[s] = this.defaults[`default_${s}_provider`] || ''; });
+        },
+
+        _buildOverrides() {
+            const out = {};
+            for (const slot of GROK_SLOTS) {
+                const v = String(this.overrides[slot] || '').trim();
+                if (v) out[slot] = v;
+            }
+            return out;
+        },
+
+        async submitSingle() {
+            // 仅当所选 mail provider 不支持自动生成时才要求手填邮箱
+            if (!this.form.email.trim() && !this.emailBlankAllowed()) {
+                showToast('当前邮箱 Provider 不支持留空，请填写真实邮箱', 'error');
+                return;
+            }
+            this.submitting = true;
+            try {
+                const payload = {
+                    registration_kind: 'grok',
+                    email: this.form.email.trim(),
+                    password: this.form.password || '',
+                    profile_id: this.form.profile_id.trim(),
+                    mode: 'register_only',
+                    provider_overrides: this._buildOverrides(),
+                };
+                const data = await fetchJson('/api/tasks', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                window.location.href = '/tasks/' + data.id;
+            } catch (err) {
+                showToast(err.message || 'Grok 注册任务创建失败', 'error');
+            } finally { this.submitting = false; }
+        },
+
+        async submitBatch() {
+            const profiles = this.batchProfiles;
+            const emails = this.batchEmails;
+            if (emails.length === 0) { showToast('请至少填一个邮箱', 'error'); return; }
+            if (profiles.length === 0) { showToast('请至少填一个 Profile ID', 'error'); return; }
+            if (!this.batch.password.trim() && !emails.every(l => l.includes('----'))) {
+                showToast('未指定共用密码时，每行邮箱都需带 ----密码', 'error'); return;
+            }
+            this.batch.submitting = true;
+            this.batch.lastResult = '';
+            const overrides = this._buildOverrides();
+            let ok = 0, fail = 0;
+            // 逐个创建 grok 任务（round-robin 分配 profile）。
+            for (let i = 0; i < emails.length; i++) {
+                const parts = emails[i].split('----');
+                const email = (parts[0] || '').trim();
+                const pwd = (parts[1] || this.batch.password || '').trim();
+                const profile_id = profiles[i % profiles.length];
+                try {
+                    await fetchJson('/api/tasks', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            registration_kind: 'grok', email, password: pwd,
+                            profile_id, mode: 'register_only', auto_start: true,
+                            provider_overrides: overrides,
+                        }),
+                    });
+                    ok++;
+                } catch (_) { fail++; }
+            }
+            this.batch.lastResult = `已提交 ${ok} 个，失败 ${fail} 个。可到 /tasks 或 /accounts 查看进度。`;
+            showToast(`Grok 批量已提交：成功 ${ok} / 失败 ${fail}`, fail === 0 ? 'success' : 'info');
+            this.batch.submitting = false;
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -26,6 +26,8 @@ from src.automation import (
     RegistrationStateMachine,
     extract_session_tokens_with_http,
 )
+from src.automation.captcha_solver import build_solver_from_config
+from src.automation.triage import attach_log_buffer, build_triage_provider
 from src.config import load_config, AppConfig
 from src.efuncard import EfunCard
 from src.nodecard import NodeCard
@@ -78,6 +80,19 @@ def _update_task_phase(phase: str) -> None:
         return
 
 
+def _persist_task_tokens(access_token: str, refresh_token: str) -> None:
+    """提取 token 后落库到 Run.openai_tokens（号池"生成链接"+cpa 导出依赖）。
+
+    CLI 直跑（无 Worker 上下文）会静默跳过；Worker 模式下写库失败不抛。
+    """
+    try:
+        from src.api.worker import update_current_task_tokens
+
+        update_current_task_tokens(access_token, refresh_token)
+    except Exception:
+        return
+
+
 def _ensure_task_active(checkpoint: str = "") -> None:
     """在 Worker 模式下检查当前任务是否已被取消。"""
     try:
@@ -115,6 +130,16 @@ _PRIMARY_SUBMIT_SELECTORS = (
     'button:has-text("Continuar")',
     'button:has-text("Siguiente")',
     'button:has-text("Finalizar")',
+    'button:has-text("続行")',  # 日语「继续」
+    'button:has-text("继续")',  # 中文
+)
+# 「电话号码继续」按钮 — chatgpt.com 登录/注册弹窗中触发 phone 注册分支
+# 覆盖多语言 accessible name；按钮通常带电话 icon + 文本
+# [已弃用主路径，保留作探测式的最后兜底] 多语言文案脆弱（换 IP 换语言枚举不完），
+# _open_phone_signup_entry 已改用语言无关的 _try_open_phone_by_probing（结构特征 + 探测式）。
+_PHONE_CONTINUE_SELECTORS = (
+    '[data-testid*="phone"]',
+    'a[href^="tel:"]',
 )
 _EMAIL_RESEND_SELECTORS = (
     'button:has-text("Resend email")',
@@ -122,7 +147,7 @@ _EMAIL_RESEND_SELECTORS = (
     'button:has-text("重新发送")',
     'button:has-text("重发")',
 )
-_EMAIL_CODE_POLL_TIMEOUT_SECONDS = 20
+_EMAIL_CODE_POLL_TIMEOUT_SECONDS = 180
 _EMAIL_CODE_MAX_POLL_ATTEMPTS = 3
 _EMAIL_MANUAL_HANDOFF_CHECKS = 20
 _DEFAULT_BILLING_PROFILE = {
@@ -399,44 +424,93 @@ def _wait_for_password_submit_transition(page: Page, *, max_checks: int = 5) -> 
 
 
 def _build_card_client(config: AppConfig):
-    """根据 CARD_PROVIDER 配置选择卡源客户端。
+    """选择卡源客户端。
 
-    注：x988card 走 ``X988CardProvider`` 包装层而不是底层 ``X988Card``，因为前者
-    带 CardActivation 持久化缓存（X988 verify 一次性消耗，必须缓存）。
-    EfunCard / NodeCard 用底层 client（API 设计已防重复调用）。
+    **插拔式优先**：从 DB 取 active card provider 配置，按 kind 实例化。新增卡商
+    只需丢一个文件到 ``src/providers/cards/`` + 在 ``/providers`` UI 新建一条
+    active 配置即可，无需修改本函数。
+
+    **AppConfig 兼容降级**：DB 没配置时回落到旧 ``CARD_PROVIDER`` env 字段（deprecated，
+    下一个 release 移除）。
     """
+    # 路径 1：DB 驱动（插拔式）
+    try:
+        from src.providers import get_registry
+        from src.services.config_service import ConfigService
+
+        cs = ConfigService()
+        instance = get_registry().build_active("card", cs)
+        if instance is not None:
+            logger.info(
+                "_build_card_client: registry 路径生效，使用 %s",
+                type(instance).__name__,
+            )
+            return instance
+    except Exception as exc:
+        logger.warning("_build_card_client: registry 路径失败，回落到 env 字段: %s", exc)
+
+    # 路径 2：AppConfig 兼容（deprecated）
     if config.card_provider == "x988card":
-        from src.providers.card import X988CardProvider
-        logger.info("使用 X988CardProvider（带 CardActivation 缓存）作为虚拟卡供应商。")
+        from src.providers.cards.x988card import X988CardProvider
+        logger.info("使用 X988CardProvider（env 兼容路径）。")
         return X988CardProvider(
             base_url=config.x988card_api_base,
             request_timeout=config.x988card_request_timeout,
         )
     if config.card_provider == "nodecard":
-        from src.providers.card import NodeCardProvider
-        logger.info("使用 NodeCardProvider（带 audit 写入）作为虚拟卡供应商。")
+        from src.providers.cards.nodecard import NodeCardProvider
+        logger.info("使用 NodeCardProvider（env 兼容路径）。")
         return NodeCardProvider(
             base_url=config.nodecard_api_url,
             merchant_dict_id=config.nodecard_merchant_id or None,
             platform_id=config.nodecard_platform_id or None,
         )
     if config.efuncard_token:
-        # 同样走 EfunCardProvider 包装层 —— efuncard 不需要"miss 才回源"的缓存，
-        # 但 provider 会把每次成功 get_card 写入 card_activations 让 /cards 可见。
-        from src.providers.card import EfunCardProvider
-        logger.info("使用 EfunCardProvider（带 audit 写入）作为虚拟卡供应商。")
+        from src.providers.cards.efuncard import EfunCardProvider
+        logger.info("使用 EfunCardProvider（env 兼容路径）。")
         return EfunCardProvider(token=config.efuncard_token)
     return None
+
+
+def _build_sms_client(config: AppConfig):
+    """构造 SMS 客户端：异构 driver 走 registry.build，其余走 SMSManager。
+
+    返回对象只需鸭子兼容 ``get_number(service)`` / ``get_code(order_id, max_retries)``
+    —— SMSManager 与 SmsProvider 子类签名一致，调用点无需区分类型。
+    """
+    sms_driver = str(getattr(config, "sms_driver", "") or "").strip()
+    provider_config = dict(getattr(config, "sms_provider_config", None) or {})
+    # 异构协议 provider（five_sim 等）：worker 已透传完整 config dict + driver 名。
+    if sms_driver and provider_config:
+        from src.providers import get_registry
+        from src.providers.sms.sms_activate import SmsActivateProvider
+
+        reg = get_registry()
+        reg.discover()
+        sms_cls = reg.get_class("sms", sms_driver)
+        is_compat_family = isinstance(sms_cls, type) and issubclass(sms_cls, SmsActivateProvider)
+        if sms_cls is not None and not is_compat_family:
+            # proxy 透传：异构 provider schema 含 proxy 字段，config 没显式给则补 runtime proxy
+            provider_config.setdefault("proxy", config.proxy or "")
+            logger.info("使用异构 SMS provider: driver=%s", sms_driver)
+            return reg.build("sms", sms_driver, provider_config)
+
+    # 字符串协议族：api_url 仅在配置了 sms_base_url（如 HeroSMS 兼容端点）时传入；
+    # 留空则走 SMSManager 默认 sms-activate URL，保持向后兼容。
+    sms_kwargs = {
+        "api_key": config.sms_api_key,
+        "country": config.sms_country,
+        "proxy": config.proxy,
+    }
+    if getattr(config, "sms_base_url", ""):
+        sms_kwargs["api_url"] = config.sms_base_url
+    return SMSManager(**sms_kwargs)
 
 
 def _build_runtime_clients(config: AppConfig) -> tuple[Optional[EfunCard | NodeCard], SMSManager, MailManager]:
     """根据配置实例化运行时依赖。"""
     card_api = _build_card_client(config)
-    sms_api = SMSManager(
-        api_key=config.sms_api_key,
-        country=config.sms_country,
-        proxy=config.proxy,
-    )
+    sms_api = _build_sms_client(config)
     mail_api = MailManager(
         base_url=config.email_provider_base_url,
         api_key=config.email_provider_api_key,
@@ -554,6 +628,151 @@ def _open_signup_entry(page: Page, email: str) -> None:
         logger.error("未找到邮箱输入框。正在保存错误截图到 error_debug.png...")
         page.screenshot(path="error_debug.png")
         raise
+
+
+# 手机号输入框多重 fallback（与 src/orchestration/selectors.PHONE_INPUT_SELECTORS 对齐）。
+# 新版 OpenAI 弹窗把电话框直接内嵌在首页登录弹窗里（截图实证），无需先点「電話番号で続行」。
+_PHONE_INPUT_PROBE_SELECTORS = (
+    'input[name="phoneNumber"]',
+    'input[type="tel"]',
+    'input[autocomplete="tel"]',
+    'input[inputmode="tel"]',
+)
+
+
+def _phone_input_visible(page: Page) -> bool:
+    """探测页面是否已直接出现手机号输入框（内嵌弹窗场景）。"""
+    for sel in _PHONE_INPUT_PROBE_SELECTORS:
+        try:
+            if page.locator(sel).first.count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _open_phone_signup_entry(page: Page) -> None:
+    """phone 模式入口：打开 chatgpt.com 登录弹窗，进入手机号输入态。
+
+    与 _open_signup_entry 并列；后者填邮箱，本函数走手机号分支。
+
+    两种弹窗形态都兼容：
+    1. 新版（截图实证）：电话输入框直接内嵌在首页登录弹窗 → 探测到 input 即成功，
+       不再点「電話番号で続行」按钮（旧逻辑找不到该按钮会硬失败，正是卡住主因）。
+    2. 旧版：需先点「電話番号で続行」按钮跳转到独立手机号页。
+
+    成功后页面含 input[name="phoneNumber"]（或同义 tel input），
+    runtime infer_state 据 has_phone_input 信号识别为 PHONE 状态，
+    触发 submit_phone_and_code handler。
+    """
+    _ensure_task_active("open_phone_signup_entry:start")
+    _set_task_state("ENTRY")
+    logger.info("phone 模式：进入首页，准备进入手机号输入态...")
+    page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+    human_delay(5, 8)
+
+    try:
+        if _click_first_visible(page, _COOKIE_ACCEPT_SELECTORS, description="点击 Cookie 同意按钮"):
+            human_delay(1, 2)
+        # 先触发登录/注册弹窗（首页可能默认折叠）
+        if _click_first_visible(page, _SIGNUP_SELECTORS, description="点击首页注册入口"):
+            human_delay(3, 5)
+    except Exception as exc:
+        logger.warning("处理首页弹窗时发生非致命错误: %s", exc)
+
+    # ── 形态 1：电话输入框已内嵌可见 → 直接成功，跳过点按钮 ──
+    if _phone_input_visible(page):
+        logger.info("phone 模式：检测到内嵌手机号输入框，直接进入 PHONE 态（跳过『電話番号で続行』按钮）。")
+        human_delay(1, 2)
+        return
+
+    # ── 形态 2：折叠态，需先点「用电话继续」展开电话框 ──
+    # 语言无关方案（不枚举文案）：地区跟随 profile IP/locale 变化（日/印尼/英…无穷尽），
+    # 改用「探测式点击」——遍历弹窗候选入口按钮，点一个就探测电话框是否出现，
+    # 命中即成功；同时排除 Google/Apple OAuth 按钮（点了会跳转外部，破坏流程）。
+    logger.info("phone 模式：未见内嵌输入框，进入语言无关的探测式入口点击...")
+    if _try_open_phone_by_probing(page):
+        human_delay(2, 4)
+        return
+
+    # 兜底：再探一次内嵌输入框（延迟渲染）
+    human_delay(2, 3)
+    if _phone_input_visible(page):
+        logger.info("phone 模式：延迟渲染后检测到内嵌手机号输入框，进入 PHONE 态。")
+        return
+
+    logger.error("未找到手机号输入框或电话入口按钮，保存截图 phone_entry_debug.png")
+    try:
+        page.screenshot(path="phone_entry_debug.png")
+    except Exception:
+        pass
+    raise PlaywrightTimeoutError("phone_entry_not_found")
+
+
+# 会跳转外部 OAuth 的按钮特征（语言无关）：点了会离开页面破坏流程，必须排除。
+# 用 sprite icon href 片段 / aria-label 关键词 / provider 名识别。
+_OAUTH_EXCLUDE_MARKERS = ("google", "apple", "microsoft", "facebook")
+
+
+def _try_open_phone_by_probing(page: Page, max_attempts: int = 6) -> bool:
+    """语言无关地展开电话输入框：遍历弹窗候选按钮，点击后探测电话框是否出现。
+
+    策略（不依赖任何语言文案）：
+    1. 优先结构强信号：a[href^="tel:"]、带电话语义的 aria-label（icon 跨语言不变）。
+    2. 否则遍历弹窗内 type=button 的候选（排除 Google/Apple/email 提交等会跳转的）。
+    3. 每点一个候选后探测 phoneNumberInput；出现即成功返回；没出现继续下一个。
+
+    返回 True=电话框已出现；False=所有候选都试过仍无电话框。
+    """
+    # 在浏览器里一次性 JS 定位「用电话继续」按钮并返回其索引（语言无关，不卡死）：
+    #   - 收集弹窗 social 区所有可见 button（含文字的登录入口）
+    #   - 排除 Google/Apple/Microsoft/Facebook（按 svg sprite href 片段 + 可访问名）
+    #   - 排除 email 框提交按钮（关联 input[type=email] 的）
+    #   - 候选里挑「带 svg 图标 + 短文案」的非 OAuth 按钮（电话入口特征）
+    # JS 端只读不点击，避免 Python 逐个 locator + 点击触发 detach 卡死。
+    js_find = """
+    () => {
+        const oauth = ['google','apple','microsoft','facebook','メール','email','mail','correo'];
+        const btns = [...document.querySelectorAll('button, [role="button"]')];
+        const cands = [];
+        btns.forEach((b, idx) => {
+            const r = b.getBoundingClientRect();
+            if (r.width < 40 || r.height < 20) return;          // 不可见/太小
+            const txt = (b.innerText || '').trim().toLowerCase();
+            const html = (b.innerHTML || '').toLowerCase();
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            const blob = txt + ' ' + aria + ' ' + html;
+            if (oauth.some(k => blob.includes(k))) return;       // 排除 OAuth/email
+            // 提交类按钮（type=submit 且无 svg）通常是 email 继续，跳过
+            const hasSvg = !!b.querySelector('svg');
+            cands.push({ idx, hasSvg, txtLen: txt.length, top: r.top });
+        });
+        // 电话入口特征：有 svg 图标 + 文案短（"用电话继续"），按位置排序取第一个
+        const phoneish = cands.filter(c => c.hasSvg && c.txtLen > 0 && c.txtLen < 40);
+        phoneish.sort((a, b) => a.top - b.top);
+        return phoneish.length ? phoneish.map(c => c.idx) : cands.map(c => c.idx);
+    }
+    """
+    try:
+        candidate_idxs = page.evaluate(js_find) or []
+    except Exception as exc:
+        logger.warning("JS 定位电话入口候选失败: %s", exc)
+        candidate_idxs = []
+
+    # 对候选索引逐个点击 + 短探测（最多试 4 个，每个总耗时 < 4s，绝不长时间卡死）
+    all_btns = page.locator('button, [role="button"]')
+    for rank, idx in enumerate(candidate_idxs[:4]):
+        try:
+            btn = all_btns.nth(idx)
+            btn.click(timeout=2500)
+            human_delay(1.0, 1.8)
+            if _phone_input_visible(page):
+                logger.info("phone 入口命中候选按钮 idx=%d（第 %d 个候选），电话框已出现。", idx, rank + 1)
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def _find_auth_page(context: BrowserContext, current_page: Page) -> Page | None:
@@ -715,20 +934,68 @@ def _click_onboarding_footer_action(page: Page) -> str:
         return ""
 
 
-def _wait_for_profile_step_transition(page: Page, *, prompt_name: str) -> None:
-    """在点击提交后短等页面切换，避免状态机立刻误判为还停留在原步骤。"""
+def _click_onboarding_skip_button(page: Page) -> str:
+    """点击 onboarding 问卷的"跳过"按钮（多语言文本匹配 skip/スキップ/跳过 等）。
+
+    与 ``_click_onboarding_footer_action`` 的区别：
+      - 优先按文本/aria-label 匹配 skip/スキップ/跳过/saltar 等多语言关键字
+      - fallback：底部最下方的可点击元素
+      - 不要求 enabled
+    """
+    try:
+        label = page.evaluate(
+            """
+            () => {
+              const root = document.querySelector('main') || document.body;
+              const isVisible = (node) => {
+                const rect = node.getBoundingClientRect();
+                const style = window.getComputedStyle(node);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const isDisabled = (node) => Boolean(
+                node.disabled || node.getAttribute('aria-disabled') === 'true'
+              );
+              const SKIP_RE = /(skip|skip for now|saltar|スキップ|跳过|跳過|건너뛰|passer|überspringen|пропустить)/i;
+              const clickables = Array.from(root.querySelectorAll('button, [role="button"], a'))
+                .filter(isVisible)
+                .filter((node) => !isDisabled(node));
+              const byText = clickables.find((node) => {
+                const text = (node.innerText || node.getAttribute('aria-label') || '').trim();
+                return SKIP_RE.test(text);
+              });
+              const target = byText || clickables
+                .filter((node) => node.getBoundingClientRect().top >= window.innerHeight * 0.55)
+                .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+              if (!target) return '';
+              target.click();
+              return (target.innerText || target.getAttribute('aria-label') || '').trim();
+            }
+            """
+        )
+        return str(label or "")
+    except Exception:
+        return ""
+
+
+def _wait_for_profile_step_transition(page: Page, *, prompt_name: str) -> bool:
+    """在点击提交后短等页面切换，避免状态机立刻误判为还停留在原步骤。
+
+    返回 True 表示成功跳转/问卷消失；返回 False 表示 ~21s 内仍停留，让上层抛信号
+    （retry_count 递增并触发 LLM 兜底）。
+    """
     for _ in range(15):
         _ensure_task_active(f"profile_transition:{prompt_name}")
         current_url = str(getattr(page, "url", "") or "")
         if prompt_name == "about-you" and "about-you" not in current_url:
             logger.info("about-you 页面已离开: %s", current_url)
-            return
+            return True
         if prompt_name == "onboarding" and not _read_onboarding_metrics(page).get("prompt_present", False):
             logger.info("onboarding 问卷已完成/跳过。")
-            return
+            return True
         human_delay(1, 1.4)
 
-    logger.info("%s 页面暂未离开，交给状态机继续轮询。", prompt_name)
+    logger.warning("%s 页面 ~21s 内未离开，交给状态机递增 retry 并触发 LLM 兜底。", prompt_name)
+    return False
 
 
 def _dismiss_home_welcome_modal(page: Page) -> bool:
@@ -905,12 +1172,18 @@ def _fill_checkout_contact_and_billing_details(
     return False, latest_snapshot
 
 
-def _handle_post_signup_onboarding(page: Page) -> bool:
-    """处理注册完成后的 onboarding 问卷页。"""
+def _handle_post_signup_onboarding(page: Page) -> Optional[bool]:
+    """处理注册完成后的 onboarding 问卷页。
+
+    返回值约定：
+      - None  -> 当前不是 onboarding 问卷页（调用方继续走 about-you 表单逻辑）
+      - True  -> 已处理且页面已成功跳转
+      - False -> 已尝试点击但 ~21s 仍停留，需要上层让 retry_count 递增触发 LLM 兜底
+    """
     _ensure_task_active("onboarding:start")
     metrics = _read_onboarding_metrics(page)
     if not metrics.get("prompt_present"):
-        return False
+        return None
 
     logger.info("检测到注册后 onboarding 问卷，尝试自动完成/跳过。")
     chosen_label = _click_onboarding_option(page)
@@ -929,23 +1202,41 @@ def _handle_post_signup_onboarding(page: Page) -> bool:
         if footer_label:
             logger.info("已点击 onboarding 底部动作: %s", footer_label)
 
-    _wait_for_profile_step_transition(page, prompt_name="onboarding")
-    return True
+    progressed = _wait_for_profile_step_transition(page, prompt_name="onboarding")
+    if not progressed:
+        logger.warning("onboarding 问卷点击后仍停留在原页，交回状态机重试 / LLM 兜底。")
+    return progressed
 
 
-def _fill_about_you_form(page: Page) -> None:
-    """处理年龄/生日确认页。"""
+def _fill_about_you_form(page: Page, config: Optional[AppConfig] = None) -> bool:
+    """处理年龄/生日确认页。
+
+    config 为 None 时走 fallback 随机姓名/生日（兼容老调用方与单测）；
+    传入则优先使用注入身份，避免被 OpenAI 聚类为机器人特征。
+
+    返回值：True 表示推进成功，False 表示 onboarding 问卷点击后仍卡住
+    （让状态机递增 retry_count 并触发 LLM 兜底）。
+    """
     _ensure_task_active("about_you:start")
-    if _handle_post_signup_onboarding(page):
-        return
+    onboarding_result = _handle_post_signup_onboarding(page)
+    if onboarding_result is not None:
+        return onboarding_result
 
     logger.info("检测到 '确认年龄' 页面，填写姓名和年龄/生日...")
     if "about-you" not in str(page.url or ""):
         logger.info("about-you 表单开始前页面已跳转，跳过填写。")
-        return
+        return True
 
-    first_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 7))).capitalize()
-    last_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 8))).capitalize()
+    # 优先使用 worker 注入的真实身份（防风控聚类）；
+    # 没有时 fallback 到原 lowercase 随机生成（兼容老路径，但 OpenAI 会聚类标记为机器人特征）
+    if config and getattr(config, "identity_first_name", "") and getattr(config, "identity_last_name", ""):
+        first_name = config.identity_first_name
+        last_name = config.identity_last_name
+        logger.info("使用注入的真实身份姓名: %s %s", first_name, last_name)
+    else:
+        first_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 7))).capitalize()
+        last_name = "".join(random.choices(string.ascii_lowercase, k=random.randint(4, 8))).capitalize()
+        logger.info("使用 fallback 随机姓名: %s %s（建议批量场景用 identity_generator）", first_name, last_name)
     full_name = f"{first_name} {last_name}"
 
     name_input = page.locator('input[name="name"][type="text"], input[name="name"], input[autocomplete="name"]').first
@@ -957,7 +1248,7 @@ def _fill_about_you_form(page: Page) -> None:
     except Exception as exc:
         if "about-you" not in str(page.url or ""):
             logger.info("about-you 页面正在跳转，姓名输入阶段视为已完成。")
-            return
+            return True
         logger.warning(f"姓名填写失败: {exc}")
 
     age_input = page.locator('input[name="age"]').first
@@ -975,14 +1266,23 @@ def _fill_about_you_form(page: Page) -> None:
         except Exception as exc:
             if "about-you" not in str(page.url or ""):
                 logger.info("about-you 页面在年龄填写时已跳转，继续后续流程。")
-                return
+                return True
             logger.warning(f"年龄填写失败: {exc}")
     else:
         logger.info("未找到年龄输入框，尝试处理日期选择器...")
-        birth_day = str(random.randint(1, 28))
-        birth_month = str(random.randint(1, 12))
-        birth_year = str(random.randint(1990, 2000))
-        formatted_birthdate = f"{int(birth_day):02d}/{int(birth_month):02d}/{birth_year}"
+        # 优先用注入身份的生日（保证 email 暗示年龄 + 注册填的生日一致）
+        injected_dob = str(getattr(config, "identity_birthdate", "") or "").strip() if config else ""
+        if injected_dob and len(injected_dob) == 10 and injected_dob.count("-") == 2:
+            # ISO yyyy-mm-dd → dd/mm/yyyy（OpenAI 表单要 dd/mm/yyyy 格式）
+            yyyy, mm, dd = injected_dob.split("-")
+            birth_year, birth_month, birth_day = yyyy, str(int(mm)), str(int(dd))
+            formatted_birthdate = f"{int(birth_day):02d}/{int(birth_month):02d}/{birth_year}"
+            logger.info("使用注入的真实生日: %s", formatted_birthdate)
+        else:
+            birth_day = str(random.randint(1, 28))
+            birth_month = str(random.randint(1, 12))
+            birth_year = str(random.randint(1990, 2000))
+            formatted_birthdate = f"{int(birth_day):02d}/{int(birth_month):02d}/{birth_year}"
         try:
             birthdate_input = page.locator(
                 'input[name="birthdate"], input[name="birthday"], input[autocomplete="bday"], '
@@ -1000,7 +1300,7 @@ def _fill_about_you_form(page: Page) -> None:
         except Exception as exc:
             if "about-you" not in str(page.url or ""):
                 logger.info("about-you 页面在生日填写时已跳转，继续后续流程。")
-                return
+                return True
             logger.warning(f"日期填写失败: {exc}")
 
     human_delay(1, 2)
@@ -1009,24 +1309,24 @@ def _fill_about_you_form(page: Page) -> None:
         if "about-you" in str(page.url or "") and submit_btn.is_visible(timeout=3000) and submit_btn.is_enabled(timeout=1000):
             submit_btn.click(timeout=5000)
             logger.info("已点击提交按钮")
-            _wait_for_profile_step_transition(page, prompt_name="about-you")
-            return
+            return _wait_for_profile_step_transition(page, prompt_name="about-you")
     except Exception as exc:
         if "about-you" not in str(page.url or ""):
             logger.info("about-you 提交时页面已跳转，按成功处理。")
-            return
+            return True
         logger.warning(f"about-you 提交按钮点击失败: {exc}")
 
     try:
         if "about-you" in str(page.url or ""):
             page.keyboard.press("Enter")
             logger.info("about-you 未找到稳定提交按钮，改用 Enter 提交。")
-            _wait_for_profile_step_transition(page, prompt_name="about-you")
+            return _wait_for_profile_step_transition(page, prompt_name="about-you")
     except Exception as exc:
         if "about-you" not in str(page.url or ""):
             logger.info("about-you Enter 提交时页面已跳转，按成功处理。")
-            return
+            return True
         logger.warning(f"about-you Enter 提交失败: {exc}")
+    return True
 
 
 def _handle_email_verification_step(page: Page, mail_api: MailManager, email: str) -> bool:
@@ -1274,24 +1574,26 @@ def _complete_registration_flow(page: Page, mail_api: MailManager, email: str, p
 
 
 def _submit_password(page: Page, password: str) -> None:
-    """填写密码并提交。"""
+    """填写密码并提交。
+
+    [fix 2026-06-02 run 6f84ac59]「密码被叠加 n 次」根因修复：
+    旧实现用 human_typing（逐字符 type，**不清空**）→ 状态机重试 submit_password 时
+    每次在已有内容后追加 → 4 次重试把 `1qaz2wsx3edc` 叠成
+    `1qaz2wsx3edc1qaz2wsx3edc...`（乱序拼接）→ OpenAI 校验失败永远过不去。
+    `src/orchestration/handlers.py:submit_password` 早已用 React 原生 setter 幂等填充
+    （`_set_react_input_value`：已填对则跳过，否则先清空再设）修过这个 bug，但 worker →
+    main.run_task 路径走的是本函数（旧实现），两套实现导致修复没覆盖到这条路径。
+    现委托给 handlers.submit_password 单一实现，消除全局不一致。
+    """
+    from src.orchestration.handlers import submit_password as _handlers_submit_password
+
     _ensure_task_active("submit_password:start")
     _set_task_state("AUTH")
-    logger.info("进入密码页，开始输入密码...")
+    logger.info("进入密码页，开始输入密码（委托 handlers React 幂等实现）...")
     try:
-        human_typing(page, _PASSWORD_SELECTOR, password)
-    except Exception as exc:
-        current_url = str(getattr(page, "url", "") or "")
-        if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
-            logger.info("密码输入控件已卸载/隐藏，页面状态已推进到 %s，按提交成功处理。", current_url)
-            return
-        raise
-
-    logger.info("密码已填写，准备提交并等待跳转...")
-    human_delay(1, 2)
-    try:
-        page.keyboard.press("Enter")
-    except Exception as exc:
+        _handlers_submit_password(page, password)
+    except Exception:
+        # 控件已卸载/页面已推进也算成功（与旧行为一致）：提交瞬间 DOM 重渲常触发异常。
         current_url = str(getattr(page, "url", "") or "")
         if _is_password_submission_advanced(current_url) or _wait_for_password_submit_transition(page):
             logger.info("密码提交时页面已推进到 %s，按成功处理。", current_url)
@@ -1468,6 +1770,7 @@ def _build_llm_provider(config: AppConfig) -> LLMDecisionProvider | None:
     return LLMDecisionProvider(
         client=client,
         confidence_threshold=config.llm_confidence_threshold,
+        vision_enabled=bool(getattr(config, "llm_vision_enabled", False)),
     )
 
 
@@ -1483,6 +1786,21 @@ def _build_runtime_handlers(
         runtime.page = _wait_for_auth_page(runtime.context, runtime.page)
         return True
 
+    def enter_signup_phone(runtime: AutomationRuntime, _action) -> bool:
+        """phone 模式入口：点击「電話番号で続行」按钮进入手机号注册分支。
+
+        与 enter_signup（邮箱）并列；后续 PHONE state 由 submit_phone_and_code 接管。
+        """
+        _open_phone_signup_entry(runtime.page)
+        # phone 路径不一定立刻跳 auth.openai.com（可能直接 chatgpt.com 内填手机号），
+        # 因此用更宽松的等待：若已能看到 phoneNumber input 视为成功
+        return True
+
+    def submit_phone_and_code_handler(runtime: AutomationRuntime, _action) -> bool:
+        """复用 src/orchestration/handlers.submit_phone_and_code（main.py 路径之前缺失）。"""
+        from src.orchestration.handlers import submit_phone_and_code as _sp
+        return _sp(runtime, _action)
+
     def submit_password(runtime: AutomationRuntime, _action) -> bool:
         _submit_password(runtime.page, password)
         return True
@@ -1491,8 +1809,18 @@ def _build_runtime_handlers(
         return _handle_email_verification_step(runtime.page, runtime.mail_api, email)
 
     def fill_about_you(runtime: AutomationRuntime, _action) -> bool:
-        _fill_about_you_form(runtime.page)
-        return True
+        return _fill_about_you_form(runtime.page, runtime.config)
+
+    def skip_onboarding(runtime: AutomationRuntime, _action) -> bool:
+        """LLM 兜底专用：onboarding 卡住时绕开 primary 按钮直接点跳过。"""
+        page = runtime.page
+        label = _click_onboarding_skip_button(page)
+        if label:
+            logger.info("已点击 onboarding 跳过按钮: %s", label)
+        else:
+            logger.warning("未找到 onboarding 跳过按钮。")
+            return False
+        return _wait_for_profile_step_transition(page, prompt_name="onboarding")
 
     def wait_short(runtime: AutomationRuntime, _action) -> bool:
         _ensure_task_active("wait_short:before_sleep")
@@ -1502,9 +1830,12 @@ def _build_runtime_handlers(
 
     return {
         "enter_signup": enter_signup,
+        "enter_signup_phone": enter_signup_phone,
+        "submit_phone_and_code": submit_phone_and_code_handler,
         "submit_password": submit_password,
         "verify_email": verify_email,
         "fill_about_you": fill_about_you,
+        "skip_onboarding": skip_onboarding,
         "wait_short": wait_short,
         "recover_error": _recover_from_error_page,
         "click_try_again": _click_try_again,
@@ -1953,18 +2284,24 @@ def _open_checkout_page_in_new_tab(page: Page, checkout_url: str) -> Page:
 
 
 def run_task(
-    config: AppConfig, 
-    card_api: Optional[EfunCard], 
-    sms_api: SMSManager, 
+    config: AppConfig,
+    card_api: Optional[EfunCard],
+    sms_api: SMSManager,
     mail_api: MailManager,
-    ads_id: str, 
-    cdk: str, 
-    email: str, 
+    ads_id: str,
+    cdk: str,
+    email: str,
     password: str,
     retry_mode: str = "restart",
     start_phase: str = "registration",
+    db_run_id: Optional[str] = None,
 ) -> None:
-    """执行自动化注册及绑卡主流程"""
+    """执行自动化注册及绑卡主流程。
+
+    Args:
+        db_run_id: DB Run.id（由 worker 传入），用于把 PREFLIGHT_IP 抓到的出口 IP
+                   写到 Run.ip_address；CLI 直跑路径不传时 IP 抓取仍执行但跳过落库。
+    """
     reconnect_attempts = 0
     llm_provider = _build_llm_provider(config)
     normalized_retry_mode = str(retry_mode or "restart").strip().lower()
@@ -2028,6 +2365,25 @@ def run_task(
                 else:
                     page = _prepare_clean_start_page(context)
 
+                # 浏览器已连接、page 已准备 —— page.context 走的是 AdsPower 注入的住宅代理。
+                # 此时抓出口 IP 才能拿到 OpenAI 实际看到的 IP（Python 进程外面看不到）。
+                # 失败仅 warning，不阻塞主流程。
+                try:
+                    from src.orchestration.preflight import fetch_exit_ip_from_page, write_run_exit_ip
+                    _ip_addr, _ip_country = fetch_exit_ip_from_page(page, timeout_ms=8000)
+                    write_run_exit_ip(db_run_id, _ip_addr, _ip_country)
+                    _emit_task_event(
+                        "state_change",
+                        state="PREFLIGHT_IP",
+                        payload=build_i18n_message_payload(
+                            f"出口 IP: {_ip_addr or '?'} ({_ip_country or '?'})",
+                            "task_events.preflight_ip_captured",
+                            params={"ip": _ip_addr, "country": _ip_country},
+                        ),
+                    )
+                except Exception as _ip_exc:
+                    logger.warning("PREFLIGHT_IP 抓取失败（忽略，继续流程）: %s", _ip_exc)
+
                 initial_phase = normalized_start_phase if normalized_retry_mode == "resume" else "registration"
                 if initial_phase == "registration":
                     _update_task_phase("registration")
@@ -2061,7 +2417,11 @@ def run_task(
 
                 recorder = ArtifactRecorder(config.run_artifacts_dir)
                 run_id = recorder.start_run(email)
-                experience_store = ExperienceStore(os.path.join(config.run_artifacts_dir, "experience-memory.jsonl"))
+                # 经验库 + DB 双写（自进化可视化）；assist_store 仅在 assist_fallback_enabled 时非 None。
+                from src.orchestration.experience_factory import build_assist_store, build_experience_store
+
+                experience_store = build_experience_store(config)
+                assist_store = build_assist_store(config)
 
                 def _runtime_emit(event_type: str, *, state: str | None = None, payload: Optional[dict] = None) -> None:
                     if state is not None:
@@ -2075,6 +2435,7 @@ def run_task(
                     email=email,
                     password=password,
                     mail_api=mail_api,
+                    sms_api=sms_api,
                     logger=logger,
                     handlers=_build_runtime_handlers(email=email, password=password),
                     artifact_recorder=recorder,
@@ -2083,7 +2444,12 @@ def run_task(
                     experience_store=experience_store,
                     emit_event=_runtime_emit,
                     cancel_check=_ensure_task_active,
+                    captcha_solver=build_solver_from_config(config),
+                    triage_provider=build_triage_provider(config),
+                    assist_enabled=bool(getattr(config, "assist_fallback_enabled", False)),
+                    assist_experience=assist_store,
                 )
+                attach_log_buffer(runtime)
 
                 if initial_phase == "registration":
                     machine = RegistrationStateMachine()
@@ -2140,6 +2506,9 @@ def run_task(
                     return
 
                 export_success(email, password, access_token, refresh_token)
+                # 把 token 落库到 Run.openai_tokens，号池"生成 checkout 链接"和
+                # cpa 格式导出都依赖此字段。Worker 模式下生效；CLI 直跑静默跳过。
+                _persist_task_tokens(access_token, refresh_token)
                 _emit_task_event(
                     "phase_complete",
                     state="HOME",
@@ -2235,6 +2604,13 @@ def run_task(
                 else:
                     logger.info("ENABLE_PAYMENT_FLOW=false，跳过支付阶段。")
 
+                # 任务整体完成的统一终态信号：
+                # full 模式下支付段结束（无论 _complete_payment_flow 是否真正成功，因其内部
+                # 已捕获并 logger.error）— 用 HOME 表达"主流程跑完没崩"；register_only 模式
+                # 则在 export_success 后保持 HOME 不变。worker 据此判定 status=success。
+                # 注意：支付链路上的真实失败由 _complete_payment_flow 写 ERROR 日志，worker
+                # 端的 has_error 守卫会兜底拒绝标 success。
+                _set_task_state("HOME")
                 logger.info("自动化任务执行完毕。保持浏览器开启状态供检查。")
                 human_delay(10, 15)
                 return

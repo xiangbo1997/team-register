@@ -522,6 +522,17 @@ class TestClassifyFailure(unittest.TestCase):
         reason = "mailbox-service | MAILBOX_RUNTIME_INCOMPAT | service returned 502"
         self.assertEqual(_classify_failure(reason), "external_failure")
 
+    def test_mailbox_pool_contention_classified_external(self):
+        """MAILBOX_POOL_CONTENTION (号池竞争 / ACCOUNT_NOT_AVAILABLE) 归 external —
+        是远程号池侧的资源竞争，不该惩罚本地执行号本身（避免连带禁用 pro_warmup）。
+        2026-05-28 新增 hint，回归校验：mailbox-service 前缀 + 新 hint 关键词都要识别。"""
+        reason = (
+            "mailbox-service | MAILBOX_POOL_CONTENTION | ACCOUNT_NOT_AVAILABLE | "
+            "MailServiceError: outlookEmailPlus 请求失败: 邮箱 X 当前不可领取"
+            "（可能项目去重门控触发或竞争失败） (ACCOUNT_NOT_AVAILABLE)"
+        )
+        self.assertEqual(_classify_failure(reason), "external_failure")
+
 
 # ──────────────────────────────────────────────────────────────────────
 # P0c: 端到端验证 record_warmup_outcome 收到正确的 failure_class

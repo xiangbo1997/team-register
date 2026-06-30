@@ -74,8 +74,13 @@ class TestRunTriage(unittest.TestCase):
         call = fake.calls[0]
         self.assertEqual(call["page_url"], "https://x")
         self.assertEqual(call["last_error"], "ERR")
-        self.assertEqual(call["signals"], {"a": 1})
+        # 原始 signals 保留，并注入当前 state 的 retry/stall 计数供 handler_stuck 判定
+        self.assertEqual(call["signals"]["a"], 1)
+        self.assertIn("_retry_count", call["signals"])
+        self.assertIn("_stall_count", call["signals"])
         self.assertEqual(call["recent_logs"], ["log-1", "log-2"])
+        # 决策序列也应透传（本用例 last_actions 为空 → 空列表）
+        self.assertIn("recent_actions", call)
 
     def test_diagnose_exception_is_swallowed(self):
         class _Bad:

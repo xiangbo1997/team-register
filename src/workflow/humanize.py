@@ -156,8 +156,8 @@ def bezier_path(
 def sample_keystroke_delays(
     length: int,
     *,
-    wpm_mean: float = 180,
-    wpm_std: float = 40,
+    wpm_mean: float = 110,
+    wpm_std: float = 30,
     rng: Optional[random.Random] = None,
 ) -> List[float]:
     """
@@ -275,8 +275,8 @@ def type_humanized(
     selector: str,
     text: str,
     *,
-    wpm_mean: float = 180,
-    wpm_std: float = 40,
+    wpm_mean: float = 110,
+    wpm_std: float = 30,
     typo_rate: float = 0.02,
     rng: Optional[random.Random] = None,
     sleep_fn: Optional[Callable[[float], None]] = None,
@@ -305,6 +305,11 @@ def type_humanized(
     # 先聚焦输入框
     page.locator(selector).click()
 
+    # 聚焦后启动停顿：真人点进输入框后有 0.2-0.9s 的"看清在哪里 / 准备打字"时间，
+    # 而不是 click 完立刻开打。缺这个停顿会让 click→首字符的 timing trace 恒为 0，
+    # 是 keystroke dynamics 分析里最明显的自动化信号之一。
+    sleep_fn(rng.uniform(0.2, 0.9))
+
     delays = sample_keystroke_delays(
         len(text), wpm_mean=wpm_mean, wpm_std=wpm_std, rng=rng
     )
@@ -325,3 +330,7 @@ def type_humanized(
         delay_sec = delays[idx] / 1000.0
         if delay_sec > 0:
             sleep_fn(delay_sec)
+        # 词间停顿：真人打完一个词（空格后）有额外的"想下一个词"准备时间，
+        # 比普通字符间隔略长。加在空格之后更贴近自然填表节奏。
+        if ch == " ":
+            sleep_fn(rng.uniform(0.1, 0.35))

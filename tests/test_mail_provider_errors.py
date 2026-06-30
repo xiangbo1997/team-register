@@ -190,12 +190,45 @@ class TestRaiseRuntimeRequestError(unittest.TestCase):
             self._raise(404, None)
         self.assertIn("缺少", str(ctx.exception))
 
-    # ── 不在分类表的 4xx ──
+    # ── 400 视为 ProviderUpstreamError（CFWorker / Stripe / 上游 4xx） ──
 
-    def test_400_falls_back_to_MailRuntimeIncompatibleError(self):
-        """非 401/404/422/424 的 4xx → 兜底 MailRuntimeIncompatibleError。"""
-        with self.assertRaises(MailRuntimeIncompatibleError):
+    def test_400_classified_as_ProviderUpstreamError(self):
+        """400 = 上游 provider 客户端语义错误，可恢复，应归 ProviderUpstreamError 而非 fatal。
+
+        历史背景：曾经 400 走兜底 MailRuntimeIncompatibleError 导致整个自动化任务死掉。
+        实际场景：CFWorker /admin/new_address 在地址已存在时返回 400，应让 triage 走
+        '换邮箱/换 provider' 可恢复路径。远端契约升级后会改为 424 + 结构化 detail，
+        本测试覆盖兜底兼容路径。
+        """
+        with self.assertRaises(ProviderUpstreamError) as ctx:
             self._raise(400, None)
+        self.assertEqual(ctx.exception.upstream_status, 400)
+
+    def test_400_with_already_exists_body_preserves_message(self):
+        """400 + 远端裸文本响应（无 detail contract）也应归 ProviderUpstreamError，
+        且原始 message 应进 exception 文本，方便运维定位（不能因 server_message 为空就吞掉）。"""
+        # 模拟 CFWorker 那种 raw text body
+        exc = requests.RequestException("400 Client Error")
+        response = mock.MagicMock(spec=requests.Response)
+        response.status_code = 400
+        response.json.side_effect = ValueError("not json")
+        response.text = "Failed to create address: Address already exists"
+        exc.response = response
+        with self.assertRaises(ProviderUpstreamError) as ctx:
+            self.provider._raise_runtime_request_error(
+                exc=exc, endpoint="managed-sessions", operation="创建邮箱会话",
+            )
+        self.assertEqual(ctx.exception.upstream_status, 400)
+        self.assertIn("Address already exists", str(ctx.exception))
+
+    def test_400_is_subclass_of_MailServiceError(self):
+        """ProviderUpstreamError 必须能被 except MailServiceError 接住，与 422/424 一致。"""
+        try:
+            self._raise(400, None)
+        except MailServiceError:
+            pass
+        else:
+            self.fail("ProviderUpstreamError 应当能被 MailServiceError catch")
 
 
 class TestRetryRespectsNew4xxClassification(unittest.TestCase):

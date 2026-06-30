@@ -6,11 +6,14 @@ import unittest
 from unittest import mock
 
 from src.automation.triage import (
+    ENGINEERING_CATEGORIES,
     TRIAGE_CATEGORIES,
     TriageDecision,
     TriageDecisionProvider,
     VisionLLMClient,
     _build_user_text,
+    _summarize_actions,
+    build_triage_provider,
 )
 
 
@@ -235,6 +238,160 @@ class TestVisionLLMClientPayload(unittest.TestCase):
         body = mp.call_args.kwargs["json"]
         user_content = body["messages"][1]["content"]
         self.assertFalse(any(item.get("type") == "image_url" for item in user_content))
+
+
+class TestEngineeringCategories(unittest.TestCase):
+    """工程类卡点诊断（selector_stale / handler_stuck / dom_drift）。"""
+
+    def test_engineering_categories_map_to_review_code(self):
+        for cat in ENGINEERING_CATEGORIES:
+            self.assertEqual(TRIAGE_CATEGORIES[cat], "review_code")
+
+    def test_is_engineering_flag(self):
+        eng = TriageDecision(category="selector_stale", suggested_action="review_code", confidence=0.9)
+        self.assertTrue(eng.is_engineering)
+        risk = TriageDecision(category="ip_pollution", suggested_action="rotate_proxy", confidence=0.9)
+        self.assertFalse(risk.is_engineering)
+
+    def test_fix_suggestion_kept_for_engineering(self):
+        provider = TriageDecisionProvider(
+            client=_FakeClient(
+                {
+                    "category": "selector_stale",
+                    "confidence": 0.9,
+                    "rationale": "locator 反复超时",
+                    "fix_suggestion": "submit_password 的 selector 需补 input[name=...] fallback",
+                }
+            ),
+        )
+        decision = provider.diagnose(
+            screenshot_bytes=None, page_url="", recent_logs=[], signals={},
+        )
+        self.assertEqual(decision.category, "selector_stale")
+        self.assertTrue(decision.is_engineering)
+        self.assertIn("fallback", decision.fix_suggestion)
+
+    def test_fix_suggestion_dropped_for_risk_category(self):
+        # 风控类即便 LLM 误填 fix_suggestion 也应丢弃（避免前端把"换代理"当代码建议）。
+        provider = TriageDecisionProvider(
+            client=_FakeClient(
+                {
+                    "category": "ip_pollution",
+                    "confidence": 0.9,
+                    "fix_suggestion": "不该出现的代码建议",
+                }
+            ),
+        )
+        decision = provider.diagnose(
+            screenshot_bytes=None, page_url="", recent_logs=[], signals={},
+        )
+        self.assertEqual(decision.category, "ip_pollution")
+        self.assertEqual(decision.fix_suggestion, "")
+
+
+class TestRecentActions(unittest.TestCase):
+    """决策序列透传与脱敏（handler_stuck 判定依据）。"""
+
+    def test_summarize_keeps_low_sensitivity_fields(self):
+        actions = [
+            {"action_id": "a1", "kind": "fill", "description": "填密码", "result": "ok"},
+            {"action_id": "a2", "kind": "click", "description": "续行", "result": "noop"},
+        ]
+        out = _summarize_actions(actions)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["action_id"], "a1")
+        self.assertEqual(out[0]["kind"], "fill")
+        self.assertEqual(out[0]["result"], "ok")
+
+    def test_summarize_trims_to_last_10(self):
+        actions = [{"action_id": f"a{i}", "kind": "click", "description": "x", "result": "ok"} for i in range(20)]
+        out = _summarize_actions(actions)
+        self.assertEqual(len(out), 10)
+        self.assertEqual(out[-1]["action_id"], "a19")
+
+    def test_summarize_redacts_description(self):
+        actions = [{"action_id": "a1", "kind": "fill", "description": "填入 user@example.com", "result": "ok"}]
+        out = _summarize_actions(actions)
+        self.assertNotIn("user@example.com", json.dumps(out, ensure_ascii=False))
+
+    def test_recent_actions_threaded_into_user_text(self):
+        txt = _build_user_text(
+            page_url="",
+            recent_logs=[],
+            signals={},
+            last_error="",
+            recent_actions=[{"action_id": "a1", "kind": "click", "description": "续行", "result": "ok"}],
+        )
+        data = json.loads(txt)
+        self.assertIn("recent_actions", data)
+        self.assertEqual(data["recent_actions"][0]["action_id"], "a1")
+
+    def test_recent_actions_passed_to_client(self):
+        client = _FakeClient({"category": "handler_stuck", "confidence": 0.9, "fix_suggestion": "x"})
+        provider = TriageDecisionProvider(client=client)
+        provider.diagnose(
+            screenshot_bytes=None,
+            page_url="",
+            recent_logs=[],
+            signals={},
+            recent_actions=[{"action_id": "a1", "kind": "click", "description": "续行", "result": "ok"}],
+        )
+        self.assertIn("recent_actions", client.last_call)
+        self.assertEqual(client.last_call["recent_actions"][0]["action_id"], "a1")
+
+
+class TestBuildTriageProvider(unittest.TestCase):
+    """build_triage_provider 工厂（默认关闭 + 失败降级）。"""
+
+    class _Cfg:
+        def __init__(self, **kw):
+            self.triage_enabled = kw.get("triage_enabled", False)
+            self.triage_base_url = kw.get("triage_base_url", "https://x")
+            self.triage_api_key = kw.get("triage_api_key", "k")
+            self.triage_model = kw.get("triage_model", "m")
+            self.triage_timeout_ms = kw.get("triage_timeout_ms", 15000)
+            self.triage_confidence_threshold = kw.get("triage_confidence_threshold", 0.6)
+            # 回退复用的 LLM_* 端点
+            self.llm_base_url = kw.get("llm_base_url", "")
+            self.llm_api_key = kw.get("llm_api_key", "")
+            self.llm_model = kw.get("llm_model", "")
+
+    def test_disabled_returns_none(self):
+        self.assertIsNone(build_triage_provider(self._Cfg(triage_enabled=False)))
+
+    def test_enabled_complete_builds_provider(self):
+        cfg = self._Cfg(triage_enabled=True)
+        provider = build_triage_provider(cfg)
+        self.assertIsInstance(provider, TriageDecisionProvider)
+
+    def test_falls_back_to_llm_endpoint_when_triage_unset(self):
+        # TRIAGE_* 全空，但 LLM_* 已配 → 回退复用，构造成功
+        cfg = self._Cfg(
+            triage_enabled=True,
+            triage_base_url="", triage_api_key="", triage_model="",
+            llm_base_url="https://proxy/v1", llm_api_key="k", llm_model="gpt-5.4",
+        )
+        provider = build_triage_provider(cfg)
+        self.assertIsInstance(provider, TriageDecisionProvider)
+
+    def test_partial_triage_falls_back_to_llm(self):
+        # TRIAGE_* 只配了部分（缺 model）→ 整体回退 LLM_*
+        cfg = self._Cfg(
+            triage_enabled=True,
+            triage_base_url="https://t", triage_api_key="tk", triage_model="",
+            llm_base_url="https://proxy/v1", llm_api_key="lk", llm_model="gpt-5.4",
+        )
+        provider = build_triage_provider(cfg)
+        self.assertIsInstance(provider, TriageDecisionProvider)
+
+    def test_both_unset_degrades_to_none(self):
+        # TRIAGE_* 和 LLM_* 都空 → 降级 None
+        cfg = self._Cfg(
+            triage_enabled=True,
+            triage_base_url="", triage_api_key="", triage_model="",
+            llm_base_url="", llm_api_key="", llm_model="",
+        )
+        self.assertIsNone(build_triage_provider(cfg))
 
 
 if __name__ == "__main__":

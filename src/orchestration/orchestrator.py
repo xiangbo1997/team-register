@@ -26,6 +26,8 @@ from src.automation import (
     RegistrationStateMachine,
     extract_session_tokens_with_http,
 )
+from src.automation.captcha_solver import build_solver_from_config
+from src.automation.triage import attach_log_buffer, build_triage_provider
 from src.config import AppConfig
 from src.db.engine import get_session
 from src.db.models import Checkpoint, Run, RunEvent
@@ -35,7 +37,11 @@ from src.orchestration.handlers import (
     prepare_clean_start_page,
     resolve_card_with_retry,
 )
-from src.orchestration.preflight import run_preflight
+from src.orchestration.preflight import (
+    fetch_exit_ip_from_page,
+    run_preflight,
+    write_run_exit_ip,
+)
 from src.providers.browser import BrowserProvider
 from src.providers.card import CardProvider
 from src.providers.mail import MailProvider
@@ -151,6 +157,9 @@ class PhaseOrchestrator:
             # preflight 自身故障不能阻塞主流程（降级为 warn 模式行为）
             logger.warning("Preflight 执行异常，继续运行: %s", exc)
 
+        # 出口 IP 抓取已移至 _phase_registration 浏览器连接后（PREFLIGHT_IP），
+        # 因为只有浏览器内才能拿到 AdsPower 注入的住宅代理实际出口。
+
         try:
             # Phase 1: Registration
             if self._should_run_phase(start_phase, PHASE_REGISTRATION):
@@ -184,6 +193,25 @@ class PhaseOrchestrator:
                 # 导出 CSV
                 from main import export_success
                 export_success(email, password, access_token, refresh_token)
+
+                # 把 token 持久化到 Run.openai_tokens，供号池 cpa 格式导出读取。
+                # 失败不应影响主流程（CSV 已经落盘了）。
+                try:
+                    with get_session() as session:
+                        db_run = session.get(Run, run.id)
+                        if db_run is not None:
+                            db_run.openai_tokens = {
+                                "access_token": access_token or "",
+                                "refresh_token": refresh_token or "",
+                                "id_token": "",
+                                "extracted_at": datetime.now(timezone.utc).isoformat(),
+                                "expires_at": "",
+                            }
+                            db_run.updated_at = datetime.now(timezone.utc)
+                            session.add(db_run)
+                            session.commit()
+                except Exception as exc:
+                    logger.warning("token 写库失败 run=%s: %s", run.id[:12], exc)
 
             # Phase 3: Payment（可选）
             if self._should_run_phase(start_phase, PHASE_PAYMENT) and self._config.enable_payment_flow:
@@ -239,11 +267,28 @@ class PhaseOrchestrator:
             context = browser.contexts[0]
             page = prepare_clean_start_page(context)
 
+            # 浏览器已就绪：从 page 内查询真实出口 IP（AdsPower 注入的住宅代理）。
+            # 失败仅 warning，不阻塞主流程。
+            try:
+                ip_addr, ip_country = fetch_exit_ip_from_page(page, timeout_ms=8000)
+                write_run_exit_ip(run_id, ip_addr, ip_country)
+                if ip_addr or ip_country:
+                    self._events.emit_sync(
+                        run_id,
+                        "state_change",
+                        state="PREFLIGHT_IP",
+                        payload={"ip_address": ip_addr, "ip_country": ip_country},
+                    )
+            except Exception as exc:
+                logger.warning("PREFLIGHT_IP 抓取失败（继续主流程） run=%s: %s", run_id[:12], exc)
+
             recorder = ArtifactRecorder(self._config.run_artifacts_dir)
             art_run_id = recorder.start_run(email)
-            experience_store = ExperienceStore(
-                os.path.join(self._config.run_artifacts_dir, "experience-memory.jsonl")
-            )
+            # 经验库 + DB 双写（自进化可视化）；assist_store 仅在 assist_fallback_enabled 时非 None。
+            from src.orchestration.experience_factory import build_assist_store, build_experience_store
+
+            experience_store = build_experience_store(self._config)
+            assist_store = build_assist_store(self._config)
 
             runtime = AutomationRuntime(
                 page=page,
@@ -252,13 +297,19 @@ class PhaseOrchestrator:
                 email=email,
                 password=password,
                 mail_api=self._mail,
+                sms_api=None,  # PhaseOrchestrator 路径不走 phone 模式；phone 必经 worker.py
                 logger=logger,
                 handlers=build_runtime_handlers(email=email, password=password),
                 artifact_recorder=recorder,
                 run_id=art_run_id,
                 llm_provider=llm_provider,
                 experience_store=experience_store,
+                captcha_solver=build_solver_from_config(self._config),
+                triage_provider=build_triage_provider(self._config),
+                assist_enabled=bool(getattr(self._config, "assist_fallback_enabled", False)),
+                assist_experience=assist_store,
             )
+            attach_log_buffer(runtime)
 
             machine = RegistrationStateMachine()
             result = machine.run(runtime)
@@ -296,16 +347,26 @@ class PhaseOrchestrator:
         # 调度逻辑：每次只跑一笔，跑完写 next_action_at = now + interval_hours，
         # 然后 return 让 worker 调度循环到时再恢复任务到 _phase_payment。
         # 当 warmup_pro_attempts >= 配置序列长度时跳过预热进入正式 Team 绑卡。
+        # 关键：如果 card_key 来自卡池且已成熟（warmup_count >= target），
+        # **跳过现场预热**避免重复浪费 Stripe attempt（违反 24h velocity）
         if self._config.enable_card_warmup:
-            preheat_outcome = self._maybe_run_card_preheat(run_id, card_key, email)
-            if preheat_outcome == "scheduled_next":
-                # 已写下 next_action_at，让 worker 调度循环按时唤醒任务
+            if self._card_already_warmed_from_pool(card_key):
                 self._events.emit_sync(
                     run_id, "log",
-                    payload={"message": "卡预热已排程下一笔 attempt，任务挂起等待调度"},
+                    payload={
+                        "message": "卡来自卡池且已成熟（warmup_count >= target），跳过现场预热进入正式绑卡"
+                    },
                 )
-                return ""
-            # preheat_outcome == "completed" / "skipped" → 继续走正式 Team 绑卡
+            else:
+                preheat_outcome = self._maybe_run_card_preheat(run_id, card_key, email)
+                if preheat_outcome == "scheduled_next":
+                    # 已写下 next_action_at，让 worker 调度循环按时唤醒任务
+                    self._events.emit_sync(
+                        run_id, "log",
+                        payload={"message": "卡预热已排程下一笔 attempt，任务挂起等待调度"},
+                    )
+                    return ""
+                # preheat_outcome == "completed" / "skipped" → 继续走正式 Team 绑卡
 
         if self._config.payment_link_only:
             from src.payment_link import PaymentLinkGenerator
@@ -332,6 +393,28 @@ class PhaseOrchestrator:
         return ""
 
     # ── 卡预热辅助 ──────────────────────────────────
+
+    def _card_already_warmed_from_pool(self, card_key: str) -> bool:
+        """检查卡是否来自卡池且已成熟。
+
+        判定：CardActivation 记录存在 + 未作废 + warmup_count >= target_warmup_count。
+        target_warmup_count == 0 视为"未启用卡池预热"（老数据），不跳过。
+        DB 异常一律返回 False（保守，让现场预热兜底）。
+        """
+        if not card_key:
+            return False
+        try:
+            with get_session() as session:
+                from src.db.models import CardActivation
+                rec = session.get(CardActivation, card_key)
+                if rec is None or rec.is_invalidated:
+                    return False
+                target = int(rec.target_warmup_count or 0)
+                if target <= 0:
+                    return False  # 未启用池预热的老卡，正常走现场预热
+                return int(rec.warmup_count or 0) >= target
+        except Exception:
+            return False
 
     def _maybe_run_card_preheat(self, run_id: str, card_key: str, target_email: str) -> str:
         """走真实卡预热路径（垫脚石账号 + access_token + 3DS）。
@@ -516,6 +599,13 @@ class PhaseOrchestrator:
                 session.add(run)
                 session.commit()
 
+    def _persist_exit_ip(self, run_id: str, ip_address: str, ip_country: str) -> None:
+        """把本次抓到的出口 IP 写到 Run（薄包装，复用 preflight.write_run_exit_ip）。
+
+        保留方法以兼容历史调用方；新代码请直接用 ``write_run_exit_ip``。
+        """
+        write_run_exit_ip(run_id, ip_address, ip_country)
+
     def _build_llm_provider(self):
         """按配置构造 LLM 决策器。"""
         from src.automation import LLMDecisionProvider, OpenAICompatibleLLMClient
@@ -535,4 +625,5 @@ class PhaseOrchestrator:
         return LLMDecisionProvider(
             client=client,
             confidence_threshold=self._config.llm_confidence_threshold,
+            vision_enabled=bool(getattr(self._config, "llm_vision_enabled", False)),
         )

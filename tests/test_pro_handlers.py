@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 from src.models import CardInfo
 from src.orchestration.handlers import (
     _classify_decline,
+    _checkout_billing_profile_from_card,
+    fill_checkout_billing_details,
     pro_account_login,
     select_pro_plan,
     submit_pro_and_capture_outcome,
@@ -112,6 +114,100 @@ class TestProAccountLogin(unittest.TestCase):
              mock.patch("src.orchestration.handlers.human_delay"):
             res = pro_account_login(page, "x@y.com", "pw", timeout_sec=10)
         self.assertTrue(res)
+
+    def test_inbox_verification_failure_falls_back_to_password(self):
+        """邮箱服务拉码失败时，有 password 应点击 Continue with password 兜底。"""
+        page = MagicMock()
+        page.goto.return_value = None
+        page.wait_for_selector.return_value = None
+        page.url = "https://auth.openai.com/email-verification"
+
+        def locator_side_effect(_selector):
+            loc = MagicMock()
+            first = MagicMock()
+            first.is_visible.return_value = False
+            first.input_value.return_value = "x@y.com"
+            loc.first = first
+            loc.count.return_value = 0
+            return loc
+
+        page.locator.side_effect = locator_side_effect
+
+        with mock.patch("src.orchestration.handlers.click_first_visible", return_value=True) as clicked, \
+             mock.patch("src.orchestration.handlers.handle_email_verification_step", return_value=False), \
+             mock.patch("src.orchestration.handlers._wait_for_chatgpt_home", return_value=True) as wait_home, \
+             mock.patch("src.orchestration.handlers.human_delay"):
+            res = pro_account_login(page, "x@y.com", "pw", mail_api=object(), timeout_sec=10)
+
+        self.assertTrue(res)
+        wait_home.assert_called_once()
+        descriptions = [c.kwargs.get("description", "") for c in clicked.call_args_list]
+        self.assertIn("点击 Continue with password", descriptions)
+
+
+class TestCheckoutBillingDetails(unittest.TestCase):
+    def test_profile_prefers_card_name_and_fallback_address(self):
+        card = _card()
+        card = CardInfo(
+            card_number=card.card_number,
+            expiry_month=card.expiry_month,
+            expiry_year=card.expiry_year,
+            cvv=card.cvv,
+            name_on_card="Amy Allen",
+            billing_address="",
+            bin_country="US",
+        )
+        profile = _checkout_billing_profile_from_card(
+            card,
+            fallback_profile={
+                "country": "US",
+                "line1": "350 5th Ave",
+                "city": "New York",
+                "state": "NY",
+                "postal_code": "10118",
+            },
+        )
+        self.assertEqual(profile["name"], "Amy Allen")
+        self.assertEqual(profile["line1"], "350 5th Ave")
+        self.assertEqual(profile["city"], "New York")
+
+    def test_fill_billing_unchecks_link_save_info(self):
+        page = MagicMock()
+        loc = MagicMock()
+        loc.first = loc
+        loc.is_visible.return_value = True
+        page.locator.return_value = loc
+        card = _card()
+
+        profile = fill_checkout_billing_details(
+            page,
+            card,
+            email="warm@example.test",
+            fallback_profile={"line1": "350 5th Ave", "city": "New York", "state": "NY", "postal_code": "10118"},
+        )
+
+        self.assertEqual(profile["name"], "DANIEL SPENCER")
+        self.assertGreaterEqual(page.evaluate.call_count, 2)
+        self.assertIn(mock.call("warm@example.test"), loc.fill.call_args_list)
+        self.assertIn(mock.call("DANIEL SPENCER"), loc.fill.call_args_list)
+
+    def test_profile_parses_full_comma_address(self):
+        card = CardInfo(
+            card_number="4859540173648659",
+            expiry_month="02",
+            expiry_year="2030",
+            cvv="546",
+            name_on_card="Amy Allen",
+            billing_address="321 Pine Blvd, Newark, NY, 14513, US",
+            bin_country="US",
+        )
+        profile = _checkout_billing_profile_from_card(card)
+
+        self.assertEqual(profile["line1"], "321 Pine Blvd")
+        self.assertEqual(profile["city"], "Newark")
+        self.assertEqual(profile["state"], "NY")
+        self.assertEqual(profile["postal_code"], "14513")
+        self.assertEqual(profile["country"], "US")
 
 
 class TestSelectProPlan(unittest.TestCase):

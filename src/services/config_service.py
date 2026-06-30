@@ -480,6 +480,70 @@ class ConfigService:
             return config
         return None
 
+    def resolve_runtime_provider_config(
+        self,
+        provider_type: str,
+        *,
+        profile_bindings: Optional[dict[str, str]] = None,
+        default_name: str = "",
+    ) -> dict[str, Any]:
+        """运行时取 provider 的 config dict（消费侧 fallback 链入口）。
+
+        优先级：profile_bindings[provider_type] → default_name → 返回空 dict。
+
+        Returns:
+            空 dict 表示"未找到 active provider"，消费侧应回落到 .env（AppConfig 字段）。
+        """
+        bound_name = ""
+        if profile_bindings:
+            bound_name = str(profile_bindings.get(provider_type) or "").strip()
+        cfg = self.resolve_provider_config(
+            provider_type,
+            bound_name,
+            default_name=default_name,
+            active_only=True,
+        )
+        if cfg is None:
+            return {}
+        return dict(cfg.config or {})
+
+    def get_active_provider(self, provider_type: str) -> Optional[ProviderConfig]:
+        """取该类型下最新 active 的 ProviderConfig（按 updated_at desc 取第一条）。
+
+        给 ``ProviderRegistry.build_active()`` 用 —— 切换 active 即切供应商，
+        不再依赖 AppConfig 上的 ``card_provider`` / ``email_provider_name`` 字段。
+
+        多条 active 时取最新更新的；返回 None 表示该类型当前无 active 配置，
+        消费侧应回落到 AppConfig（向后兼容）或抛错。
+        """
+        with get_session() as session:
+            stmt = (
+                select(ProviderConfig)
+                .where(
+                    ProviderConfig.provider_type == provider_type,
+                    ProviderConfig.is_active == True,  # noqa: E712
+                )
+                .order_by(ProviderConfig.updated_at.desc())  # type: ignore[arg-type]
+            )
+            return session.exec(stmt).first()
+
+    def list_active_providers(self, provider_type: str) -> list[ProviderConfig]:
+        """列出该类型下所有 active ProviderConfig（按 updated_at desc）。
+
+        给 mail 这种「多 provider 同时启用按邮箱域名路由」的场景用 ——
+        ``ProviderRegistry.build_all_active()`` 会逐条尝试构造，单条失败不影响其它。
+        """
+        with get_session() as session:
+            stmt = (
+                select(ProviderConfig)
+                .where(
+                    ProviderConfig.provider_type == provider_type,
+                    ProviderConfig.is_active == True,  # noqa: E712
+                )
+                .order_by(ProviderConfig.updated_at.desc())  # type: ignore[arg-type]
+            )
+            return list(session.exec(stmt).all())
+
     def save_provider_config(
         self,
         provider_type: str,
@@ -497,6 +561,8 @@ class ConfigService:
                 ProviderConfig.provider_name == provider_name,
             )
             existing = session.exec(stmt).first()
+            existing_cfg = dict(existing.config or {}) if existing else {}
+            merged_config = self._merge_redacted_fields(config, existing_cfg)
 
             if existing:
                 self._create_provider_revision(
@@ -511,7 +577,7 @@ class ConfigService:
                     action_log_id=action_log_id,
                     actor=actor,
                 )
-                existing.config = config
+                existing.config = merged_config
                 existing.is_active = is_active
                 existing.updated_at = datetime.now(timezone.utc)
                 session.add(existing)
@@ -520,10 +586,11 @@ class ConfigService:
                 logger.info("更新 Provider 配置: %s/%s", provider_type, provider_name)
                 return existing
 
+            sanitized_new = self._strip_redacted_literals(merged_config)
             new_config = ProviderConfig(
                 provider_type=provider_type,
                 provider_name=provider_name,
-                config=config,
+                config=sanitized_new,
                 is_active=is_active,
             )
             self._create_provider_revision(
@@ -774,23 +841,63 @@ class ConfigService:
         if not raw:
             return ""
         return f"{raw[:4]}****" if len(raw) > 4 else "****"
+
+    # 字符串中只要出现 "[REDACTED" 前缀（[REDACTED] / [REDACTED_TOKEN] / [REDACTED_USER]:[REDACTED_PASS] 等）
+    # 就视为脱敏占位符——禁止把这种"看起来像真值的脱敏串"作为真值写回 DB。
+    _REDACTED_TAG = "[REDACTED"
+
+    @classmethod
+    def _is_redacted_literal(cls, value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        return cls._REDACTED_TAG in value
+
+    @classmethod
+    def _merge_redacted_fields(
+        cls,
+        incoming: dict[str, Any],
+        existing: dict[str, Any],
+    ) -> dict[str, Any]:
+        """合并 UI 提交的 config 与 DB 既有 config：
+
+        如果 incoming[k] 是脱敏占位符（如 ``"[REDACTED]"``），
+        则保留 existing[k] 真值，避免 UI 回显被原样回写覆盖。
+
+        典型场景：admin 编辑 provider 时，UI 把 proxy/api_key 显示为 [REDACTED]，
+        用户只想改其他字段然后点保存，结果原本的敏感字段被字面量 [REDACTED] 覆盖，
+        下游（远程 email-provider 等）拿到字面量调用上游 → InvalidURL → 500。
+        """
+        merged = dict(incoming or {})
+        for key, val in merged.items():
+            if cls._is_redacted_literal(val) and key in existing:
+                merged[key] = existing[key]
+        return merged
+
+    @classmethod
+    def _strip_redacted_literals(cls, config: dict[str, Any]) -> dict[str, Any]:
+        """新建 provider 路径下，若用户硬塞 [REDACTED] 也要直接剔除（DB 不允许存脱敏占位）。"""
+        return {k: v for k, v in (config or {}).items() if not cls._is_redacted_literal(v)}
+
+    # SAFE_UPDATE_FIELDS：允许通过 /api/config PUT 改的字段白名单。
+    #
+    # 已移除的 A 类 provider 字段（feat/registration-profile 2026-05-27 迁移）：
+    #   ads_api / ads_api_key                                  → /providers (browser-default)
+    #   email_provider_base_url / email_provider_api_key       → /providers (mail-default)
+    #   default_browser_provider / default_card_provider /
+    #   default_mail_provider / default_mail_account_id        → /registration-profiles
+    #   card_provider / efuncard_token / nodecard_*            → /providers (card-*)
+    #   sms_api_key / sms_country                              → /providers (未来 sms-*)
+    #
+    # 这些字段在 AppConfig 里保留定义（兼容护栏 + 老 .env 兜底），但 API 不再允许从
+    # /config 页面更改 —— 强制走 /providers + /registration-profiles 的清晰职责分工。
     SAFE_UPDATE_FIELDS = {
-        "ads_api",
-        "ads_api_key",
+        # 网络/代理（全局，可被 browser provider 覆盖）
         "proxy",
-        "email_provider_base_url",
-        "email_provider_api_key",
-        "default_browser_provider",
-        "default_card_provider",
-        "default_mail_provider",
-        "default_mail_account_id",
-        "card_provider",
-        "efuncard_token",
-        "nodecard_api_url",
-        "nodecard_merchant_id",
-        "nodecard_platform_id",
-        "sms_api_key",
-        "sms_country",
+        # 全局默认 provider 指针（registration profile 未指定时使用）
+        "default_sms_provider",
+        "default_captcha_provider",
+        "default_llm_provider",
+        # LLM 兜底决策（未来 Stage 会迁到 llm provider）
         "llm_enabled",
         "llm_base_url",
         "llm_api_key",
@@ -798,6 +905,7 @@ class ConfigService:
         "llm_timeout_ms",
         "llm_confidence_threshold",
         "llm_max_consecutive_uncertain",
+        # 支付/绑卡全局策略
         "enable_payment_flow",
         "enable_card_warmup",
         "warmup_account_pool",
@@ -813,6 +921,7 @@ class ConfigService:
         "billing_city",
         "billing_state",
         "billing_postal_code",
+        # 运行时阈值
         "run_artifacts_dir",
         "trace_on_failure",
         "clean_context_mode",

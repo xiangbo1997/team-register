@@ -43,6 +43,7 @@ from src.orchestration.handlers import (
     prepare_clean_warmup_page,
     navigate_to_pro_checkout,
     select_pro_tier,
+    fill_checkout_billing_details,
     WarmupUpgradeNotFound,
 )
 from src.models import CardInfo
@@ -75,6 +76,10 @@ _EXTERNAL_FAILURE_PATTERNS = (
     # mail provider 的 contract error_code（来自服务端 4xx/5xx 响应体 detail.code）：
     r"MAILBOX_RUNTIME_INCOMPAT",     # 5xx / 401 / 404 — 服务端运行态问题
     r"PROVIDER_UPSTREAM_ERROR",      # 424 — provider 上游 API 4xx
+    # 业务态：号池竞争 / 邮箱被占用 / 项目去重门控（handlers._summarize_mail_exception
+    # 把 ACCOUNT_NOT_AVAILABLE / POOL_EXHAUSTED 等业务码升级为此 hint）。
+    # 归 external_failure：这是远程号池侧的资源竞争，不该惩罚本地执行号本身。
+    r"MAILBOX_POOL_CONTENTION",
 )
 _EXTERNAL_FAILURE_RE = re.compile("|".join(_EXTERNAL_FAILURE_PATTERNS), re.IGNORECASE)
 
@@ -112,6 +117,14 @@ def _classify_failure(reason: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _remember_failure_reason(svc: ConfigService, reason: str) -> None:
+    """把 execute_card_warmup 的最后失败原因挂到 svc，供卡池线程写回 CardActivation。"""
+    try:
+        setattr(svc, "last_card_warmup_reason", str(reason or ""))
+    except Exception:
+        pass
+
+
 def execute_card_warmup(
     config: AppConfig,
     card_info: CardInfo,
@@ -140,12 +153,14 @@ def execute_card_warmup(
     """
     if not config.enable_card_warmup:
         logger.info("卡片预热未启用，跳过。")
+        _remember_failure_reason(svc, "card_warmup_disabled")
         return False
 
     # 1. 从号池挑账号（自动占位冷却，避免并发撞号）
     account = svc.select_warmup_account()
     if account is None:
         logger.warning("号池中无可用 pro_warmup 账号，跳过预热。")
+        _remember_failure_reason(svc, "no_available_pro_warmup_account")
         return False
 
     # 取登录凭据 + AdsPower profile。
@@ -165,6 +180,7 @@ def execute_card_warmup(
 
     if not email or not profile_id:
         reason = f"missing_credentials(profile={bool(profile_id)},email={bool(email)})"
+        _remember_failure_reason(svc, reason)
         logger.error("预热账号 %s 凭据不完整（必须 email + adspower_profile_id）: %s", account.id, reason)
         svc.record_warmup_outcome(
             account.id, success=False, reason=reason, failure_class="account_failure",
@@ -187,11 +203,13 @@ def execute_card_warmup(
         )
     except Exception as exc:
         logger.error("预热中止：无法连接 AdsPower 垫脚石环境 (%s)", exc)
+        reason = f"adspower_failed:{exc}"[:200]
+        _remember_failure_reason(svc, reason)
         # AdsPower 抖动是外部依赖问题，不累计计数
         svc.record_warmup_outcome(
             account.id,
             success=False,
-            reason=f"adspower_failed:{exc}"[:200],
+            reason=reason,
             failure_class="external_failure",
         )
         return False
@@ -365,6 +383,20 @@ def _run_warmup_inner(
                 if not variant:
                     logger.warning("预热第 %d 轮填卡失败，跳过本轮 submit", round_idx)
                 else:
+                    try:
+                        fallback_profile = (
+                            config.build_billing_profile()
+                            if hasattr(config, "build_billing_profile")
+                            else None
+                        )
+                        fill_checkout_billing_details(
+                            page,
+                            card_info,
+                            email=email,
+                            fallback_profile=fallback_profile,
+                        )
+                    except Exception as billing_exc:
+                        logger.warning("预热第 %d 轮填写账单地址异常（继续尝试提交）: %s", round_idx, billing_exc)
                     # 4.4 提交（best-effort）
                     try:
                         submit_btn = page.locator(
@@ -440,9 +472,11 @@ def _run_warmup_inner(
         #   - 外部依赖故障（AdsPower / 邮件 5xx / 网络 timeout）→ external_failure（不累计）
         try:
             if warmed:
+                _remember_failure_reason(svc, "成功")
                 svc.record_warmup_outcome(account.id, success=True)
             else:
                 reason_text = failure_reason or "unknown"
+                _remember_failure_reason(svc, reason_text)
                 fclass = _classify_failure(reason_text)
                 svc.record_warmup_outcome(
                     account.id,

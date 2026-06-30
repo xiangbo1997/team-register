@@ -16,6 +16,7 @@ from src.services.auth_service import AuthService
 from src.services.config_service import ConfigService
 from src.services.event_service import EventBroadcaster
 from src.services.knowledge_service import KnowledgeService
+from src.services.registration_profile_service import RegistrationProfileService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,4 +52,12 @@ def get_assistant_service() -> AssistantService:
         config_service=get_config_service(),
         knowledge_service=get_knowledge_service(),
         audit_service=get_audit_service(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_registration_profile_service() -> RegistrationProfileService:
+    # 复用 ConfigService 内部已加载的 base_config，避免重复读 .env
+    return RegistrationProfileService(
+        base_config=get_config_service().get_config(),
     )

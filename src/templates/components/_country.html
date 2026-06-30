@@ -1,0 +1,41 @@
+{# ============================================================
+   Team-Register 国家/地区显示卡片
+   统一所有表格里 country / ip_country / bin_country 等字段的展示样式。
+
+   用法（Alpine 表达式作为字符串传入）：
+     {% from 'components/_country.html' import country_flag_card %}
+     {{ country_flag_card('acc.ip_country') }}
+     {{ country_flag_card('card.bin_country', size='xs') }}
+
+   渲染：
+     - ISO 3166-1 alpha-2（如 'JP'）→ 🇯🇵 国旗 + 'JP' 文本
+     - 非 2 字母（如 SMS '7'）→ 🌐 globe + 原始文本
+     - null / 空 → 🌐 + '—'
+
+   注意：code_expr 是 Alpine 表达式字符串，会被插入到 x-data 的 getter 里。
+   只接受受控的字段引用（如 'p.country'），勿用用户输入拼接。
+   ============================================================ #}
+
+{% macro country_flag_card(code_expr, size='sm') %}
+{%- set dim_cls = {
+    'sm': 'w-10 h-12',
+    'xs': 'w-8 h-10',
+}[size] -%}
+{%- set emoji_cls = {
+    'sm': 'text-lg',
+    'xs': 'text-base',
+}[size] -%}
+<span class="inline-flex flex-col items-center justify-center {{ dim_cls }} px-1 bg-subtle border border-border rounded-lg leading-tight shrink-0"
+      x-data="{
+        get _code(){ return (({{ code_expr }}) || '').toString().toUpperCase(); },
+        get _flag(){
+          const c = this._code;
+          return (c.length === 2 && /^[A-Z]{2}$/.test(c))
+            ? String.fromCodePoint(...[...c].map(ch => 0x1F1E6 + ch.charCodeAt(0) - 65))
+            : '🌐';
+        }
+      }">
+    <span class="{{ emoji_cls }}" x-text="_flag"></span>
+    <span class="text-[10px] font-bold text-body tracking-wide" x-text="_code || '—'"></span>
+</span>
+{% endmacro %}
