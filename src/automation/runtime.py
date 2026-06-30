@@ -52,20 +52,28 @@ _UNAUTH_BUTTON_NAMES = (
     "anmelden", "registrieren",
 )
 # OpenAI 服务端「账号创建失败」内联错误文案（多语言）。
-# 这类错误停在 /create-account/password 等表单页内联显示，URL 不变（不会跳 auth/error），
-# 旧逻辑只看 url 含 "auth/error" 的 has_auth_error 永远抓不到 → 状态机误判为「密码没填对」
-# → 重试 submit_password 多次 → 最终 silent_failure_at_state=AUTH（实战 run 17665b65）。
-# 真因多为脏号被风控拒（印尼 +62 循环号），命中后应立刻判 ERROR 终止 + 拉黑换号止损，
-# 而不是傻填密码。文案以实测截图为准，覆盖 EN/JA/ZH 常见 locale。
+# 这类错误停在 /create-account/password 或 ABOUT_YOU（"How old are you?"）等表单页内联显示，
+# URL 不变（不会跳 auth/error），旧逻辑只看 url 含 "auth/error" 的 has_auth_error 永远抓不到
+# → 状态机误判为「密码/资料没填对」 → 重试 submit_password / fill_about_you 多次
+# → 最终 silent_failure_at_state=AUTH/ABOUT_YOU（实战 run 17665b65）。
+# 真因多为脏号 / IP 段 / 设备被风控拒（印尼 +62 循环号、被打标 IP），命中后应立刻判 ERROR
+# 终止 + 拉黑换号止损，而不是傻填表单。文案以实测截图为准，覆盖 EN/JA/ZH 常见 locale。
+# 注："terms of use" 类拒号是 OpenAI 故意模糊化的兜底文案（≠ 年龄/速率限制），
+# 实测出现在 ABOUT_YOU 页 finalize 阶段（截图 2026-06-30 Joe Nguyen age=26 被拒）。
 _ACCOUNT_CREATION_ERROR_PHRASES = (
     "アカウントを作成できませんでした",  # JA：无法创建账号（实测 run 17665b65）
     "couldn't create your account",
     "could not create your account",
+    "can't create your account",            # EN：实测 "We can't create your account due to our Terms of Use"
+    "cannot create your account",
     "unable to create your account",
     "we were unable to create",
+    "due to our terms of use",              # EN：finalize 风控拒号兜底文案（ABOUT_YOU 页）
     "无法创建你的账户",
     "无法创建您的账户",
     "无法创建帐号",
+    "違反我们的使用条款",                    # ZH：服务条款拒号变体
+    "违反我们的使用条款",
 )
 # 「手机号已注册」信号（实测 run c5ba5779）：注册流程提交后 OpenAI 认出号已有账号
 # → 跳登录页让输入「已有密码」。对注册任务 = 此号已死，需换号。检测登录页特征文案。
@@ -422,10 +430,14 @@ class EvidenceCollector:
             "has_role_alert": self._count(page, '[role="alert"]') > 0,
             "has_auth_error": "auth/error" in url,
             # 内联「账号创建失败」错误（URL 不变，停在表单页）：OpenAI 服务端拒号信号。
-            # 限定 auth.openai.com 避免误伤其他页面的相似文案。
+            # 限定 OpenAI 自家域（auth.openai.com / auth0.openai.com / chatgpt.com）避免误伤
+            # 第三方页面的相似文案。注：ABOUT_YOU（"How old are you?"）的 finalize 拒号停在
+            # chatgpt.com 域，旧逻辑只认 auth.openai.com 会漏判 → 重试 fill_about_you 到 silent_failure。
             "has_account_creation_error": self._page_contains_any(
                 page, list(_ACCOUNT_CREATION_ERROR_PHRASES)
-            ) and "auth.openai.com" in url,
+            ) and any(
+                d in url for d in ("auth.openai.com", "auth0.openai.com", "chatgpt.com")
+            ),
             # 手机号已注册：注册流程中途跳到登录页（/log-in/）或出现登录页特征文案。
             # 仅 phone 注册场景有意义（email 注册不会跳 phone 登录）。
             "has_phone_already_registered": (

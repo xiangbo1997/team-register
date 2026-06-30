@@ -267,6 +267,57 @@ class TestAutomationStateInference(unittest.TestCase):
         # 关键：不应触发 recover_from_error（直接终止，交给 worker 拉黑换号）
         self.assertEqual(recover_called["n"], 0)
 
+    def test_account_creation_error_signal_detects_terms_of_use_on_chatgpt_domain(self):
+        """ABOUT_YOU 页 finalize 拒号「We can't create your account due to our Terms of Use」
+        应被 has_account_creation_error 信号识别（含 chatgpt.com 域）。
+
+        回归锁（实测截图 2026-06-30，Joe Nguyen age=26）：英文版风控兜底拒号停在
+        ABOUT_YOU（"How old are you?"）页，URL 在 chatgpt.com 域。旧逻辑①phrases 只有
+        JA/ZH 漏了这条英文文案；②URL 约束仅认 auth.openai.com 会把 chatgpt.com 域挡掉
+        → 双重漏判 → 状态机误判 ABOUT_YOU 重试 fill_about_you → silent_failure_at_state=ABOUT_YOU。
+        """
+        from src.automation.runtime import EvidenceCollector, _ACCOUNT_CREATION_ERROR_PHRASES
+
+        # ① 英文 "Terms of Use" 拒号文案必须在 phrases 集合里被命中
+        body_text = (
+            "How old are you? Full name Joe Nguyen Age 26 "
+            "We can't create your account due to our Terms of Use "
+            "Finish creating account"
+        )
+
+        class _FakePage:
+            url = "https://chatgpt.com/create-account/about-you"
+
+            def evaluate(self, _script):
+                return body_text
+
+        page = _FakePage()
+        matched = EvidenceCollector._page_contains_any(  # noqa: SLF001
+            page, list(_ACCOUNT_CREATION_ERROR_PHRASES)
+        )
+        self.assertTrue(matched, "英文 Terms of Use 拒号文案未被 phrases 命中")
+
+        # ② chatgpt.com 域必须落入信号的 URL 白名单（不再被 auth.openai.com-only 约束挡掉）
+        in_openai_domain = any(
+            d in page.url for d in ("auth.openai.com", "auth0.openai.com", "chatgpt.com")
+        )
+        self.assertTrue(in_openai_domain)
+
+        # ③ 端到端：signal True → infer_state 判 ERROR（即使页面仍带 about-you 信号）
+        state = infer_state(
+            page.url,
+            {"has_account_creation_error": True, "has_about_name_input": True},
+        )
+        self.assertEqual(state, AutomationState.ERROR)
+
+    def test_account_creation_error_signal_not_triggered_on_third_party_domain(self):
+        """不误伤：含相似文案但非 OpenAI 自家域的第三方页面不应触发拒号信号。"""
+        in_openai_domain = any(
+            d in "https://example.com/terms"
+            for d in ("auth.openai.com", "auth0.openai.com", "chatgpt.com")
+        )
+        self.assertFalse(in_openai_domain)
+
     def test_phone_state_emits_submit_phone_and_code_action(self):
         """PHONE 状态：_build_actions 应返回 submit_phone_and_code 单 action。
 
